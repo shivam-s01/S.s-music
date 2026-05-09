@@ -1,3 +1,5 @@
+const YT_API_KEY = process.env.YT_API_KEY;
+
 export async function handler(event) {
   const q = event.queryStringParameters?.q || '';
   if (!q) return { statusCode: 400, body: JSON.stringify({ error: 'no query' }) };
@@ -8,35 +10,12 @@ export async function handler(event) {
   };
 
   try {
-    const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`;
-    const r = await fetch(searchUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept': 'text/html,application/xhtml+xml'
-      },
-      signal: AbortSignal.timeout(8000)
-    });
-
-    const html = await r.text();
-
-    // YouTube embeds all video data as JSON inside the page HTML
-    // First "videoId" match is the top search result
-    const match = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
-    if (match && match[1]) {
-      return {
-        statusCode: 200,
-        headers: resHeaders,
-        body: JSON.stringify({ videoId: match[1] })
-      };
-    }
+    const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(q)}&type=video&maxResults=1&key=${YT_API_KEY}`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    const d = await r.json();
+    const videoId = d?.items?.[0]?.id?.videoId || null;
+    return { statusCode: 200, headers: resHeaders, body: JSON.stringify({ videoId }) };
   } catch (e) {
-    console.error('YouTube scrape failed:', e.message);
+    return { statusCode: 200, headers: resHeaders, body: JSON.stringify({ videoId: null }) };
   }
-
-  return {
-    statusCode: 200,
-    headers: resHeaders,
-    body: JSON.stringify({ videoId: null })
-  };
 }
