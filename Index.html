@@ -1203,7 +1203,7 @@ let currentQuality = 'preview'; // 'preview' | 'full'
 async function searchYouTubeVideoId(trackName, artistName){
   const q = encodeURIComponent(`${trackName} ${artistName} official audio`);
   try{
-    const r = await fetch(`/api/search?q=${q}`);
+    const r = await fetch(`/.netlify/functions/search?q=${q}`);
     if(!r.ok) return null;
     const d = await r.json();
     return d.videoId || null;
