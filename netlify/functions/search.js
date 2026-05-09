@@ -2,40 +2,41 @@ export async function handler(event) {
   const q = event.queryStringParameters?.q || '';
   if (!q) return { statusCode: 400, body: JSON.stringify({ error: 'no query' }) };
 
-  const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' };
+  const resHeaders = {
+    'Content-Type': 'application/json',
+    'Access-Control-Allow-Origin': '*'
+  };
 
-  const PIPED = [
-    'https://pipedapi.kavin.rocks',
-    'https://pipedapi.adminforge.de',
-    'https://piped-api.garudalinux.org',
-  ];
-  const INVIDIOUS = [
-    'https://inv.riverside.rocks',
-    'https://yt.cdaut.de',
-  ];
+  try {
+    const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`;
+    const r = await fetch(searchUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept': 'text/html,application/xhtml+xml'
+      },
+      signal: AbortSignal.timeout(8000)
+    });
 
-  // Try Piped nodes
-  for (const node of PIPED) {
-    try {
-      const r = await fetch(`${node}/search?q=${q}&filter=videos`, { signal: AbortSignal.timeout(6000) });
-      if (!r.ok) continue;
-      const d = await r.json();
-      const url = d?.items?.[0]?.url || '';
-      const vid = url.includes('v=') ? url.split('v=')[1].split('&')[0] : null;
-      if (vid) return { statusCode: 200, headers, body: JSON.stringify({ videoId: vid }) };
-    } catch { continue; }
+    const html = await r.text();
+
+    // YouTube embeds all video data as JSON inside the page HTML
+    // First "videoId" match is the top search result
+    const match = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
+    if (match && match[1]) {
+      return {
+        statusCode: 200,
+        headers: resHeaders,
+        body: JSON.stringify({ videoId: match[1] })
+      };
+    }
+  } catch (e) {
+    console.error('YouTube scrape failed:', e.message);
   }
 
-  // Fallback: Invidious
-  for (const node of INVIDIOUS) {
-    try {
-      const r = await fetch(`${node}/api/v1/search?q=${q}&type=video&fields=videoId`, { signal: AbortSignal.timeout(6000) });
-      if (!r.ok) continue;
-      const d = await r.json();
-      const vid = Array.isArray(d) ? d[0]?.videoId : null;
-      if (vid) return { statusCode: 200, headers, body: JSON.stringify({ videoId: vid }) };
-    } catch { continue; }
-  }
-
-  return { statusCode: 200, headers, body: JSON.stringify({ videoId: null }) };
+  return {
+    statusCode: 200,
+    headers: resHeaders,
+    body: JSON.stringify({ videoId: null })
+  };
 }
