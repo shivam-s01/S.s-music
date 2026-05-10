@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify, send_file, Response, stream_with_context
 import requests
 import os
+import re
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__)
@@ -63,6 +64,22 @@ def get_songs():
 
 
 # ─────────────────────────────────────────────
+# QUERY CLEANER
+# Removes (From "Movie"), quotes, parentheses
+# ─────────────────────────────────────────────
+def clean_query(text):
+    # Remove (From "...") or (From '...')
+    text = re.sub(r'\(From\s+["\u201c\u201d\u2018\u2019]?[^)]*["\u201c\u201d\u2018\u2019]?\)', '', text, flags=re.IGNORECASE)
+    # Remove (OST), (Official), (Audio), (Video), (Lyrics), (Full Song) etc
+    text = re.sub(r'\((OST|official|audio|video|lyrics|full\s*song|feat\.?.*?)\)', '', text, flags=re.IGNORECASE)
+    # Remove all quotes and parentheses
+    text = re.sub(r'["\u201c\u201d\u2018\u2019\'()]', '', text)
+    # Remove extra spaces
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+# ─────────────────────────────────────────────
 # SAAVN FETCH — tries all mirrors for one query
 # ─────────────────────────────────────────────
 def fetch_saavn_query(query):
@@ -106,32 +123,53 @@ def get_saavn_song():
     if not q:
         return jsonify({'success': False, 'url': None})
 
-    parts = q.split()
+    q_clean   = clean_query(q)
+    fb_clean  = clean_query(fallback) if fallback else ''
+    parts     = q_clean.split()
 
-    # Build query ladder
-    queries = [q]
-    if fallback and fallback != q:
+    # ── Build query ladder (most specific → broadest) ──
+    queries = []
+
+    # 1. Cleaned full query (parentheses/quotes removed)
+    queries.append(q_clean)
+
+    # 2. Original query as-is
+    if q != q_clean:
+        queries.append(q)
+
+    # 3. Cleaned fallback
+    if fb_clean and fb_clean not in queries:
+        queries.append(fb_clean)
+
+    # 4. Original fallback
+    if fallback and fallback != q and fallback not in queries:
         queries.append(fallback)
+
+    # 5. Progressive truncation of cleaned query
     if len(parts) > 5:
         queries.append(' '.join(parts[:5]))
     if len(parts) > 3:
         queries.append(' '.join(parts[:3]))
     if len(parts) > 1:
         queries.append(' '.join(parts[:2]))
-    if fallback:
-        fb = fallback.split()
-        if len(fb) > 2:
-            queries.append(' '.join(fb[:3]))
-        if len(fb) > 1:
-            queries.append(' '.join(fb[:2]))
 
-    # Deduplicate
+    # 6. Progressive truncation of cleaned fallback
+    if fb_clean:
+        fb_parts = fb_clean.split()
+        if len(fb_parts) > 2:
+            queries.append(' '.join(fb_parts[:3]))
+        if len(fb_parts) > 1:
+            queries.append(' '.join(fb_parts[:2]))
+
+    # ── Deduplicate while preserving order ──
     seen, unique = set(), []
     for query in queries:
-        q_clean = query.strip()
-        if q_clean and q_clean not in seen:
-            seen.add(q_clean)
-            unique.append(q_clean)
+        q_strip = query.strip()
+        if q_strip and q_strip not in seen:
+            seen.add(q_strip)
+            unique.append(q_strip)
+
+    print(f'[Saavn] Query ladder: {unique}')
 
     for query in unique:
         result = fetch_saavn_query(query)
