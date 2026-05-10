@@ -1,4 +1,57 @@
-flask
-requests
-yt-dlp
-gunicorn
+# ════════════════════════════════════════════════════
+# GODMODE v4.0 — requirements.txt
+# ════════════════════════════════════════════════════
+
+# Core
+flask>=3.0,<4.0
+requests>=2.31,<3.0
+
+# Production server (gevent WSGI)
+gunicorn>=21.2,<23.0
+gevent>=23.9,<25.0
+
+# Audio source fallback
+yt-dlp>=2024.1.1
+
+# Optional: distributed cache (remove if not using Redis)
+redis>=5.0,<6.0
+
+# ════════════════════════════════════════════════════
+# GODMODE v4.0 — DEPLOYMENT GUIDE
+# ════════════════════════════════════════════════════
+#
+# 1. INSTALL
+#    pip install -r requirements.txt
+#
+# 2. START (production)
+#    gunicorn -c gunicorn.conf.py app:app
+#
+# 3. START (dev / quick test)
+#    python app.py
+#
+# ── Environment variables ────────────────────────────
+#
+#   PORT            Server port            (default: 7700)
+#   WEB_CONCURRENCY Gunicorn worker count  (default: 2)
+#   LOG_LEVEL       Gunicorn log level     (default: warning)
+#   REDIS_URL       Redis URL              (optional, auto-detected)
+#   FLUSH_SECRET    Cache-flush API key    (default: "godmode")
+#
+# ── Recommended for VPS / bare-metal ─────────────────
+#
+#   WEB_CONCURRENCY=2 gunicorn -c gunicorn.conf.py app:app
+#
+# ── With systemd ─────────────────────────────────────
+#
+#   [Service]
+#   WorkingDirectory=/opt/godmode
+#   ExecStart=/opt/godmode/venv/bin/gunicorn -c gunicorn.conf.py app:app
+#   Restart=on-failure
+#   Environment=PORT=7700
+#   Environment=LOG_LEVEL=warning
+#
+# ── With Docker ───────────────────────────────────────
+#
+#   CMD ["gunicorn", "-c", "gunicorn.conf.py", "app:app"]
+#
+# ────────────────────────────────────────────────────
