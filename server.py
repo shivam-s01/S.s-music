@@ -2,13 +2,11 @@ from flask import Flask, request, jsonify, send_file, Response, stream_with_cont
 import requests
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__)
 
-# ─────────────────────────────────────────────
-# Multiple JioSaavn API mirrors — tried in order
-# ─────────────────────────────────────────────
 SAAVN_MIRRORS = [
     'https://saavn.dev',
     'https://jiosaavn-api-privatecvc2.vercel.app',
@@ -68,66 +66,118 @@ def get_songs():
 # QUERY CLEANER
 # ─────────────────────────────────────────────
 def clean_query(text):
-    # Remove (From "Movie") or (From 'Movie')
     text = re.sub(r'\(From\s+["\u201c\u201d\u2018\u2019]?[^)]*["\u201c\u201d\u2018\u2019]?\)', '', text, flags=re.IGNORECASE)
-    # Remove common suffixes like (Official Audio), (Lyrics), (Full Song), etc.
     text = re.sub(r'\((OST|official|audio|video|lyrics|full\s*song|feat\.?.*?)\)', '', text, flags=re.IGNORECASE)
-    # Remove all quotes and parentheses
     text = re.sub(r'["\u201c\u201d\u2018\u2019\'()]', '', text)
-    # Collapse extra spaces
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
 
 # ─────────────────────────────────────────────
-# SAAVN FETCH — tries all mirrors + endpoints
+# TITLE SIMILARITY — wrong song fix
 # ─────────────────────────────────────────────
-def fetch_saavn_query(query):
-    endpoints = [
-        '/api/search/songs',
-        '/api/search',
-        '/search/songs',
-    ]
+def normalize(text):
+    text = text.lower()
+    text = re.sub(r'[^a-z0-9\s]', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 
-    for mirror in SAAVN_MIRRORS:
-        for endpoint in endpoints:
-            try:
-                r = requests.get(
-                    f'{mirror}{endpoint}',
-                    params={'query': query, 'q': query, 'limit': 10},
-                    timeout=12,
-                    headers={'User-Agent': 'Mozilla/5.0'}
-                )
-                if r.status_code != 200:
-                    continue
+def title_score(query, song_title, song_artist=''):
+    q = normalize(query)
+    t = normalize(song_title)
+    a = normalize(song_artist)
 
-                data = r.json()
+    q_words = set(q.split())
+    t_words = set(t.split())
+    a_words = set(a.split())
 
-                # Handle different response formats across mirrors
-                results = (
-                    data.get('data', {}).get('results') or
-                    data.get('results') or
-                    data.get('songs', {}).get('results') or
-                    []
-                )
+    if not q_words:
+        return 0
 
-                for song in results:
-                    urls = song.get('downloadUrl') or song.get('download_url') or []
-                    for item in reversed(urls):
-                        url = item.get('url') or item.get('link')
-                        if url:
-                            print(f'[Saavn ✓] mirror={mirror} endpoint={endpoint} query="{query}"')
-                            return {
-                                'url':     url,
-                                'quality': item.get('quality', '320kbps'),
-                                'title':   song.get('name') or song.get('title', ''),
-                                'artist':  song.get('primaryArtists') or song.get('primary_artists', ''),
-                            }
+    # How many query words appear in title
+    title_matches = len(q_words & t_words) / len(q_words)
 
-            except Exception as e:
-                print(f'[Saavn] {mirror}{endpoint} failed: {e}')
+    # Bonus if query words appear in artist too
+    artist_bonus = len(q_words & a_words) / len(q_words) * 0.3
+
+    # Big bonus if title starts with query's first word
+    q_first = q.split()[0] if q.split() else ''
+    start_bonus = 0.4 if t.startswith(q_first) else 0
+
+    return title_matches + artist_bonus + start_bonus
+
+
+# ─────────────────────────────────────────────
+# SINGLE MIRROR FETCH (used in parallel)
+# ─────────────────────────────────────────────
+def fetch_from_mirror(mirror, query, min_score=0.4):
+    endpoints = ['/api/search/songs', '/api/search', '/search/songs']
+
+    for endpoint in endpoints:
+        try:
+            r = requests.get(
+                f'{mirror}{endpoint}',
+                params={'query': query, 'q': query, 'limit': 10},
+                timeout=8,  # shorter timeout per mirror
+                headers={'User-Agent': 'Mozilla/5.0'}
+            )
+            if r.status_code != 200:
                 continue
 
+            data = r.json()
+            results = (
+                data.get('data', {}).get('results') or
+                data.get('results') or
+                data.get('songs', {}).get('results') or
+                []
+            )
+
+            best_song = None
+            best_score = -1
+
+            for song in results:
+                song_title  = song.get('name') or song.get('title', '')
+                song_artist = song.get('primaryArtists') or song.get('primary_artists', '')
+                score = title_score(query, song_title, song_artist)
+
+                if score > best_score:
+                    best_score = score
+                    best_song  = song
+
+            if best_song and best_score >= min_score:
+                urls = best_song.get('downloadUrl') or best_song.get('download_url') or []
+                for item in reversed(urls):
+                    url = item.get('url') or item.get('link')
+                    if url:
+                        print(f'[Saavn ✓] mirror={mirror} score={best_score:.2f} query="{query}" title="{best_song.get("name","")}"')
+                        return {
+                            'url':     url,
+                            'quality': item.get('quality', '320kbps'),
+                            'title':   best_song.get('name') or best_song.get('title', ''),
+                            'artist':  best_song.get('primaryArtists') or best_song.get('primary_artists', ''),
+                            'score':   best_score,
+                        }
+
+        except Exception as e:
+            print(f'[Saavn] {mirror}{endpoint} failed: {e}')
+            continue
+
+    return None
+
+
+# ─────────────────────────────────────────────
+# PARALLEL MIRROR FETCH — fastest mirror wins
+# ─────────────────────────────────────────────
+def fetch_saavn_parallel(query, min_score=0.4):
+    with ThreadPoolExecutor(max_workers=len(SAAVN_MIRRORS)) as executor:
+        futures = {
+            executor.submit(fetch_from_mirror, mirror, query, min_score): mirror
+            for mirror in SAAVN_MIRRORS
+        }
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                return result
     return None
 
 
@@ -146,33 +196,21 @@ def get_saavn_song():
     fb_clean = clean_query(fallback) if fallback else ''
     parts    = q_clean.split()
 
-    # ── Build query ladder (most specific → broadest) ──
+    # ── Build query ladder ──
     queries = []
-
-    # 1. Cleaned full query
     queries.append(q_clean)
-
-    # 2. Original query as-is
     if q != q_clean:
         queries.append(q)
-
-    # 3. Cleaned fallback
     if fb_clean and fb_clean not in queries:
         queries.append(fb_clean)
-
-    # 4. Original fallback
     if fallback and fallback != q and fallback not in queries:
         queries.append(fallback)
-
-    # 5. Progressive truncation of cleaned query
     if len(parts) > 5:
         queries.append(' '.join(parts[:5]))
     if len(parts) > 3:
         queries.append(' '.join(parts[:3]))
     if len(parts) > 1:
         queries.append(' '.join(parts[:2]))
-
-    # 6. Progressive truncation of cleaned fallback
     if fb_clean:
         fb_parts = fb_clean.split()
         if len(fb_parts) > 2:
@@ -180,7 +218,7 @@ def get_saavn_song():
         if len(fb_parts) > 1:
             queries.append(' '.join(fb_parts[:2]))
 
-    # ── Deduplicate while preserving order ──
+    # Deduplicate
     seen, unique = set(), []
     for query in queries:
         q_strip = query.strip()
@@ -190,12 +228,19 @@ def get_saavn_song():
 
     print(f'[Saavn] Query ladder: {unique}')
 
+    # Try each query with parallel mirrors
     for query in unique:
-        result = fetch_saavn_query(query)
+        result = fetch_saavn_parallel(query)
         if result:
             return jsonify({'success': True, **result})
 
-    print(f'[Saavn ✗] All mirrors + queries failed for: "{q}"')
+    # Last resort: try with very low score threshold
+    print(f'[Saavn] Retrying with low threshold...')
+    result = fetch_saavn_parallel(q_clean, min_score=0.1)
+    if result:
+        return jsonify({'success': True, **result})
+
+    print(f'[Saavn ✗] Failed for: "{q}"')
     return jsonify({'success': False, 'url': None})
 
 
@@ -249,7 +294,7 @@ def stream_audio():
 
 
 # ─────────────────────────────────────────────
-# HEALTH — shows which mirrors are alive
+# HEALTH
 # ─────────────────────────────────────────────
 @app.route('/health')
 def health():
