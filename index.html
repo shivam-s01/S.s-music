@@ -789,7 +789,9 @@ async function _autoFetchFullSong(song){
     if(!d.url) throw new Error('no_url');
 
     // Swap to full song
-    const proxyUrl=`/api/stream?url=${encodeURIComponent(d.url)}`;
+    const proxyUrl = d.url.startsWith('/api/')
+  ? d.url
+  : `/api/stream?url=${encodeURIComponent(d.url)}`;
     const savedTime=audio.currentTime; // try to resume near same position
 
     audio.pause();
@@ -800,16 +802,26 @@ async function _autoFetchFullSong(song){
     if(sbEl) sbEl.classList.add('full-active');
 
     audio.play().then(()=>{
-      if(ctrl.signal.aborted){ audio.pause(); return; }
-      isPlaying=true;
-      currentQuality='full';
-      _fullSongAbort=null;
-      if(pill) pill.classList.remove('loading-full');
-      updateQualityLabel();
-      updatePlayerUI();
-      // Subtle toast — just a small indicator
-      showToast('🎵 Full song');
-    }).catch(()=>{
+
+  if(ctrl.signal.aborted){
+    audio.pause();
+    return;
+  }
+
+  audio.currentTime = savedTime;
+
+  isPlaying = true;
+  currentQuality = 'full';
+  _fullSongAbort = null;
+
+  if(pill) pill.classList.remove('loading-full');
+
+  updateQualityLabel();
+  updatePlayerUI();
+
+  showToast('🎵 Full song');
+
+}).catch(()=>{
       if(ctrl.signal.aborted) return;
       if(pill) pill.classList.remove('loading-full');
       _fallbackToPreview(song, null); // silent fallback
@@ -833,15 +845,39 @@ async function tryFullSong(song){
 }
 
 function _fallbackToPreview(song, msg){
+
   if(!song?.previewUrl) return;
+
   const sb=document.getElementById('fp-seekbar');
-  if(sb){ sb.classList.remove('full-active'); sb.max=30; }
+
+  if(sb){
+    sb.classList.remove('full-active');
+    sb.max=30;
+  }
+
   audio.pause();
-  audio.src=song.previewUrl;
+  audio.src = song.previewUrl;
   audio.load();
-  audio.play().then(()=>{ isPlaying=true; updatePlayerUI(); }).catch(()=>{});
+
+  // ✅ Stable playback
+  audio.oncanplay = () => {
+
+    audio.oncanplay = null;
+
+    audio.play().then(()=>{
+
+      isPlaying = true;
+
+      updatePlayerUI();
+
+    }).catch(()=>{});
+
+  };
+
   currentQuality='preview';
+
   updateQualityLabel();
+
   if(msg) showToast(msg);
 }
 
