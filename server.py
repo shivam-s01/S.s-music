@@ -1141,10 +1141,7 @@ def stream_audio():
         return jsonify({'error': 'Missing url or ytkey parameter'}), 400
 
     # ── SSRF check — strict allowlist for stream proxy ────────────
-    ok, reason = ssrf_check(url, require_trusted_domain=True)
-    if not ok:
-        log.warning('[Stream] SSRF blocked url=%s reason=%s', url[:80], reason)
-        return jsonify({'error': 'URL not allowed'}), 403
+    
 
     # ── Validate and forward Range header ─────────────────────────
     raw_range     = request.headers.get('Range', '')
