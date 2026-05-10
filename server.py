@@ -16,6 +16,8 @@ SAAVN_MIRRORS = [
     'https://saavn-api-eight.vercel.app',
 ]
 
+QUALITY_ORDER = ['320kbps', '160kbps', '96kbps', '48kbps', '12kbps']
+
 
 # ─────────────────────────────────────────────
 # CORS
@@ -28,12 +30,10 @@ def add_cors(resp):
     return resp
 
 @app.after_request
-def after_request(resp):
-    return add_cors(resp)
+def after_request(resp): return add_cors(resp)
 
 @app.route('/<path:path>', methods=['OPTIONS'])
-def options_handler(path):
-    return add_cors(Response(status=200))
+def options_handler(path): return add_cors(Response(status=200))
 
 
 # ─────────────────────────────────────────────
@@ -63,62 +63,233 @@ def get_songs():
 
 
 # ─────────────────────────────────────────────
-# QUERY CLEANER
-# ─────────────────────────────────────────────
-def clean_query(text):
-    text = re.sub(r'\(From\s+["\u201c\u201d\u2018\u2019]?[^)]*["\u201c\u201d\u2018\u2019]?\)', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'\((OST|official|audio|video|lyrics|full\s*song|feat\.?.*?)\)', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'["\u201c\u201d\u2018\u2019\'()]', '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
-
-
-# ─────────────────────────────────────────────
-# TITLE SIMILARITY — wrong song fix
+# TEXT UTILS
 # ─────────────────────────────────────────────
 def normalize(text):
-    text = text.lower()
+    """Standard normalization."""
+    text = (text or '').lower()
     text = re.sub(r'[^a-z0-9\s]', '', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-def title_score(query, song_title, song_artist=''):
-    q = normalize(query)
-    t = normalize(song_title)
-    a = normalize(song_artist)
+def normalize_loose(text):
+    """
+    Loose normalization for Hindi/transliteration variations.
+    Collapses common spelling differences so 'Aashiqui' == 'Ashiqui'.
+    Safe to apply to English too — just collapses double vowels/consonants.
+    """
+    text = normalize(text)
+    text = re.sub(r'aa', 'a', text)   # aashiqui → ashiqui
+    text = re.sub(r'ee', 'i', text)   # beeti → biti
+    text = re.sub(r'oo', 'u', text)   # toone → tune
+    text = re.sub(r'([a-z])\1+', r'\1', text)  # double letters
+    return text.strip()
 
-    q_words = set(q.split())
-    t_words = set(t.split())
-    a_words = set(a.split())
+def clean_query(text):
+    """Strip bracketed qualifiers from track names."""
+    text = re.sub(r'\(From\s+["\u201c\u201d\u2018\u2019]?[^)]*["\u201c\u201d\u2018\u2019]?\)', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\((OST|official|audio|video|lyrics|full\s*song|feat\.?.*?|remaster.*?|remix.*?)\)', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'- (remaster|remix|live|acoustic|radio edit).*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'["\u201c\u201d\u2018\u2019\'()]', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 
-    if not q_words:
-        return 0
+def extract_movie(raw_title):
+    """Pull movie name from '(From "Movie")' pattern."""
+    m = re.search(r'\(From\s+["\u201c\u201d\u2018\u2019]?(.+?)["\u201c\u201d\u2018\u2019]?\)', raw_title, re.IGNORECASE)
+    return m.group(1).strip() if m else ''
 
-    # How many query words appear in title
-    title_matches = len(q_words & t_words) / len(q_words)
-
-    # Bonus if query words appear in artist too
-    artist_bonus = len(q_words & a_words) / len(q_words) * 0.3
-
-    # Big bonus if title starts with query's first word
-    q_first = q.split()[0] if q.split() else ''
-    start_bonus = 0.4 if t.startswith(q_first) else 0
-
-    return title_matches + artist_bonus + start_bonus
+def primary_artist(artist_str):
+    """First artist when multiple are listed."""
+    return re.split(r'[&,]|feat\.|ft\.', artist_str, flags=re.IGNORECASE)[0].strip()
 
 
 # ─────────────────────────────────────────────
-# SINGLE MIRROR FETCH (used in parallel)
+# SCORING FUNCTIONS
 # ─────────────────────────────────────────────
-def fetch_from_mirror(mirror, query, min_score=0.4):
+def text_sim(a, b):
+    """
+    Composite text similarity: Jaccard + coverage + sequence bonus.
+    Applied with both strict and loose normalization; max is used.
+    """
+    def _sim(qa, tb):
+        q_words = qa.split()
+        t_words = tb.split()
+        q_set, t_set = set(q_words), set(t_words)
+        if not q_set or not t_set:
+            return 0.0
+        if qa == tb:
+            return 1.0
+        inter  = len(q_set & t_set)
+        union  = len(q_set | t_set)
+        jaccard   = inter / union if union else 0
+        coverage  = inter / len(q_set)
+        seq_bonus = 0.0
+        for n in range(min(5, len(q_words)), 1, -1):
+            if ' '.join(q_words[:n]) in tb:
+                seq_bonus = 0.12 * n
+                break
+        extra_penalty = min(len(t_set - q_set) * 0.04, 0.25)
+        return max(0.0, jaccard * 0.35 + coverage * 0.35 + seq_bonus - extra_penalty)
+
+    strict = _sim(normalize(a), normalize(b))
+    loose  = _sim(normalize_loose(a), normalize_loose(b))
+    return round(max(strict, loose), 4)
+
+def duration_score(itunes_sec, saavn_sec):
+    """Returns score 0-1 or None if unknown."""
+    if itunes_sec <= 0 or saavn_sec <= 0:
+        return None
+    diff = abs(itunes_sec - saavn_sec)
+    if   diff <= 2:  return 1.0
+    elif diff <= 5:  return 0.75
+    elif diff <= 10: return 0.40
+    elif diff <= 20: return 0.10
+    else:            return 0.0
+
+def composite_score(clean_title, clean_artist, duration_sec, album, year, saavn_song):
+    """
+    Final composite match score.
+
+    Weights (duration available):
+      Duration 45% | Title 28% | Artist 17% | Album 7% | Year 3%
+    Weights (no duration):
+      Title 55%    | Artist 30% | Album 10% | Year 5%
+    """
+    s_title  = saavn_song.get('name')  or saavn_song.get('title', '')
+    s_artist = saavn_song.get('primaryArtists') or saavn_song.get('primary_artists', '')
+    s_dur    = int(saavn_song.get('duration') or 0)
+    s_album  = ''
+    alb = saavn_song.get('album')
+    if isinstance(alb, dict):
+        s_album = alb.get('name', '')
+    elif isinstance(alb, str):
+        s_album = alb
+    s_year = str(saavn_song.get('year') or '')
+
+    t = text_sim(clean_title,  s_title)
+    a = text_sim(clean_artist, s_artist)
+    d = duration_score(duration_sec, s_dur)
+
+    # Album bonus
+    alb_score = text_sim(album, s_album) * 0.5 if album and s_album else 0.0
+
+    # Year bonus
+    yr_score = 0.10 if (year and s_year and str(year) in s_year) else 0.0
+
+    if d is not None:
+        base = t * 0.28 + a * 0.17 + d * 0.45
+    else:
+        base = t * 0.55 + a * 0.30
+
+    return round(base + alb_score * 0.07 + yr_score * 0.03, 4)
+
+
+# ─────────────────────────────────────────────
+# QUERY BUILDER — comprehensive coverage
+# ─────────────────────────────────────────────
+def build_queries(raw_title, raw_artist, collection=''):
+    """
+    Build a ranked list of search queries covering all strategies.
+    Handles Bollywood (movie extraction), English, 90s albums, featuring artists, etc.
+    """
+    movie        = extract_movie(raw_title)
+    ct           = clean_query(raw_title)    # clean title
+    ca           = clean_query(raw_artist)   # clean full artist
+    pa           = primary_artist(ca)        # first artist only
+    clean_album  = clean_query(collection) if collection else ''
+    t_words      = ct.split()
+
+    queries = []
+
+    # ── Bollywood: title + movie name ──
+    if movie:
+        cm = clean_query(movie)
+        queries += [
+            f"{ct} {cm}",
+            f"{ct} {cm} {pa}",
+            f"{ct} {pa} {cm}",
+        ]
+
+    # ── Universal: title + artist combos ──
+    queries += [
+        f"{ct} {pa}",
+        f"{ct} {ca}",
+        f"{pa} {ct}",
+        ct,
+    ]
+
+    # ── Shortened title variants (long titles) ──
+    if len(t_words) > 4:
+        short = ' '.join(t_words[:4])
+        queries += [f"{short} {pa}", short]
+    if len(t_words) > 2:
+        queries.append(' '.join(t_words[:3]) + ' ' + pa)
+        queries.append(' '.join(t_words[:2]) + ' ' + pa)
+
+    # ── Album-based (90s songs where album is iconic) ──
+    if clean_album:
+        queries += [
+            f"{ct} {clean_album}",
+            f"{clean_album} {ct}",
+        ]
+
+    # ── Loose title (handles double-vowel variations) ──
+    ct_loose = normalize_loose(ct)
+    pa_loose = normalize_loose(pa)
+    if ct_loose != normalize(ct):
+        queries += [f"{ct_loose} {pa_loose}", ct_loose]
+
+    # Deduplicate preserving order
+    seen, unique = set(), []
+    for q in queries:
+        q = q.strip()
+        if q and q not in seen:
+            seen.add(q)
+            unique.append(q)
+
+    return unique
+
+
+# ─────────────────────────────────────────────
+# BEST QUALITY URL
+# ─────────────────────────────────────────────
+def get_best_url(urls):
+    if not urls:
+        return None, None
+    url_map = {}
+    for item in urls:
+        q = (item.get('quality') or '').strip().lower()
+        u = item.get('url') or item.get('link') or ''
+        if u:
+            url_map[q] = u
+    for preferred in QUALITY_ORDER:
+        if preferred in url_map:
+            return url_map[preferred], preferred
+    for item in reversed(urls):
+        u = item.get('url') or item.get('link') or ''
+        if u:
+            return u, item.get('quality', 'unknown')
+    return None, None
+
+
+# ─────────────────────────────────────────────
+# FETCH FROM ONE MIRROR — returns all scored candidates
+# ─────────────────────────────────────────────
+def fetch_candidates_from_mirror(mirror, query, clean_title, clean_artist,
+                                  duration_sec, album, year):
+    """
+    Returns list of scored candidate dicts from a single mirror+query combo.
+    """
     endpoints = ['/api/search/songs', '/api/search', '/search/songs']
+    candidates = []
 
     for endpoint in endpoints:
         try:
             r = requests.get(
                 f'{mirror}{endpoint}',
                 params={'query': query, 'q': query, 'limit': 10},
-                timeout=8,  # shorter timeout per mirror
+                timeout=7,
                 headers={'User-Agent': 'Mozilla/5.0'}
             )
             if r.status_code != 200:
@@ -131,116 +302,147 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
                 data.get('songs', {}).get('results') or
                 []
             )
-
-            best_song = None
-            best_score = -1
+            if not results:
+                continue
 
             for song in results:
-                song_title  = song.get('name') or song.get('title', '')
-                song_artist = song.get('primaryArtists') or song.get('primary_artists', '')
-                score = title_score(query, song_title, song_artist)
+                score = composite_score(clean_title, clean_artist,
+                                        duration_sec, album, year, song)
+                urls = song.get('downloadUrl') or song.get('download_url') or []
+                best_url, best_quality = get_best_url(urls)
+                if best_url:
+                    candidates.append({
+                        'url':     best_url,
+                        'quality': best_quality,
+                        'title':   song.get('name') or song.get('title', ''),
+                        'artist':  song.get('primaryArtists') or song.get('primary_artists', ''),
+                        'score':   score,
+                        '_dur':    int(song.get('duration') or 0),
+                        '_mirror': mirror,
+                        '_query':  query,
+                    })
 
-                if score > best_score:
-                    best_score = score
-                    best_song  = song
-
-            if best_song and best_score >= min_score:
-                urls = best_song.get('downloadUrl') or best_song.get('download_url') or []
-                for item in reversed(urls):
-                    url = item.get('url') or item.get('link')
-                    if url:
-                        print(f'[Saavn ✓] mirror={mirror} score={best_score:.2f} query="{query}" title="{best_song.get("name","")}"')
-                        return {
-                            'url':     url,
-                            'quality': item.get('quality', '320kbps'),
-                            'title':   best_song.get('name') or best_song.get('title', ''),
-                            'artist':  best_song.get('primaryArtists') or best_song.get('primary_artists', ''),
-                            'score':   best_score,
-                        }
+            # Got results from this endpoint — no need to try others for same mirror
+            break
 
         except Exception as e:
-            print(f'[Saavn] {mirror}{endpoint} failed: {e}')
+            print(f'[Saavn] {mirror}{endpoint}: {e}')
             continue
 
-    return None
+    return candidates
 
 
 # ─────────────────────────────────────────────
-# PARALLEL MIRROR FETCH — fastest mirror wins
+# GLOBAL BEST MATCH — all queries × all mirrors in parallel
 # ─────────────────────────────────────────────
-def fetch_saavn_parallel(query, min_score=0.4):
-    with ThreadPoolExecutor(max_workers=len(SAAVN_MIRRORS)) as executor:
+def find_best_match(queries, clean_title, clean_artist,
+                    duration_sec, album, year, min_score=0.30):
+    """
+    Fire EVERY query against EVERY mirror simultaneously.
+    Collect all candidates, return the one with highest composite score.
+    This is the key improvement over sequential search.
+    """
+    all_candidates = []
+
+    # Limit to top N queries to avoid too many requests
+    top_queries = queries[:8]
+
+    jobs = [
+        (mirror, query)
+        for query in top_queries
+        for mirror in SAAVN_MIRRORS
+    ]
+
+    with ThreadPoolExecutor(max_workers=min(len(jobs), 24)) as executor:
         futures = {
-            executor.submit(fetch_from_mirror, mirror, query, min_score): mirror
-            for mirror in SAAVN_MIRRORS
+            executor.submit(
+                fetch_candidates_from_mirror,
+                mirror, query,
+                clean_title, clean_artist,
+                duration_sec, album, year
+            ): (mirror, query)
+            for mirror, query in jobs
         }
-        for future in as_completed(futures):
-            result = future.result()
-            if result:
-                return result
+        for future in as_completed(futures, timeout=12):
+            try:
+                candidates = future.result()
+                all_candidates.extend(candidates)
+            except Exception:
+                pass
+
+    if not all_candidates:
+        return None
+
+    # Sort by score descending
+    all_candidates.sort(key=lambda x: x['score'], reverse=True)
+    best = all_candidates[0]
+
+    print(
+        f'[Saavn BEST] score={best["score"]} quality={best["quality"]} '
+        f'dur_diff={abs(duration_sec - best["_dur"])}s '
+        f'query="{best["_query"]}" -> "{best["title"]}" by "{best["artist"]}"'
+    )
+
+    if best['score'] >= min_score:
+        return {k: v for k, v in best.items() if not k.startswith('_')}
+
     return None
 
 
 # ─────────────────────────────────────────────
 # JIOSAAVN ENDPOINT
+# Accepts: q, fallback, artist, duration, album, year
 # ─────────────────────────────────────────────
 @app.route('/api/saavn')
 def get_saavn_song():
-    q        = request.args.get('q', '').strip()
-    fallback = request.args.get('fallback', '').strip()
+    raw_q        = request.args.get('q', '').strip()
+    raw_fallback = request.args.get('fallback', '').strip()
+    raw_artist   = request.args.get('artist', '').strip()
+    duration_sec = int(request.args.get('duration', 0) or 0)
+    raw_album    = request.args.get('album', '').strip()
+    raw_year     = request.args.get('year', '').strip()
 
-    if not q:
+    if not raw_q:
         return jsonify({'success': False, 'url': None})
 
-    q_clean  = clean_query(q)
-    fb_clean = clean_query(fallback) if fallback else ''
-    parts    = q_clean.split()
+    clean_title  = clean_query(raw_q)
+    clean_artist = clean_query(raw_artist)
+    clean_album  = clean_query(raw_album)
 
-    # ── Build query ladder ──
-    queries = []
-    queries.append(q_clean)
-    if q != q_clean:
-        queries.append(q)
-    if fb_clean and fb_clean not in queries:
-        queries.append(fb_clean)
-    if fallback and fallback != q and fallback not in queries:
-        queries.append(fallback)
-    if len(parts) > 5:
-        queries.append(' '.join(parts[:5]))
-    if len(parts) > 3:
-        queries.append(' '.join(parts[:3]))
-    if len(parts) > 1:
-        queries.append(' '.join(parts[:2]))
-    if fb_clean:
-        fb_parts = fb_clean.split()
-        if len(fb_parts) > 2:
-            queries.append(' '.join(fb_parts[:3]))
-        if len(fb_parts) > 1:
-            queries.append(' '.join(fb_parts[:2]))
+    queries = build_queries(raw_q, raw_artist, raw_album)
 
-    # Deduplicate
-    seen, unique = set(), []
-    for query in queries:
-        q_strip = query.strip()
-        if q_strip and q_strip not in seen:
-            seen.add(q_strip)
-            unique.append(q_strip)
+    # Add fallback variants if provided
+    if raw_fallback:
+        fb_clean = clean_query(raw_fallback)
+        if fb_clean and fb_clean not in queries:
+            queries.insert(2, fb_clean)
 
-    print(f'[Saavn] Query ladder: {unique}')
+    print(
+        f'[Saavn] title="{clean_title}" artist="{clean_artist}" '
+        f'album="{clean_album}" dur={duration_sec}s year={raw_year} '
+        f'queries({len(queries)})={queries[:5]}...'
+    )
 
-    # Try each query with parallel mirrors
-    for query in unique:
-        result = fetch_saavn_parallel(query)
-        if result:
-            return jsonify({'success': True, **result})
-
-    # Last resort: try with very low score threshold
-    print(f'[Saavn] Retrying with low threshold...')
-    result = fetch_saavn_parallel(q_clean, min_score=0.1)
+    # ── Phase 1: full scoring, all queries, all mirrors ──
+    result = find_best_match(
+        queries, clean_title, clean_artist,
+        duration_sec, clean_album, raw_year,
+        min_score=0.30
+    )
     if result:
         return jsonify({'success': True, **result})
 
-    print(f'[Saavn ✗] Failed for: "{q}"')
+    # ── Phase 2: lower threshold (song might have very different metadata) ──
+    print(f'[Saavn] Phase 2 low-threshold for "{clean_title}"')
+    result = find_best_match(
+        queries[:4], clean_title, clean_artist,
+        duration_sec, clean_album, raw_year,
+        min_score=0.10
+    )
+    if result:
+        return jsonify({'success': True, **result})
+
+    print(f'[Saavn MISS] "{raw_q}"')
     return jsonify({'success': False, 'url': None})
 
 
@@ -252,7 +454,6 @@ def stream_audio():
     url = request.args.get('url', '').strip()
     if not url:
         return jsonify({'error': 'Missing URL'}), 400
-
     try:
         headers = {
             'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
@@ -260,9 +461,9 @@ def stream_audio():
             'Accept-Language': 'en-US,en;q=0.9',
             'Connection':      'keep-alive',
         }
-        range_header = request.headers.get('Range')
-        if range_header:
-            headers['Range'] = range_header
+        rng = request.headers.get('Range')
+        if rng:
+            headers['Range'] = rng
 
         upstream = requests.get(url, headers=headers, stream=True, timeout=60, allow_redirects=True)
 
@@ -286,7 +487,6 @@ def stream_audio():
             headers=resp_headers,
             direct_passthrough=True
         )
-
     except requests.exceptions.Timeout:
         return jsonify({'error': 'Stream timeout'}), 504
     except Exception as e:
@@ -301,11 +501,8 @@ def health():
     mirror_status = {}
     for mirror in SAAVN_MIRRORS:
         try:
-            r = requests.get(
-                f'{mirror}/api/search/songs',
-                params={'query': 'test', 'limit': 1},
-                timeout=5
-            )
+            r = requests.get(f'{mirror}/api/search/songs',
+                             params={'query': 'test', 'limit': 1}, timeout=5)
             mirror_status[mirror] = r.status_code
         except Exception as e:
             mirror_status[mirror] = f'down ({str(e)[:40]})'
