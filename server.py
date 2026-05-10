@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, send_file, Response, stream_with_context
 import requests
+import re
 import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -57,21 +58,58 @@ def get_songs():
         )
 
         data = r.json()
-
-        results = [
-            s for s in data.get('results', [])
-            if s.get('previewUrl')
-        ]
-
-        return jsonify({
-            'results': results
-        })
+        results = [s for s in data.get('results', []) if s.get('previewUrl')]
+        return jsonify({'results': results})
 
     except Exception as e:
-        return jsonify({
-            'results': [],
-            'error': str(e)
-        })
+        return jsonify({'results': [], 'error': str(e)})
+
+
+# ─────────────────────────────────────────────
+# HELPERS
+# ─────────────────────────────────────────────
+def clean_title(title):
+    """Remove (feat. ...), [Remastered], etc. from song title."""
+    title = re.sub(r'\(.*?\)', '', title)
+    title = re.sub(r'\[.*?\]', '', title)
+    return title.strip()
+
+
+def clean_artist(artist):
+    """Take only the first artist (before & , feat. ft.)."""
+    artist = re.split(r'[&,]|feat\.|ft\.', artist, flags=re.IGNORECASE)[0]
+    return artist.strip()
+
+
+def fetch_saavn(query):
+    """Hit saavn.dev and return best download URL or None."""
+    try:
+        r = requests.get(
+            'https://saavn.dev/api/search/songs',
+            params={'query': query, 'limit': 10},
+            timeout=20,
+            headers={'User-Agent': 'Mozilla/5.0'}
+        )
+        data = r.json()
+        results = data.get('data', {}).get('results', [])
+
+        for song in results:
+            download_urls = song.get('downloadUrl', [])
+            if not download_urls:
+                continue
+            # Prefer highest quality (last in list)
+            for item in reversed(download_urls):
+                url = item.get('url')
+                if url:
+                    return {
+                        'url': url,
+                        'quality': item.get('quality', '320kbps'),
+                        'title': song.get('name'),
+                        'artist': song.get('primaryArtists')
+                    }
+    except Exception:
+        pass
+    return None
 
 
 # ─────────────────────────────────────────────
@@ -79,70 +117,39 @@ def get_songs():
 # ─────────────────────────────────────────────
 @app.route('/api/saavn')
 def get_saavn_song():
-
     q = request.args.get('q', '').strip()
-
     if not q:
-        return jsonify({
-            'success': False,
-            'url': None
-        })
+        return jsonify({'success': False, 'url': None})
 
-    try:
+    # Parse incoming query into title + artist parts
+    # Frontend sends: "Song Title Artist Name"
+    # We try progressively simpler queries to maximise hit rate
+    parts = q.split(' ')
 
-        r = requests.get(
-            'https://saavn.dev/api/search/songs',
-            params={
-                'query': q,
-                'limit': 10
-            },
-            timeout=20,
-            headers={
-                'User-Agent': 'Mozilla/5.0'
-            }
-        )
+    # Strategy 1: cleaned query as-is (frontend already cleaned it)
+    result = fetch_saavn(q)
+    if result:
+        return jsonify({'success': True, **result})
 
-        data = r.json()
+    # Strategy 2: first 5 words (handles long titles with extra metadata)
+    if len(parts) > 5:
+        result = fetch_saavn(' '.join(parts[:5]))
+        if result:
+            return jsonify({'success': True, **result})
 
-        results = data.get('data', {}).get('results', [])
+    # Strategy 3: first 3 words (title-only approximation)
+    if len(parts) > 3:
+        result = fetch_saavn(' '.join(parts[:3]))
+        if result:
+            return jsonify({'success': True, **result})
 
-        if not results:
-            return jsonify({
-                'success': False,
-                'url': None
-            })
+    # Strategy 4: just the first 2 words (last resort, song name)
+    if len(parts) > 1:
+        result = fetch_saavn(' '.join(parts[:2]))
+        if result:
+            return jsonify({'success': True, **result})
 
-        for song in results:
-
-            download_urls = song.get('downloadUrl', [])
-
-            if not download_urls:
-                continue
-
-            best = download_urls[-1]
-
-            url = best.get('url')
-
-            if url:
-                return jsonify({
-                    'success': True,
-                    'url': url,
-                    'quality': best.get('quality', '320kbps'),
-                    'title': song.get('name'),
-                    'artist': song.get('primaryArtists')
-                })
-
-        return jsonify({
-            'success': False,
-            'url': None
-        })
-
-    except Exception as e:
-        return jsonify({
-            'success': False,
-            'url': None,
-            'error': str(e)
-        })
+    return jsonify({'success': False, 'url': None})
 
 
 # ─────────────────────────────────────────────
@@ -150,16 +157,11 @@ def get_saavn_song():
 # ─────────────────────────────────────────────
 @app.route('/api/stream')
 def stream_audio():
-
     url = request.args.get('url', '').strip()
-
     if not url:
-        return jsonify({
-            'error': 'Missing URL'
-        }), 400
+        return jsonify({'error': 'Missing URL'}), 400
 
     try:
-
         headers = {
             'User-Agent': 'Mozilla/5.0',
             'Accept': '*/*',
@@ -167,7 +169,6 @@ def stream_audio():
         }
 
         range_header = request.headers.get('Range')
-
         if range_header:
             headers['Range'] = range_header
 
@@ -179,16 +180,10 @@ def stream_audio():
             allow_redirects=True
         )
 
-        excluded_headers = [
-            'content-encoding',
-            'transfer-encoding',
-            'connection'
-        ]
-
+        excluded_headers = ['content-encoding', 'transfer-encoding', 'connection']
         response_headers = {}
 
         for name, value in upstream.headers.items():
-
             if name.lower() not in excluded_headers:
                 response_headers[name] = value
 
@@ -199,10 +194,8 @@ def stream_audio():
         def generate():
             try:
                 for chunk in upstream.iter_content(chunk_size=1024 * 64):
-
                     if chunk:
                         yield chunk
-
             finally:
                 upstream.close()
 
@@ -214,71 +207,10 @@ def stream_audio():
         )
 
     except requests.exceptions.Timeout:
-        return jsonify({
-            'error': 'Stream timeout'
-        }), 504
+        return jsonify({'error': 'Stream timeout'}), 504
 
     except Exception as e:
-        return jsonify({
-            'error': str(e)
-        }), 500
-
-
-# ─────────────────────────────────────────────
-# YOUTUBE SEARCH
-# ─────────────────────────────────────────────
-@app.route('/api/search')
-def search_youtube():
-
-    q = request.args.get('q', '').strip()
-
-    if not q:
-        return jsonify({
-            'videoId': None
-        })
-
-    api_key = os.environ.get('YT_API_KEY', '')
-
-    if not api_key:
-        return jsonify({
-            'videoId': None,
-            'error': 'Missing API key'
-        })
-
-    try:
-
-        r = requests.get(
-            'https://www.googleapis.com/youtube/v3/search',
-            params={
-                'part': 'snippet',
-                'q': q,
-                'type': 'video',
-                'maxResults': 1,
-                'key': api_key
-            },
-            timeout=15
-        )
-
-        data = r.json()
-
-        items = data.get('items', [])
-
-        if not items:
-            return jsonify({
-                'videoId': None
-            })
-
-        video_id = items[0]['id']['videoId']
-
-        return jsonify({
-            'videoId': video_id
-        })
-
-    except Exception as e:
-        return jsonify({
-            'videoId': None,
-            'error': str(e)
-        })
+        return jsonify({'error': str(e)}), 500
 
 
 # ─────────────────────────────────────────────
@@ -286,21 +218,12 @@ def search_youtube():
 # ─────────────────────────────────────────────
 @app.route('/health')
 def health():
-    return jsonify({
-        'status': 'ok'
-    })
+    return jsonify({'status': 'ok'})
 
 
 # ─────────────────────────────────────────────
 # RUN
 # ─────────────────────────────────────────────
 if __name__ == '__main__':
-
     port = int(os.environ.get('PORT', 7700))
-
-    app.run(
-        host='0.0.0.0',
-        port=port,
-        threaded=True,
-        debug=False
-    )
+    app.run(host='0.0.0.0', port=port, threaded=True, debug=False)
