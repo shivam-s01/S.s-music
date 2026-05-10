@@ -43,7 +43,6 @@ def index():
 @app.route('/api/songs')
 def get_songs():
     q = request.args.get('q', 'top songs')
-
     try:
         r = requests.get(
             'https://itunes.apple.com/search',
@@ -56,38 +55,28 @@ def get_songs():
             },
             timeout=15
         )
-
         data = r.json()
         results = [s for s in data.get('results', []) if s.get('previewUrl')]
         return jsonify({'results': results})
-
     except Exception as e:
         return jsonify({'results': [], 'error': str(e)})
 
 
 # ─────────────────────────────────────────────
-# HELPERS
+# YT HEADERS CACHE  (in-memory, per process)
 # ─────────────────────────────────────────────
-def clean_title(title):
-    """Remove (feat. ...), [Remastered], etc. from song title."""
-    title = re.sub(r'\(.*?\)', '', title)
-    title = re.sub(r'\[.*?\]', '', title)
-    return title.strip()
+_yt_headers_cache = {}
 
 
-def clean_artist(artist):
-    """Take only the first artist (before & , feat. ft.)."""
-    artist = re.split(r'[&,]|feat\.|ft\.', artist, flags=re.IGNORECASE)[0]
-    return artist.strip()
-
-
+# ─────────────────────────────────────────────
+# SAAVN FETCH
+# ─────────────────────────────────────────────
 def fetch_saavn(query):
-    """Hit saavn.dev and return best download URL or None."""
     try:
         r = requests.get(
             'https://saavn.dev/api/search/songs',
             params={'query': query, 'limit': 10},
-            timeout=20,
+            timeout=15,
             headers={'User-Agent': 'Mozilla/5.0'}
         )
         data = r.json()
@@ -97,23 +86,93 @@ def fetch_saavn(query):
             download_urls = song.get('downloadUrl', [])
             if not download_urls:
                 continue
-            # Prefer highest quality (last in list)
             for item in reversed(download_urls):
                 url = item.get('url')
                 if url:
                     return {
-                        'url': url,
+                        'url':     url,
                         'quality': item.get('quality', '320kbps'),
-                        'title': song.get('name'),
-                        'artist': song.get('primaryArtists')
+                        'title':   song.get('name'),
+                        'artist':  song.get('primaryArtists'),
+                        'source':  'saavn'
                     }
-    except Exception:
-        pass
+    except Exception as e:
+        print(f'[Saavn] error: {e}')
     return None
 
 
 # ─────────────────────────────────────────────
-# JIOSAAVN FULL SONG
+# YT-DLP FETCH
+# ─────────────────────────────────────────────
+def fetch_ytdlp(title, artist):
+    try:
+        import yt_dlp
+
+        query = f"{title} {artist} official audio"
+
+        ydl_opts = {
+            'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+            'quiet':        True,
+            'no_warnings':  True,
+            'noplaylist':   True,
+            'extract_flat': False,
+            'socket_timeout': 20,
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+
+            if not info or 'entries' not in info or not info['entries']:
+                return None
+
+            entry = info['entries'][0]
+            if not entry:
+                return None
+
+            # Best audio-only format
+            formats = entry.get('formats', [])
+            audio_formats = [
+                f for f in formats
+                if f.get('vcodec') in ('none', None)
+                and f.get('acodec') not in ('none', None)
+                and f.get('url')
+            ]
+
+            if audio_formats:
+                best = sorted(
+                    audio_formats,
+                    key=lambda x: float(x.get('abr') or 0),
+                    reverse=True
+                )[0]
+                url = best.get('url')
+                http_headers = best.get('http_headers', entry.get('http_headers', {}))
+            else:
+                url = entry.get('url')
+                http_headers = entry.get('http_headers', {})
+
+            if not url:
+                return None
+
+            # Cache headers for proxy
+            _yt_headers_cache[url[:80]] = dict(http_headers)
+
+            return {
+                'url':     url,
+                'quality': 'YouTube Audio',
+                'title':   entry.get('title', title),
+                'artist':  artist,
+                'source':  'youtube'
+            }
+
+    except ImportError:
+        print('[yt-dlp] not installed')
+    except Exception as e:
+        print(f'[yt-dlp] error: {e}')
+    return None
+
+
+# ─────────────────────────────────────────────
+# JIOSAAVN  →  yt-dlp  fallback chain
 # ─────────────────────────────────────────────
 @app.route('/api/saavn')
 def get_saavn_song():
@@ -121,34 +180,37 @@ def get_saavn_song():
     if not q:
         return jsonify({'success': False, 'url': None})
 
-    # Parse incoming query into title + artist parts
-    # Frontend sends: "Song Title Artist Name"
-    # We try progressively simpler queries to maximise hit rate
-    parts = q.split(' ')
+    parts = q.split()
 
-    # Strategy 1: cleaned query as-is (frontend already cleaned it)
-    result = fetch_saavn(q)
+    # ── Saavn: progressively simpler queries ──
+    saavn_queries = [q]
+    if len(parts) > 5:
+        saavn_queries.append(' '.join(parts[:5]))
+    if len(parts) > 3:
+        saavn_queries.append(' '.join(parts[:3]))
+    if len(parts) > 1:
+        saavn_queries.append(' '.join(parts[:2]))
+
+    for query in saavn_queries:
+        result = fetch_saavn(query)
+        if result:
+            print(f'[Saavn ✓] {query}')
+            return jsonify({'success': True, **result})
+
+    print(f'[Saavn ✗] not found — trying yt-dlp | query: {q}')
+
+    # ── yt-dlp fallback ──
+    # Frontend sends "CleanTitle FirstArtist", split roughly at midpoint
+    mid = max(1, len(parts) // 2)
+    title_part  = ' '.join(parts[:mid])
+    artist_part = ' '.join(parts[mid:]) if len(parts) > mid else ''
+
+    result = fetch_ytdlp(title_part, artist_part)
     if result:
+        print(f'[yt-dlp ✓] {title_part} – {artist_part}')
         return jsonify({'success': True, **result})
 
-    # Strategy 2: first 5 words (handles long titles with extra metadata)
-    if len(parts) > 5:
-        result = fetch_saavn(' '.join(parts[:5]))
-        if result:
-            return jsonify({'success': True, **result})
-
-    # Strategy 3: first 3 words (title-only approximation)
-    if len(parts) > 3:
-        result = fetch_saavn(' '.join(parts[:3]))
-        if result:
-            return jsonify({'success': True, **result})
-
-    # Strategy 4: just the first 2 words (last resort, song name)
-    if len(parts) > 1:
-        result = fetch_saavn(' '.join(parts[:2]))
-        if result:
-            return jsonify({'success': True, **result})
-
+    print(f'[yt-dlp ✗] not found | {title_part} – {artist_part}')
     return jsonify({'success': False, 'url': None})
 
 
@@ -163,11 +225,21 @@ def stream_audio():
 
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0',
-            'Accept': '*/*',
-            'Connection': 'keep-alive'
+            'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept':          '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Connection':      'keep-alive',
+            'Sec-Fetch-Dest':  'audio',
+            'Sec-Fetch-Mode':  'no-cors',
+            'Sec-Fetch-Site':  'cross-site',
         }
 
+        # Merge cached yt-dlp headers (needed for YouTube URLs)
+        cache_key = url[:80]
+        if cache_key in _yt_headers_cache:
+            headers.update(_yt_headers_cache[cache_key])
+
+        # Range support — critical for seeking
         range_header = request.headers.get('Range')
         if range_header:
             headers['Range'] = range_header
@@ -180,20 +252,18 @@ def stream_audio():
             allow_redirects=True
         )
 
-        excluded_headers = ['content-encoding', 'transfer-encoding', 'connection']
-        response_headers = {}
-
-        for name, value in upstream.headers.items():
-            if name.lower() not in excluded_headers:
-                response_headers[name] = value
-
+        excluded = {'content-encoding', 'transfer-encoding', 'connection'}
+        response_headers = {
+            k: v for k, v in upstream.headers.items()
+            if k.lower() not in excluded
+        }
         response_headers['Access-Control-Allow-Origin'] = '*'
-        response_headers['Accept-Ranges'] = 'bytes'
-        response_headers['Cache-Control'] = 'no-cache'
+        response_headers['Accept-Ranges']               = 'bytes'
+        response_headers['Cache-Control']               = 'no-cache'
 
         def generate():
             try:
-                for chunk in upstream.iter_content(chunk_size=1024 * 64):
+                for chunk in upstream.iter_content(chunk_size=65536):
                     if chunk:
                         yield chunk
             finally:
@@ -208,7 +278,6 @@ def stream_audio():
 
     except requests.exceptions.Timeout:
         return jsonify({'error': 'Stream timeout'}), 504
-
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
