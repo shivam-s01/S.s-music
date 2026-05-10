@@ -1239,7 +1239,10 @@ async function tryFullSong(song){
   _fullSongAbort = ctrl;
 
   try{
-    const q = encodeURIComponent(`${song.trackName} ${song.artistName}`);
+    // Clean artist: take only first artist (before & , feat. ft.)
+    const cleanArtist = (song.artistName||'').split(/[&,]|feat\.|ft\./i)[0].trim();
+    const cleanTitle  = (song.trackName||'').replace(/\(.*?\)|\[.*?\]/g,'').trim();
+    const q = encodeURIComponent(`${cleanTitle} ${cleanArtist}`);
     const r = await fetch(`/api/saavn?q=${q}`, { signal: ctrl.signal });
     if(!r.ok) throw new Error('saavn_err');
     const d = await r.json();
