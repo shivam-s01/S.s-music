@@ -1,3 +1,4 @@
+cat > ~/server.py << 'EOF'
 from flask import Flask, request, jsonify, send_file
 import requests, os
 
@@ -30,8 +31,7 @@ def get_saavn():
         data = r.json()
         results = data.get('data', {}).get('results', [])
         for result in results:
-            urls = result.get('downloadUrl', [])
-            for item in reversed(urls):
+            for item in reversed(result.get('downloadUrl', [])):
                 if item.get('url'):
                     return jsonify({'url': item['url']})
         return jsonify({'url': None})
@@ -57,3 +57,4 @@ def search_youtube():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 7700))
     app.run(host='0.0.0.0', port=port, debug=False)
+EOF
