@@ -1,4 +1,3 @@
-cat > ~/server.py << 'EOF'
 from flask import Flask, request, jsonify, send_file
 import requests, os
 
@@ -57,4 +56,3 @@ def search_youtube():
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 7700))
     app.run(host='0.0.0.0', port=port, debug=False)
-EOF
