@@ -291,24 +291,13 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
 /* ─── Playlist songs in detail ─── */
 #pl-songs-list .song-row{position:relative;}
 
-/* ─── YouTube Overlay ─── */
-#yt-overlay{position:absolute;inset:0;background:var(--bg);z-index:600;display:flex;flex-direction:column;transform:translateY(100%);transition:transform .45s cubic-bezier(0.4,0,0.2,1);}
-.yt-header{display:flex;align-items:center;justify-content:space-between;padding:54px 24px 16px;flex-shrink:0;}
-.yt-meta{min-width:0;flex:1;margin-right:12px;}
-.yt-label{font-size:12px;color:var(--gold);font-weight:600;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:6px;}
-.yt-title{font-size:18px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.yt-artist{font-size:13px;color:var(--text2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.yt-close-btn{background:var(--surface2);border:1px solid var(--border);border-radius:50%;width:40px;height:40px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
-.yt-close-btn svg{width:18px;height:18px;stroke:var(--text);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
-.yt-iframe-wrap{flex:1;padding:0 16px;min-height:0;position:relative;}
-.yt-iframe-wrap iframe{width:100%;height:100%;border:none;border-radius:var(--r2);background:var(--surface2);display:block;}
-/* Tap to play hint */
-.yt-tap-hint{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.8);color:var(--text2);font-size:11px;font-family:'Sora',sans-serif;padding:6px 14px;border-radius:100px;pointer-events:none;white-space:nowrap;opacity:1;transition:opacity 1s;backdrop-filter:blur(8px);}
-.yt-tap-hint.hidden{opacity:0;}
-.yt-footer{padding:14px 24px 40px;display:flex;align-items:center;justify-content:center;gap:10px;flex-shrink:0;}
-.yt-footer a,.yt-footer button{font-size:11px;color:var(--text3);background:none;border:none;cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:5px;font-family:'Sora',sans-serif;}
-.yt-footer a svg,.yt-footer button svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
-.yt-sep{color:var(--text3);font-size:11px;}
+/* ─── Full Song Loading State ─── */
+.quality-pill.loading-full{border-color:rgba(201,168,76,0.5);animation:pill-pulse 1s ease-in-out infinite alternate;}
+@keyframes pill-pulse{from{box-shadow:0 0 0 0 rgba(201,168,76,0);}to{box-shadow:0 0 0 4px rgba(201,168,76,0.15);}}
+.quality-pill.loading-full #quality-label{color:var(--gold);}
+/* Full song active glow on seekbar */
+.fp-seekbar.full-active::-webkit-slider-runnable-track{background:linear-gradient(to right,var(--gold-l) var(--prog,0%),var(--surface3) var(--prog,0%));}
+.fp-seekbar.full-active::-webkit-slider-thumb{background:var(--gold-l);box-shadow:0 0 6px rgba(201,168,76,0.6);}
 </style>
 </head>
 <body>
@@ -615,7 +604,7 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
             <div class="qo-desc">Streams via JioSaavn · Full track length</div>
           </div>
         </div>
-        <span class="quality-badge ext" id="q-badge-full">↗ Find</span>
+        <span class="quality-badge ext" id="q-badge-full">▶ Stream</span>
       </div>
 
       <div class="qs-dl-row">
@@ -800,6 +789,12 @@ function playSongs(queue, index){
 
 function loadTrack(song){
   if(!song||!song.previewUrl) return;
+  // Cancel any pending full-song fetch when switching tracks
+  if(_fullSongAbort){ _fullSongAbort.abort(); _fullSongAbort=null; }
+  const pill = document.querySelector('.quality-pill');
+  if(pill) pill.classList.remove('loading-full');
+  const sb = document.getElementById('fp-seekbar');
+  if(sb) sb.classList.remove('full-active');
   currentTrack=song;
   // Reset to preview mode when loading a new track
   currentQuality='preview';
@@ -851,21 +846,34 @@ function toggleRepeat(){
 }
 
 audio.addEventListener('ended',()=>{if(!repeat) nextTrack();});
+audio.addEventListener('error',(e)=>{
+  // Only auto-fallback if we were trying to stream a full song
+  if(currentQuality==='full' && currentTrack?.previewUrl){
+    console.warn('Full song stream error, falling back to preview:', e);
+    const pill = document.querySelector('.quality-pill');
+    if(pill) pill.classList.remove('loading-full');
+    _fallbackToPreview(currentTrack, 'Stream error');
+  }
+});
 audio.addEventListener('timeupdate',()=>{
-  const p=audio.duration?audio.currentTime/audio.duration*100:0;
+  const dur = isFinite(audio.duration) && audio.duration > 0 ? audio.duration : (currentQuality==='full' ? 0 : 30);
+  const p = dur ? audio.currentTime/dur*100 : 0;
   document.getElementById('mini-progress-bar').style.width=p+'%';
   const s=document.getElementById('fp-seekbar');
   if(!s.matches(':active')) s.value=audio.currentTime;
-  s.style.setProperty('--prog',(audio.currentTime/(audio.duration||30)*100)+'%');
+  s.style.setProperty('--prog',(dur ? audio.currentTime/dur*100 : 0)+'%');
   document.getElementById('fp-current').textContent=formatSec(audio.currentTime);
-  document.getElementById('fp-duration').textContent=formatSec(audio.duration||30);
+  if(isFinite(audio.duration)&&audio.duration>0){
+    document.getElementById('fp-duration').textContent=formatSec(audio.duration);
+  }
 });
 
 // Update seekbar max when duration is known
 audio.addEventListener('loadedmetadata',()=>{
+  if(!isFinite(audio.duration)||audio.duration<=0) return;
   const sb=document.getElementById('fp-seekbar');
-  if(sb) sb.max=audio.duration||30;
-  document.getElementById('fp-duration').textContent=formatSec(audio.duration||30);
+  if(sb) sb.max=audio.duration;
+  document.getElementById('fp-duration').textContent=formatSec(audio.duration);
 });
 
 function updatePlayerUI(){
@@ -1209,177 +1217,101 @@ async function downloadSong(song){
   }
 }
 
-// ── FULL SONG (JioSaavn primary → YouTube fallback) ──
+// ── FULL SONG (JioSaavn stream → preview fallback) ──
+let _fullSongAbort = null; // AbortController for in-flight fetch
+
 async function tryFullSong(song){
   song = song || currentTrack;
   if(!song){showToast('Play a song first');return;}
+
   // Close quality sheet if open
   document.getElementById('quality-modal').classList.remove('open');
+
+  // Cancel any previous in-flight full-song request
+  if(_fullSongAbort){ _fullSongAbort.abort(); _fullSongAbort = null; }
+
+  // Visual: loading state on quality pill
+  const pill = document.querySelector('.quality-pill');
+  if(pill) pill.classList.add('loading-full');
   showToast('🔍 Finding full song…');
 
-  // ── Step 1: Try JioSaavn via backend proxy ──
+  const ctrl = new AbortController();
+  _fullSongAbort = ctrl;
+
   try{
     const q = encodeURIComponent(`${song.trackName} ${song.artistName}`);
-    const r = await fetch(`/api/saavn?q=${q}`);
+    const r = await fetch(`/api/saavn?q=${q}`, { signal: ctrl.signal });
+    if(!r.ok) throw new Error('saavn_err');
     const d = await r.json();
-    if(d.url){
-      // Use our stream proxy to bypass CORS on the Saavn CDN URL
-      const proxyUrl = `/api/stream?url=${encodeURIComponent(d.url)}`;
-      audio.pause();
-      audio.src = proxyUrl;
-      audio.load();
-      audio.play().then(()=>{
+
+    // Abort guard — track may have changed
+    if(ctrl.signal.aborted) return;
+
+    if(!d.url) throw new Error('no_url');
+
+    const proxyUrl = `/api/stream?url=${encodeURIComponent(d.url)}`;
+
+    // Swap src without destroying the player
+    const wasPlaying = isPlaying;
+    audio.pause();
+    audio.src = proxyUrl;
+    audio.load();
+
+    // Seek bar — full track
+    const sb = document.getElementById('fp-seekbar');
+    if(sb) sb.classList.add('full-active');
+
+    const playPromise = audio.play();
+    if(playPromise !== undefined){
+      playPromise.then(()=>{
+        if(ctrl.signal.aborted){ audio.pause(); return; }
         isPlaying = true;
         currentQuality = 'full';
+        _fullSongAbort = null;
+        if(pill) pill.classList.remove('loading-full');
         updateQualityLabel();
         updatePlayerUI();
-        showToast('🎵 Full song — JioSaavn');
+        showToast('🎵 Streaming full song');
       }).catch((err)=>{
-        console.error('Saavn play error:', err);
-        // Playback failed even with proxy — fall through to YouTube
-        _tryYouTubeFallback(song);
+        if(ctrl.signal.aborted) return;
+        console.error('Full song play error:', err);
+        if(pill) pill.classList.remove('loading-full');
+        _fallbackToPreview(song, 'Stream failed — using preview');
       });
-      return;
     }
-  }catch(e){
-    console.error('Saavn fetch error:', e);
-  }
 
-  // ── Step 2: YouTube embed fallback ──
-  _tryYouTubeFallback(song);
-}
-
-async function _tryYouTubeFallback(song){
-  showToast('🔍 Trying YouTube…');
-  const videoId = await searchYouTubeVideoId(song.trackName, song.artistName);
-  if(videoId){
-    audio.pause();
-    isPlaying = false;
-    currentQuality = 'full';
-    updateQualityLabel();
-    updatePlayerUI();
-    showYouTubeOverlay(videoId, song);
-  } else {
-    showYouTubeFallback(song);
+  } catch(e){
+    if(e.name === 'AbortError') return; // intentional cancel
+    console.error('Full song fetch error:', e);
+    if(pill) pill.classList.remove('loading-full');
+    _fallbackToPreview(song, 'Song not found on JioSaavn');
   }
 }
 
-async function searchYouTubeVideoId(trackName, artistName){
-  const q = encodeURIComponent(`${trackName} ${artistName} official audio`);
-  try{
-    const r = await fetch(`/api/search?q=${q}`);
-    if(!r.ok) return null;
-    const d = await r.json();
-    return d.videoId || null;
-  }catch(e){ return null; }
-}
-
-// ── YOUTUBE OVERLAY ──
-// FIX: No autoplay=1 (blocked on mobile). playsinline=1 keeps video inline.
-// User taps play inside the iframe — this is the only reliable way on mobile.
-function showYouTubeOverlay(videoId, song){
-  // Remove existing overlay if any
-  const existing = document.getElementById('yt-overlay');
-  if(existing){
-    const existingIframe = existing.querySelector('iframe');
-    if(existingIframe) existingIframe.src='';
-    existing.remove();
-  }
-
-  const ov = document.createElement('div');
-  ov.id = 'yt-overlay';
-  ov.innerHTML = `
-    <div class="yt-header">
-      <div class="yt-meta">
-        <div class="yt-label">● Full Song · YouTube</div>
-        <div class="yt-title">${esc(song.trackName)}</div>
-        <div class="yt-artist">${esc(song.artistName)}</div>
-      </div>
-      <button class="yt-close-btn" onclick="hideYouTubeOverlay()">
-        <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </button>
-    </div>
-    <div class="yt-iframe-wrap">
-      <iframe
-        id="yt-iframe"
-        src="https://www.youtube-nocookie.com/embed/${videoId}?rel=0&modestbranding=1&playsinline=1&iv_load_policy=3"
-        allow="autoplay; encrypted-media; fullscreen; picture-in-picture; web-share"
-        allowfullscreen
-        loading="lazy">
-      </iframe>
-      <div class="yt-tap-hint" id="yt-tap-hint">Tap ▶ inside the video to play</div>
-    </div>
-    <div class="yt-footer">
-      <a href="https://www.youtube.com/watch?v=${videoId}" target="_blank">
-        <svg viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-        Open in YouTube
-      </a>
-      <span class="yt-sep">·</span>
-      <button onclick="hideYouTubeOverlay()">
-        <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        Close
-      </button>
-    </div>
-  `;
-  document.getElementById('app').appendChild(ov);
-  requestAnimationFrame(()=>{
-    ov.style.transform='translateY(0)';
-    // Hide the hint after 4 seconds
-    setTimeout(()=>{
-      const hint = document.getElementById('yt-tap-hint');
-      if(hint) hint.classList.add('hidden');
-    }, 4000);
-  });
-}
-
-function hideYouTubeOverlay(){
-  const ov = document.getElementById('yt-overlay');
-  if(!ov) return;
-  const iframe = ov.querySelector('iframe');
-  if(iframe) iframe.src = '';
-  ov.style.transform = 'translateY(100%)';
-  setTimeout(()=>{
-    if(ov.parentNode) ov.remove();
-  }, 450);
-  // Revert quality badge to preview
+function _fallbackToPreview(song, msg){
+  if(!song?.previewUrl){ showToast(msg||'Full song unavailable'); return; }
+  const sb = document.getElementById('fp-seekbar');
+  if(sb) sb.classList.remove('full-active');
+  audio.pause();
+  audio.src = song.previewUrl;
+  audio.load();
+  audio.play().then(()=>{ isPlaying=true; updatePlayerUI(); }).catch(()=>{});
   currentQuality = 'preview';
   updateQualityLabel();
-}
-
-function showYouTubeFallback(song){
-  const q = encodeURIComponent(`${song.trackName} ${song.artistName} official audio`);
-  const existing = document.getElementById('yt-overlay');
-  if(existing) existing.remove();
-
-  const ov = document.createElement('div');
-  ov.id = 'yt-overlay';
-  ov.innerHTML = `
-    <button onclick="hideYouTubeOverlay()" style="position:absolute;top:54px;right:24px;background:var(--surface2);border:1px solid var(--border);border-radius:50%;width:40px;height:40px;cursor:pointer;display:flex;align-items:center;justify-content:center;">
-      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--text)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-    </button>
-    <svg viewBox="0 0 24 24" width="56" height="56" fill="none" stroke="var(--text3)" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-    <div>
-      <div style="font-size:17px;font-weight:700;margin-bottom:8px;">Song not found</div>
-      <div style="font-size:13px;color:var(--text2);line-height:1.6;">Not available on JioSaavn.<br>Search on YouTube instead.</div>
-    </div>
-    <a href="https://www.youtube.com/results?search_query=${q}" target="_blank"
-      style="display:flex;align-items:center;gap:10px;padding:14px 28px;background:var(--gold);color:var(--bg);border-radius:100px;font-size:14px;font-weight:700;text-decoration:none;font-family:'Sora',sans-serif;">
-      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--bg)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-      Open YouTube
-    </a>
-  `;
-  ov.style.cssText='position:absolute;inset:0;background:var(--bg);z-index:600;display:flex;flex-direction:column;align-items:center;justify-content:center;transform:translateY(100%);transition:transform .45s cubic-bezier(0.4,0,0.2,1);padding:40px 32px;gap:20px;text-align:center;';
-  document.getElementById('app').appendChild(ov);
-  requestAnimationFrame(()=>{ ov.style.transform='translateY(0)'; });
+  showToast((msg||'Full song unavailable')+' · Playing preview');
 }
 
 function switchToPreview(){
-  hideYouTubeOverlay();
   if(!currentTrack?.previewUrl) return;
+  if(_fullSongAbort){ _fullSongAbort.abort(); _fullSongAbort=null; }
+  const pill = document.querySelector('.quality-pill');
+  if(pill) pill.classList.remove('loading-full');
+  const sb = document.getElementById('fp-seekbar');
+  if(sb) sb.classList.remove('full-active');
   audio.pause();
   audio.src = currentTrack.previewUrl;
-  audio.play().then(()=>{isPlaying=true;updatePlayerUI();}).catch(()=>{});
-  currentQuality='preview';
+  audio.play().then(()=>{ isPlaying=true; updatePlayerUI(); }).catch(()=>{});
+  currentQuality = 'preview';
   updateQualityLabel();
   showToast('Switched to 30s preview');
   document.getElementById('quality-modal').classList.remove('open');
@@ -1419,7 +1351,7 @@ function updateQualityBadges(){
   const pb=document.getElementById('q-badge-preview');
   const fb=document.getElementById('q-badge-full');
   if(pb){pb.textContent=currentQuality==='preview'?'● Active':'○ Switch';pb.className='quality-badge'+(currentQuality==='preview'?' active':' ext');}
-  if(fb){fb.textContent=currentQuality==='full'?'● Playing':'↗ Find';fb.className='quality-badge'+(currentQuality==='full'?' active':' ext');}
+  if(fb){fb.textContent=currentQuality==='full'?'● Playing':'▶ Stream';fb.className='quality-badge'+(currentQuality==='full'?' active':' ext');}
 }
 
 // ── TOAST ──
