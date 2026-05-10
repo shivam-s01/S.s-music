@@ -3,15 +3,10 @@ import requests
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from difflib import SequenceMatcher
 
-# ─────────────────────────────────────────────
-# CONFIGURATION
-# ─────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__)
 
-# Best working mirrors (Render friendly)
 SAAVN_MIRRORS = [
     'https://saavn.dev',
     'https://jiosaavn-api-privatecvc2.vercel.app',
@@ -21,141 +16,305 @@ SAAVN_MIRRORS = [
     'https://saavn-api-eight.vercel.app',
 ]
 
-# ─────────────────────────────────────────────
-# UTILS (The Logic Engine)
-# ─────────────────────────────────────────────
-def get_similarity(a, b):
-    """Ye check karta hai ki gaane ka naam kitna match kar raha hai"""
-    if not a or not b: return 0.0
-    return SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
 
-def clean_name(text):
-    """Faltu ki cheezein hatane ke liye (like [Official Video])"""
-    if not text: return ""
-    text = re.sub(r'\(.*?\)|\[.*?\]', '', text)
-    text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
-    return ' '.join(text.split()).lower()
-
+# ─────────────────────────────────────────────
+# CORS
+# ─────────────────────────────────────────────
 def add_cors(resp):
     resp.headers['Access-Control-Allow-Origin'] = '*'
     resp.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
     resp.headers['Access-Control-Allow-Headers'] = '*'
+    resp.headers['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range'
     return resp
 
 @app.after_request
-def after_request(resp): return add_cors(resp)
+def after_request(resp):
+    return add_cors(resp)
+
+@app.route('/<path:path>', methods=['OPTIONS'])
+def options_handler(path):
+    return add_cors(Response(status=200))
+
 
 # ─────────────────────────────────────────────
-# CORE SEARCH (The 99.9% Fix)
-# ─────────────────────────────────────────────
-def fetch_from_mirror(mirror, track_name, artist_name):
-    # 99% Fix: Hum Title aur Artist ko milakar search maarte hain
-    search_query = f"{track_name} {artist_name}".strip()
-    endpoints = ['/api/search/songs', '/search/songs']
-    
-    for endpoint in endpoints:
-        try:
-            url = f"{mirror}{endpoint}"
-            r = requests.get(url, params={'query': search_query, 'limit': 5}, timeout=6)
-            if r.status_code != 200: continue
-            
-            data = r.json()
-            results = data.get('data', {}).get('results') or data.get('results') or []
-
-            for song in results:
-                res_title = song.get('name') or song.get('title', '')
-                res_artist = song.get('primaryArtists') or song.get('primary_artists', '')
-                
-                # Accuracy Check: Match Title + Artist
-                match_score = get_similarity(clean_name(track_name), clean_name(res_title))
-                
-                # Agar title 65% match hai, toh hum safe hain
-                if match_score >= 0.65:
-                    download_urls = song.get('downloadUrl') or song.get('download_url') or []
-                    if download_urls:
-                        # Hamesha best quality (last item) uthao
-                        best_link = download_urls[-1].get('url') or download_urls[-1].get('link')
-                        return {
-                            'url': best_link,
-                            'title': res_title,
-                            'artist': res_artist,
-                            'score': match_score,
-                            'source': 'saavn'
-                        }
-        except: continue
-    return None
-
-# ─────────────────────────────────────────────
-# ROUTES
+# FRONTEND
 # ─────────────────────────────────────────────
 @app.route('/')
 def index():
-    # Make sure index.html is in the same folder
     return send_file(os.path.join(BASE_DIR, 'index.html'))
 
+
+# ─────────────────────────────────────────────
+# ITUNES SEARCH
+# ─────────────────────────────────────────────
 @app.route('/api/songs')
-def search_itunes():
-    q = request.args.get('q', 'top charts')
+def get_songs():
+    q = request.args.get('q', 'top songs')
     try:
-        # iTunes search for metadata (Global coverage)
-        r = requests.get('https://itunes.apple.com/search', 
-                         params={'term': q, 'media': 'music', 'limit': 30}, timeout=10)
-        return jsonify({'results': r.json().get('results', [])})
+        r = requests.get(
+            'https://itunes.apple.com/search',
+            params={'term': q, 'media': 'music', 'entity': 'song', 'limit': 30, 'country': 'US'},
+            timeout=15
+        )
+        results = [s for s in r.json().get('results', []) if s.get('previewUrl')]
+        return jsonify({'results': results})
     except Exception as e:
         return jsonify({'results': [], 'error': str(e)})
 
-@app.route('/api/saavn')
-def get_stream_link():
-    track = request.args.get('track', '').strip()
-    artist = request.args.get('artist', '').strip()
-    itunes_preview = request.args.get('preview', '').strip()
 
-    if not track: return jsonify({'success': False, 'msg': 'Gaana toh batao bhai!'})
+# ─────────────────────────────────────────────
+# QUERY CLEANER
+# ─────────────────────────────────────────────
+def clean_query(text):
+    text = re.sub(r'\(From\s+["\u201c\u201d\u2018\u2019]?[^)]*["\u201c\u201d\u2018\u2019]?\)', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\((OST|official|audio|video|lyrics|full\s*song|feat\.?.*?)\)', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'["\u201c\u201d\u2018\u2019\'()]', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 
-    # Parallel processing: Sab mirrors ko ek saath kaam pe lagao
+
+# ─────────────────────────────────────────────
+# TITLE SIMILARITY — wrong song fix
+# ─────────────────────────────────────────────
+def normalize(text):
+    text = text.lower()
+    text = re.sub(r'[^a-z0-9\s]', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def title_score(query, song_title, song_artist=''):
+    q = normalize(query)
+    t = normalize(song_title)
+    a = normalize(song_artist)
+
+    q_words = set(q.split())
+    t_words = set(t.split())
+    a_words = set(a.split())
+
+    if not q_words:
+        return 0
+
+    # How many query words appear in title
+    title_matches = len(q_words & t_words) / len(q_words)
+
+    # Bonus if query words appear in artist too
+    artist_bonus = len(q_words & a_words) / len(q_words) * 0.3
+
+    # Big bonus if title starts with query's first word
+    q_first = q.split()[0] if q.split() else ''
+    start_bonus = 0.4 if t.startswith(q_first) else 0
+
+    return title_matches + artist_bonus + start_bonus
+
+
+# ─────────────────────────────────────────────
+# SINGLE MIRROR FETCH (used in parallel)
+# ─────────────────────────────────────────────
+def fetch_from_mirror(mirror, query, min_score=0.4):
+    endpoints = ['/api/search/songs', '/api/search', '/search/songs']
+
+    for endpoint in endpoints:
+        try:
+            r = requests.get(
+                f'{mirror}{endpoint}',
+                params={'query': query, 'q': query, 'limit': 10},
+                timeout=8,  # shorter timeout per mirror
+                headers={'User-Agent': 'Mozilla/5.0'}
+            )
+            if r.status_code != 200:
+                continue
+
+            data = r.json()
+            results = (
+                data.get('data', {}).get('results') or
+                data.get('results') or
+                data.get('songs', {}).get('results') or
+                []
+            )
+
+            best_song = None
+            best_score = -1
+
+            for song in results:
+                song_title  = song.get('name') or song.get('title', '')
+                song_artist = song.get('primaryArtists') or song.get('primary_artists', '')
+                score = title_score(query, song_title, song_artist)
+
+                if score > best_score:
+                    best_score = score
+                    best_song  = song
+
+            if best_song and best_score >= min_score:
+                urls = best_song.get('downloadUrl') or best_song.get('download_url') or []
+                for item in reversed(urls):
+                    url = item.get('url') or item.get('link')
+                    if url:
+                        print(f'[Saavn ✓] mirror={mirror} score={best_score:.2f} query="{query}" title="{best_song.get("name","")}"')
+                        return {
+                            'url':     url,
+                            'quality': item.get('quality', '320kbps'),
+                            'title':   best_song.get('name') or best_song.get('title', ''),
+                            'artist':  best_song.get('primaryArtists') or best_song.get('primary_artists', ''),
+                            'score':   best_score,
+                        }
+
+        except Exception as e:
+            print(f'[Saavn] {mirror}{endpoint} failed: {e}')
+            continue
+
+    return None
+
+
+# ─────────────────────────────────────────────
+# PARALLEL MIRROR FETCH — fastest mirror wins
+# ─────────────────────────────────────────────
+def fetch_saavn_parallel(query, min_score=0.4):
     with ThreadPoolExecutor(max_workers=len(SAAVN_MIRRORS)) as executor:
-        futures = [executor.submit(fetch_from_mirror, m, track, artist) for m in SAAVN_MIRRORS]
+        futures = {
+            executor.submit(fetch_from_mirror, mirror, query, min_score): mirror
+            for mirror in SAAVN_MIRRORS
+        }
         for future in as_completed(futures):
             result = future.result()
             if result:
-                return jsonify({'success': True, **result})
+                return result
+    return None
 
-    # Last Resort for English Songs: Agar Saavn pe nahi mila, toh iTunes preview bajao
-    if itunes_preview:
-        return jsonify({
-            'success': True,
-            'url': itunes_preview,
-            'title': track,
-            'artist': artist,
-            'source': 'itunes_fallback',
-            'msg': 'Full song not on Saavn, playing preview'
-        })
 
-    return jsonify({'success': False, 'msg': 'Kahin nahi mila, kismat kharab hai!'})
+# ─────────────────────────────────────────────
+# JIOSAAVN ENDPOINT
+# ─────────────────────────────────────────────
+@app.route('/api/saavn')
+def get_saavn_song():
+    q        = request.args.get('q', '').strip()
+    fallback = request.args.get('fallback', '').strip()
 
+    if not q:
+        return jsonify({'success': False, 'url': None})
+
+    q_clean  = clean_query(q)
+    fb_clean = clean_query(fallback) if fallback else ''
+    parts    = q_clean.split()
+
+    # ── Build query ladder ──
+    queries = []
+    queries.append(q_clean)
+    if q != q_clean:
+        queries.append(q)
+    if fb_clean and fb_clean not in queries:
+        queries.append(fb_clean)
+    if fallback and fallback != q and fallback not in queries:
+        queries.append(fallback)
+    if len(parts) > 5:
+        queries.append(' '.join(parts[:5]))
+    if len(parts) > 3:
+        queries.append(' '.join(parts[:3]))
+    if len(parts) > 1:
+        queries.append(' '.join(parts[:2]))
+    if fb_clean:
+        fb_parts = fb_clean.split()
+        if len(fb_parts) > 2:
+            queries.append(' '.join(fb_parts[:3]))
+        if len(fb_parts) > 1:
+            queries.append(' '.join(fb_parts[:2]))
+
+    # Deduplicate
+    seen, unique = set(), []
+    for query in queries:
+        q_strip = query.strip()
+        if q_strip and q_strip not in seen:
+            seen.add(q_strip)
+            unique.append(q_strip)
+
+    print(f'[Saavn] Query ladder: {unique}')
+
+    # Try each query with parallel mirrors
+    for query in unique:
+        result = fetch_saavn_parallel(query)
+        if result:
+            return jsonify({'success': True, **result})
+
+    # Last resort: try with very low score threshold
+    print(f'[Saavn] Retrying with low threshold...')
+    result = fetch_saavn_parallel(q_clean, min_score=0.1)
+    if result:
+        return jsonify({'success': True, **result})
+
+    print(f'[Saavn ✗] Failed for: "{q}"')
+    return jsonify({'success': False, 'url': None})
+
+
+# ─────────────────────────────────────────────
+# STREAM PROXY
+# ─────────────────────────────────────────────
 @app.route('/api/stream')
-def proxy_stream():
+def stream_audio():
     url = request.args.get('url', '').strip()
-    if not url: return "Missing URL", 400
-    
-    try:
-        # Range support for seeking (fast forward/rewind)
-        headers = {'Range': request.headers.get('Range')} if request.headers.get('Range') else {}
-        r = requests.get(url, headers=headers, stream=True, timeout=30)
-        
-        def generate():
-            for chunk in r.iter_content(chunk_size=128*1024):
-                yield chunk
-        
-        excluded_headers = ['content-encoding', 'transfer-encoding', 'connection']
-        resp_headers = {k: v for k, v in r.headers.items() if k.lower() not in excluded_headers}
-        resp_headers['Access-Control-Allow-Origin'] = '*'
-        
-        return Response(generate(), status=r.status_code, headers=resp_headers)
-    except Exception as e:
-        return str(e), 500
+    if not url:
+        return jsonify({'error': 'Missing URL'}), 400
 
+    try:
+        headers = {
+            'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+            'Accept':          '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Connection':      'keep-alive',
+        }
+        range_header = request.headers.get('Range')
+        if range_header:
+            headers['Range'] = range_header
+
+        upstream = requests.get(url, headers=headers, stream=True, timeout=60, allow_redirects=True)
+
+        excluded = {'content-encoding', 'transfer-encoding', 'connection'}
+        resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in excluded}
+        resp_headers['Access-Control-Allow-Origin'] = '*'
+        resp_headers['Accept-Ranges']               = 'bytes'
+        resp_headers['Cache-Control']               = 'no-cache'
+
+        def generate():
+            try:
+                for chunk in upstream.iter_content(chunk_size=65536):
+                    if chunk:
+                        yield chunk
+            finally:
+                upstream.close()
+
+        return Response(
+            stream_with_context(generate()),
+            status=upstream.status_code,
+            headers=resp_headers,
+            direct_passthrough=True
+        )
+
+    except requests.exceptions.Timeout:
+        return jsonify({'error': 'Stream timeout'}), 504
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ─────────────────────────────────────────────
+# HEALTH
+# ─────────────────────────────────────────────
+@app.route('/health')
+def health():
+    mirror_status = {}
+    for mirror in SAAVN_MIRRORS:
+        try:
+            r = requests.get(
+                f'{mirror}/api/search/songs',
+                params={'query': 'test', 'limit': 1},
+                timeout=5
+            )
+            mirror_status[mirror] = r.status_code
+        except Exception as e:
+            mirror_status[mirror] = f'down ({str(e)[:40]})'
+    return jsonify({'status': 'ok', 'mirrors': mirror_status})
+
+
+# ─────────────────────────────────────────────
+# RUN
+# ─────────────────────────────────────────────
 if __name__ == '__main__':
-    # Render default port 7700 or environment port
     port = int(os.environ.get('PORT', 7700))
-    app.run(host='0.0.0.0', port=port, threaded=True)
+    app.run(host='0.0.0.0', port=port, threaded=True, debug=False)
