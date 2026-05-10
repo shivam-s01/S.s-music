@@ -1,13 +1,13 @@
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_file
 import requests, os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-app = Flask(__name__, static_folder=BASE_DIR, static_url_path='')
+app = Flask(__name__)
 
 @app.route('/')
 def index():
-    return send_from_directory(BASE_DIR, 'index.html')
+    return send_file(os.path.join(BASE_DIR, 'index.html'))
 
 @app.route('/api/search')
 def search_youtube():
@@ -18,7 +18,7 @@ def search_youtube():
     api_key = os.environ.get('YT_API_KEY', '')
     try:
         r = requests.get(
-            f'https://www.googleapis.com/youtube/v3/search',
+            'https://www.googleapis.com/youtube/v3/search',
             params={'part': 'snippet', 'q': q, 'type': 'video', 'maxResults': 1, 'key': api_key},
             timeout=8
         )
