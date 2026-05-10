@@ -1,10 +1,20 @@
 from flask import Flask, request, jsonify, send_file, Response, stream_with_context
 import requests
-import re
 import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__)
+
+# ─────────────────────────────────────────────
+# Multiple JioSaavn API mirrors — tried in order
+# If one is down, next is used automatically
+# ─────────────────────────────────────────────
+SAAVN_MIRRORS = [
+    'https://saavn.dev',
+    'https://jiosaavn-api-privatecvc2.vercel.app',
+    'https://saavn-api-sigma.vercel.app',
+    'https://jiosaavn-api2.vercel.app',
+]
 
 
 # ─────────────────────────────────────────────
@@ -46,49 +56,47 @@ def get_songs():
             params={'term': q, 'media': 'music', 'entity': 'song', 'limit': 30, 'country': 'US'},
             timeout=15
         )
-        data = r.json()
-        results = [s for s in data.get('results', []) if s.get('previewUrl')]
+        results = [s for s in r.json().get('results', []) if s.get('previewUrl')]
         return jsonify({'results': results})
     except Exception as e:
         return jsonify({'results': [], 'error': str(e)})
 
 
 # ─────────────────────────────────────────────
-# SAAVN CORE FETCH
+# SAAVN FETCH — tries all mirrors for one query
 # ─────────────────────────────────────────────
-def fetch_saavn(query):
-    """Hit saavn.dev with a single query. Returns result dict or None."""
-    try:
-        r = requests.get(
-            'https://saavn.dev/api/search/songs',
-            params={'query': query, 'limit': 10},
-            timeout=15,
-            headers={'User-Agent': 'Mozilla/5.0'}
-        )
-        data = r.json()
-        results = data.get('data', {}).get('results', [])
-
-        for song in results:
-            urls = song.get('downloadUrl', [])
-            if not urls:
+def fetch_saavn_query(query):
+    for mirror in SAAVN_MIRRORS:
+        try:
+            r = requests.get(
+                f'{mirror}/api/search/songs',
+                params={'query': query, 'limit': 10},
+                timeout=12,
+                headers={'User-Agent': 'Mozilla/5.0'}
+            )
+            if r.status_code != 200:
                 continue
-            # Highest quality = last in list
-            for item in reversed(urls):
-                url = item.get('url')
-                if url:
-                    return {
-                        'url':     url,
-                        'quality': item.get('quality', '320kbps'),
-                        'title':   song.get('name', ''),
-                        'artist':  song.get('primaryArtists', ''),
-                    }
-    except Exception as e:
-        print(f'[Saavn] error for "{query}": {e}')
+            data = r.json()
+            results = data.get('data', {}).get('results', [])
+            for song in results:
+                for item in reversed(song.get('downloadUrl', [])):
+                    url = item.get('url')
+                    if url:
+                        print(f'[Saavn ✓] mirror={mirror} query="{query}"')
+                        return {
+                            'url':     url,
+                            'quality': item.get('quality', '320kbps'),
+                            'title':   song.get('name', ''),
+                            'artist':  song.get('primaryArtists', ''),
+                        }
+        except Exception as e:
+            print(f'[Saavn] mirror {mirror} failed: {e}')
+            continue
     return None
 
 
 # ─────────────────────────────────────────────
-# JIOSAAVN ENDPOINT  — smart multi-query chain
+# JIOSAAVN ENDPOINT
 # ─────────────────────────────────────────────
 @app.route('/api/saavn')
 def get_saavn_song():
@@ -100,12 +108,7 @@ def get_saavn_song():
 
     parts = q.split()
 
-    # Build query ladder:
-    # 1. Primary query   (e.g. "Shararat Dhurandhar")
-    # 2. Fallback query  (e.g. "Shararat Shashwat Sachdev")
-    # 3. First 5 words
-    # 4. First 3 words
-    # 5. First 2 words   (bare song title)
+    # Build query ladder
     queries = [q]
     if fallback and fallback != q:
         queries.append(fallback)
@@ -115,35 +118,32 @@ def get_saavn_song():
         queries.append(' '.join(parts[:3]))
     if len(parts) > 1:
         queries.append(' '.join(parts[:2]))
-
-    # Also add fallback parts if fallback was given
     if fallback:
-        fb_parts = fallback.split()
-        if len(fb_parts) > 3:
-            queries.append(' '.join(fb_parts[:3]))
-        if len(fb_parts) > 1:
-            queries.append(' '.join(fb_parts[:2]))
+        fb = fallback.split()
+        if len(fb) > 2:
+            queries.append(' '.join(fb[:3]))
+        if len(fb) > 1:
+            queries.append(' '.join(fb[:2]))
 
-    # Deduplicate while preserving order
-    seen = set()
-    unique_queries = []
+    # Deduplicate
+    seen, unique = set(), []
     for query in queries:
-        if query not in seen:
-            seen.add(query)
-            unique_queries.append(query)
+        q_clean = query.strip()
+        if q_clean and q_clean not in seen:
+            seen.add(q_clean)
+            unique.append(q_clean)
 
-    for query in unique_queries:
-        result = fetch_saavn(query)
+    for query in unique:
+        result = fetch_saavn_query(query)
         if result:
-            print(f'[Saavn ✓] found with query: "{query}"')
             return jsonify({'success': True, **result})
 
-    print(f'[Saavn ✗] not found for: "{q}"')
+    print(f'[Saavn ✗] all mirrors + queries failed for: "{q}"')
     return jsonify({'success': False, 'url': None})
 
 
 # ─────────────────────────────────────────────
-# AUDIO STREAM PROXY  — with Range / seek support
+# STREAM PROXY
 # ─────────────────────────────────────────────
 @app.route('/api/stream')
 def stream_audio():
@@ -158,24 +158,17 @@ def stream_audio():
             'Accept-Language': 'en-US,en;q=0.9',
             'Connection':      'keep-alive',
         }
-
         range_header = request.headers.get('Range')
         if range_header:
             headers['Range'] = range_header
 
-        upstream = requests.get(
-            url,
-            headers=headers,
-            stream=True,
-            timeout=60,
-            allow_redirects=True
-        )
+        upstream = requests.get(url, headers=headers, stream=True, timeout=60, allow_redirects=True)
 
         excluded = {'content-encoding', 'transfer-encoding', 'connection'}
-        response_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in excluded}
-        response_headers['Access-Control-Allow-Origin'] = '*'
-        response_headers['Accept-Ranges']               = 'bytes'
-        response_headers['Cache-Control']               = 'no-cache'
+        resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in excluded}
+        resp_headers['Access-Control-Allow-Origin'] = '*'
+        resp_headers['Accept-Ranges']               = 'bytes'
+        resp_headers['Cache-Control']               = 'no-cache'
 
         def generate():
             try:
@@ -188,7 +181,7 @@ def stream_audio():
         return Response(
             stream_with_context(generate()),
             status=upstream.status_code,
-            headers=response_headers,
+            headers=resp_headers,
             direct_passthrough=True
         )
 
