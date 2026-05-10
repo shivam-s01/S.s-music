@@ -8,13 +8,14 @@ app = Flask(__name__)
 
 # ─────────────────────────────────────────────
 # Multiple JioSaavn API mirrors — tried in order
-# If one is down, next is used automatically
 # ─────────────────────────────────────────────
 SAAVN_MIRRORS = [
     'https://saavn.dev',
     'https://jiosaavn-api-privatecvc2.vercel.app',
     'https://saavn-api-sigma.vercel.app',
     'https://jiosaavn-api2.vercel.app',
+    'https://jiosaavn-api-ts.vercel.app',
+    'https://saavn-api-eight.vercel.app',
 ]
 
 
@@ -65,50 +66,68 @@ def get_songs():
 
 # ─────────────────────────────────────────────
 # QUERY CLEANER
-# Removes (From "Movie"), quotes, parentheses
 # ─────────────────────────────────────────────
 def clean_query(text):
-    # Remove (From "...") or (From '...')
+    # Remove (From "Movie") or (From 'Movie')
     text = re.sub(r'\(From\s+["\u201c\u201d\u2018\u2019]?[^)]*["\u201c\u201d\u2018\u2019]?\)', '', text, flags=re.IGNORECASE)
-    # Remove (OST), (Official), (Audio), (Video), (Lyrics), (Full Song) etc
+    # Remove common suffixes like (Official Audio), (Lyrics), (Full Song), etc.
     text = re.sub(r'\((OST|official|audio|video|lyrics|full\s*song|feat\.?.*?)\)', '', text, flags=re.IGNORECASE)
     # Remove all quotes and parentheses
     text = re.sub(r'["\u201c\u201d\u2018\u2019\'()]', '', text)
-    # Remove extra spaces
+    # Collapse extra spaces
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
 
 # ─────────────────────────────────────────────
-# SAAVN FETCH — tries all mirrors for one query
+# SAAVN FETCH — tries all mirrors + endpoints
 # ─────────────────────────────────────────────
 def fetch_saavn_query(query):
+    endpoints = [
+        '/api/search/songs',
+        '/api/search',
+        '/search/songs',
+    ]
+
     for mirror in SAAVN_MIRRORS:
-        try:
-            r = requests.get(
-                f'{mirror}/api/search/songs',
-                params={'query': query, 'limit': 10},
-                timeout=12,
-                headers={'User-Agent': 'Mozilla/5.0'}
-            )
-            if r.status_code != 200:
+        for endpoint in endpoints:
+            try:
+                r = requests.get(
+                    f'{mirror}{endpoint}',
+                    params={'query': query, 'q': query, 'limit': 10},
+                    timeout=12,
+                    headers={'User-Agent': 'Mozilla/5.0'}
+                )
+                if r.status_code != 200:
+                    continue
+
+                data = r.json()
+
+                # Handle different response formats across mirrors
+                results = (
+                    data.get('data', {}).get('results') or
+                    data.get('results') or
+                    data.get('songs', {}).get('results') or
+                    []
+                )
+
+                for song in results:
+                    urls = song.get('downloadUrl') or song.get('download_url') or []
+                    for item in reversed(urls):
+                        url = item.get('url') or item.get('link')
+                        if url:
+                            print(f'[Saavn ✓] mirror={mirror} endpoint={endpoint} query="{query}"')
+                            return {
+                                'url':     url,
+                                'quality': item.get('quality', '320kbps'),
+                                'title':   song.get('name') or song.get('title', ''),
+                                'artist':  song.get('primaryArtists') or song.get('primary_artists', ''),
+                            }
+
+            except Exception as e:
+                print(f'[Saavn] {mirror}{endpoint} failed: {e}')
                 continue
-            data = r.json()
-            results = data.get('data', {}).get('results', [])
-            for song in results:
-                for item in reversed(song.get('downloadUrl', [])):
-                    url = item.get('url')
-                    if url:
-                        print(f'[Saavn ✓] mirror={mirror} query="{query}"')
-                        return {
-                            'url':     url,
-                            'quality': item.get('quality', '320kbps'),
-                            'title':   song.get('name', ''),
-                            'artist':  song.get('primaryArtists', ''),
-                        }
-        except Exception as e:
-            print(f'[Saavn] mirror {mirror} failed: {e}')
-            continue
+
     return None
 
 
@@ -123,14 +142,14 @@ def get_saavn_song():
     if not q:
         return jsonify({'success': False, 'url': None})
 
-    q_clean   = clean_query(q)
-    fb_clean  = clean_query(fallback) if fallback else ''
-    parts     = q_clean.split()
+    q_clean  = clean_query(q)
+    fb_clean = clean_query(fallback) if fallback else ''
+    parts    = q_clean.split()
 
     # ── Build query ladder (most specific → broadest) ──
     queries = []
 
-    # 1. Cleaned full query (parentheses/quotes removed)
+    # 1. Cleaned full query
     queries.append(q_clean)
 
     # 2. Original query as-is
@@ -176,7 +195,7 @@ def get_saavn_song():
         if result:
             return jsonify({'success': True, **result})
 
-    print(f'[Saavn ✗] all mirrors + queries failed for: "{q}"')
+    print(f'[Saavn ✗] All mirrors + queries failed for: "{q}"')
     return jsonify({'success': False, 'url': None})
 
 
@@ -230,11 +249,22 @@ def stream_audio():
 
 
 # ─────────────────────────────────────────────
-# HEALTH
+# HEALTH — shows which mirrors are alive
 # ─────────────────────────────────────────────
 @app.route('/health')
 def health():
-    return jsonify({'status': 'ok'})
+    mirror_status = {}
+    for mirror in SAAVN_MIRRORS:
+        try:
+            r = requests.get(
+                f'{mirror}/api/search/songs',
+                params={'query': 'test', 'limit': 1},
+                timeout=5
+            )
+            mirror_status[mirror] = r.status_code
+        except Exception as e:
+            mirror_status[mirror] = f'down ({str(e)[:40]})'
+    return jsonify({'status': 'ok', 'mirrors': mirror_status})
 
 
 # ─────────────────────────────────────────────
