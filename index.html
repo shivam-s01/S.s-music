@@ -671,7 +671,7 @@ async function loadHomeSongs(genre='all'){
   const key=genre;
   if(homeCache[key]){renderHomeSongs(homeCache[key]);return;}
   const q=encodeURIComponent(genreMap[genre]||'top songs');
-  const url=`https://itunes.apple.com/search?term=${q}&media=music&entity=song&limit=25&country=US`;
+  const url=`/api/songs?q=${q}`;
   try{
     const r=await fetch(url);
     const d=await r.json();
@@ -755,7 +755,7 @@ function showSearchPlaceholder(){
 async function doSearch(q){
   document.getElementById('search-body').innerHTML=`<div class="loading-spinner"><div class="spinner"></div></div>`;
   try{
-    const url=`https://itunes.apple.com/search?term=${encodeURIComponent(q)}&media=music&entity=song&limit=30&country=US`;
+    const url=`/api/songs?q=${encodeURIComponent(q)}`;
     const r=await fetch(url);
     const d=await r.json();
     const songs=d.results.filter(s=>s.previewUrl);
@@ -1197,8 +1197,58 @@ async function downloadSong(song){
   }
 }
 
-// ── YOUTUBE FULL SONG ──
+// ── FULL SONG (JioSaavn primary → YouTube fallback) ──
 let currentQuality = 'preview'; // 'preview' | 'full'
+
+// Update seekbar max when audio duration is known
+audio.addEventListener('loadedmetadata', ()=>{
+  const sb = document.getElementById('fp-seekbar');
+  if(sb) sb.max = audio.duration || 30;
+  document.getElementById('fp-duration').textContent = formatSec(audio.duration || 30);
+});
+
+async function tryFullSong(song){
+  song = song || currentTrack;
+  if(!song){showToast('Play a song first');return;}
+  closeQualitySheet();
+  document.getElementById('quality-modal').classList.remove('open');
+  showToast('🔍 Finding full song…');
+
+  // ── Step 1: Try JioSaavn (direct audio, no popup) ──
+  try{
+    const q = encodeURIComponent(`${song.trackName} ${song.artistName}`);
+    const r = await fetch(`/api/saavn?q=${q}`);
+    const d = await r.json();
+    if(d.url){
+      audio.pause();
+      audio.src = d.url;
+      audio.play().then(()=>{
+        isPlaying = true;
+        currentQuality = 'full';
+        updateQualityLabel();
+        updatePlayerUI();
+        showToast('🎵 Full song playing!');
+      }).catch(()=>{
+        currentQuality = 'full';
+        updateQualityLabel();
+        showToast('Tap play to start');
+      });
+      return;
+    }
+  }catch(e){}
+
+  // ── Step 2: Fallback → YouTube embed ──
+  showToast('🔍 Trying YouTube…');
+  const videoId = await searchYouTubeVideoId(song.trackName, song.artistName);
+  currentQuality = 'full';
+  updateQualityLabel();
+  if(videoId){
+    audio.pause();
+    showYouTubeOverlay(videoId, song);
+  } else {
+    showYouTubeFallback(song);
+  }
+}
 
 async function searchYouTubeVideoId(trackName, artistName){
   const q = encodeURIComponent(`${trackName} ${artistName} official audio`);
@@ -1221,7 +1271,7 @@ function showYouTubeOverlay(videoId, song){
   ov.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;padding:54px 24px 16px;flex-shrink:0;">
       <div style="min-width:0;flex:1;margin-right:12px;">
-        <div style="font-size:12px;color:var(--gold);font-weight:600;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:6px;">● Full Song</div>
+        <div style="font-size:12px;color:var(--gold);font-weight:600;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:6px;">● Full Song · YouTube</div>
         <div style="font-size:18px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(song.trackName)}</div>
         <div style="font-size:13px;color:var(--text2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(song.artistName)}</div>
       </div>
@@ -1245,14 +1295,13 @@ function showYouTubeOverlay(videoId, song){
         Open in YouTube
       </a>
       <span style="color:var(--text3);font-size:11px;">·</span>
-      <span style="font-size:11px;color:var(--text3);">Tap ✕ to return</span>
+      <button onclick="hideYouTubeOverlay()" style="font-size:11px;color:var(--text3);background:none;border:none;cursor:pointer;">Tap ✕ to return</button>
     </div>
   `;
   requestAnimationFrame(()=>{ ov.style.transform='translateY(0)'; });
 }
 
 function showYouTubeFallback(song){
-  // If all search APIs fail, show a direct YouTube search link as overlay
   const q = encodeURIComponent(`${song.trackName} ${song.artistName} official audio`);
   let ov = document.getElementById('yt-overlay');
   if(!ov){
@@ -1267,13 +1316,13 @@ function showYouTubeFallback(song){
     </button>
     <svg viewBox="0 0 24 24" width="56" height="56" fill="none" stroke="var(--text3)" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
     <div>
-      <div style="font-size:17px;font-weight:700;margin-bottom:8px;">Can't embed right now</div>
-      <div style="font-size:13px;color:var(--text2);line-height:1.6;">Search API is down temporarily.<br>Tap below to open in YouTube.</div>
+      <div style="font-size:17px;font-weight:700;margin-bottom:8px;">Song not found</div>
+      <div style="font-size:13px;color:var(--text2);line-height:1.6;">Not available on JioSaavn.<br>Search on YouTube instead.</div>
     </div>
     <a href="https://www.youtube.com/results?search_query=${q}" target="_blank"
       style="display:flex;align-items:center;gap:10px;padding:14px 28px;background:var(--gold);color:var(--bg);border-radius:100px;font-size:14px;font-weight:700;text-decoration:none;font-family:'Sora',sans-serif;">
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--bg)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-      Search on YouTube
+      Open YouTube
     </a>
   `;
   requestAnimationFrame(()=>{ ov.style.transform='translateY(0)'; });
@@ -1282,30 +1331,12 @@ function showYouTubeFallback(song){
 function hideYouTubeOverlay(){
   const ov = document.getElementById('yt-overlay');
   if(!ov) return;
-  // Stop iframe before removing to kill audio
   const iframe = ov.querySelector('iframe');
   if(iframe) iframe.src = '';
   ov.style.transform = 'translateY(100%)';
   setTimeout(()=>ov.remove(), 450);
   currentQuality = 'preview';
   updateQualityLabel();
-}
-
-async function tryFullSong(song){
-  song = song || currentTrack;
-  if(!song){showToast('Play a song first');return;}
-  closeQualitySheet();
-  document.getElementById('quality-modal').classList.remove('open');
-  showToast('🔍 Finding full song…');
-  audio.pause();
-  const videoId = await searchYouTubeVideoId(song.trackName, song.artistName);
-  currentQuality = 'full';
-  updateQualityLabel();
-  if(videoId){
-    showYouTubeOverlay(videoId, song);
-  } else {
-    showYouTubeFallback(song);
-  }
 }
 
 function switchToPreview(){
