@@ -23,27 +23,20 @@ def get_songs():
 def get_saavn():
     q = request.args.get('q', '')
     if not q:
-        return jsonify({'url': None, 'duration': None})
+        return jsonify({'url': None})
     try:
         r = requests.get('https://saavn.dev/api/search/songs',
             params={'query': q, 'limit': 5}, timeout=8)
         data = r.json()
         results = data.get('data', {}).get('results', [])
-        if results:
-            for result in results:
-                urls = result.get('downloadUrl', [])
-                # Get best quality URL (320kbps preferred)
-                best = None
-                for item in reversed(urls):
-                    if item.get('url'):
-                        best = item['url']
-                        break
-                if best:
-                    duration = result.get('duration', None)
-                    return jsonify({'url': best, 'duration': duration})
-        return jsonify({'url': None, 'duration': None})
+        for result in results:
+            urls = result.get('downloadUrl', [])
+            for item in reversed(urls):
+                if item.get('url'):
+                    return jsonify({'url': item['url']})
+        return jsonify({'url': None})
     except Exception:
-        return jsonify({'url': None, 'duration': None})
+        return jsonify({'url': None})
 
 @app.route('/api/search')
 def search_youtube():
