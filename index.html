@@ -290,6 +290,25 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
 
 /* ─── Playlist songs in detail ─── */
 #pl-songs-list .song-row{position:relative;}
+
+/* ─── YouTube Overlay ─── */
+#yt-overlay{position:absolute;inset:0;background:var(--bg);z-index:600;display:flex;flex-direction:column;transform:translateY(100%);transition:transform .45s cubic-bezier(0.4,0,0.2,1);}
+.yt-header{display:flex;align-items:center;justify-content:space-between;padding:54px 24px 16px;flex-shrink:0;}
+.yt-meta{min-width:0;flex:1;margin-right:12px;}
+.yt-label{font-size:12px;color:var(--gold);font-weight:600;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:6px;}
+.yt-title{font-size:18px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.yt-artist{font-size:13px;color:var(--text2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.yt-close-btn{background:var(--surface2);border:1px solid var(--border);border-radius:50%;width:40px;height:40px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.yt-close-btn svg{width:18px;height:18px;stroke:var(--text);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
+.yt-iframe-wrap{flex:1;padding:0 16px;min-height:0;position:relative;}
+.yt-iframe-wrap iframe{width:100%;height:100%;border:none;border-radius:var(--r2);background:var(--surface2);display:block;}
+/* Tap to play hint */
+.yt-tap-hint{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.8);color:var(--text2);font-size:11px;font-family:'Sora',sans-serif;padding:6px 14px;border-radius:100px;pointer-events:none;white-space:nowrap;opacity:1;transition:opacity 1s;backdrop-filter:blur(8px);}
+.yt-tap-hint.hidden{opacity:0;}
+.yt-footer{padding:14px 24px 40px;display:flex;align-items:center;justify-content:center;gap:10px;flex-shrink:0;}
+.yt-footer a,.yt-footer button{font-size:11px;color:var(--text3);background:none;border:none;cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:5px;font-family:'Sora',sans-serif;}
+.yt-footer a svg,.yt-footer button svg{width:13px;height:13px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
+.yt-sep{color:var(--text3);font-size:11px;}
 </style>
 </head>
 <body>
@@ -333,7 +352,7 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
   <!-- ── SEARCH PAGE ── -->
   <div class="page" id="page-search">
     <div class="status-bar"><span class="time" id="search-time">9:41</span><span class="status-icons">▲ 5G 🔋</span></div>
-    <div class="page-header"><div class="page-title">Search</div><div class="page-subtitle">Find songs, artists & more</div></div>
+    <div class="page-header"><div class="page-title">Search</div><div class="page-subtitle">Find songs, artists &amp; more</div></div>
     <div class="search-bar-wrap">
       <div class="search-bar">
         <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
@@ -438,7 +457,7 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
           </button>
         </div>
         <!-- Quality pill -->
-        <button class="quality-pill" onclick="openQualitySheet()" title="Quality & Download">
+        <button class="quality-pill" onclick="openQualitySheet()" title="Quality &amp; Download">
           <svg viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
           <span id="quality-label">128kbps</span>
           <svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
@@ -470,19 +489,15 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
       </button>
     </div>
     <div class="fp-bottom">
-      <!-- Volume icon -->
       <button>
         <svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
       </button>
-      <!-- Download button -->
       <button class="fp-dl-btn" id="fp-dl-btn" onclick="downloadSong()" title="Download Preview">
         <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       </button>
-      <!-- Open Full Song via Audius -->
       <button onclick="tryFullSong()" title="Play Full Song">
         <svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
       </button>
-      <!-- Queue / more -->
       <button onclick="openSongModal(currentTrack)" title="More Options">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="19" r="1" fill="currentColor"/></svg>
       </button>
@@ -597,7 +612,7 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
           <svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
           <div>
             <div class="qo-title">Full Song</div>
-            <div class="qo-desc">Streams via Audius · Full track length</div>
+            <div class="qo-desc">Streams via JioSaavn · Full track length</div>
           </div>
         </div>
         <span class="quality-badge ext" id="q-badge-full">↗ Find</span>
@@ -637,6 +652,7 @@ let currentPlaylistIndex = null;
 let modalTrack = null;
 let searchTimeout = null;
 let currentLibTab = 'playlists';
+let currentQuality = 'preview'; // 'preview' | 'full'
 
 // ── CLOCK ──
 function updateClock(){
@@ -706,7 +722,7 @@ function renderHomeSongs(songs){
   if(currentTrack) updateActiveRow();
 }
 
-function makeSongRow(s,i,queue,extra=''){
+function makeSongRow(s,i,queue){
   const art=(s.artworkUrl100||'').replace('100x100','300x300');
   const dur=s.trackTimeMillis?formatMs(s.trackTimeMillis):'0:30';
   const div=document.createElement('div');
@@ -720,12 +736,11 @@ function makeSongRow(s,i,queue,extra=''){
     </div>
     <div class="song-row-right">
       ${(currentTrack&&currentTrack.trackId===s.trackId&&isPlaying)?'<div class="now-playing-bar"><span></span><span></span><span></span></div>':'<span class="song-row-duration">'+dur+'</span>'}
-      <button class="song-row-more" onclick="event.stopPropagation();openSongModal(arguments[0],${i})">
+      <button class="song-row-more">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="19" r="1" fill="currentColor"/></svg>
       </button>
     </div>`;
   div.onclick=()=>playSongs(queue,i);
-  // Store song on the button for modal
   div.querySelector('.song-row-more').addEventListener('click',function(e){
     e.stopPropagation();
     openSongModal(s);
@@ -786,9 +801,10 @@ function playSongs(queue, index){
 function loadTrack(song){
   if(!song||!song.previewUrl) return;
   currentTrack=song;
+  // Reset to preview mode when loading a new track
+  currentQuality='preview';
   audio.src=song.previewUrl;
   audio.play().then(()=>{isPlaying=true;updatePlayerUI();}).catch(()=>{});
-  currentQuality='preview';
   updatePlayerUI();
   showMiniPlayer();
   updateActiveRow();
@@ -845,25 +861,28 @@ audio.addEventListener('timeupdate',()=>{
   document.getElementById('fp-duration').textContent=formatSec(audio.duration||30);
 });
 
+// Update seekbar max when duration is known
+audio.addEventListener('loadedmetadata',()=>{
+  const sb=document.getElementById('fp-seekbar');
+  if(sb) sb.max=audio.duration||30;
+  document.getElementById('fp-duration').textContent=formatSec(audio.duration||30);
+});
+
 function updatePlayerUI(){
   if(!currentTrack) return;
   const art=(currentTrack.artworkUrl100||'').replace('100x100','300x300');
-  // Mini
   document.getElementById('mini-art').src=art;
   document.getElementById('mini-title').textContent=currentTrack.trackName||'Unknown';
   document.getElementById('mini-artist').textContent=currentTrack.artistName||'Unknown';
-  // Full
   document.getElementById('fp-art').src=art;
   document.getElementById('fp-title').textContent=currentTrack.trackName||'Unknown';
   document.getElementById('fp-artist').textContent=currentTrack.artistName||'Unknown';
-  // Play icons
   const playPoly='<polygon points="5 3 19 12 5 21 5 3"/>';
   const pausePoly='<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>';
   document.getElementById('mini-play-icon').innerHTML=isPlaying?pausePoly:playPoly;
   document.getElementById('fp-play-icon').innerHTML=isPlaying?pausePoly:playPoly;
   const fp=document.getElementById('fullscreen-player');
   if(isPlaying) fp.classList.add('playing'); else fp.classList.remove('playing');
-  // Save state
   updateSaveBtn();
   updateActiveRow();
 }
@@ -1004,7 +1023,6 @@ function openPlaylistDetail(i){
   const songs=pl.songs||[];
   document.getElementById('pl-detail-sub').textContent=songs.length+' songs';
 
-  // Cover
   const coverEl=document.getElementById('pl-big-cover');
   if(songs.length===0){
     coverEl.className='pl-big-cover-grid empty';
@@ -1024,7 +1042,6 @@ function openPlaylistDetail(i){
     coverEl.replaceWith(gridDiv);
   }
 
-  // Songs list
   const sl=document.getElementById('pl-songs-list');
   sl.innerHTML='';
   if(!songs.length){
@@ -1083,6 +1100,7 @@ function createPlaylist(){
 
 // ── SONG MODAL ──
 function openSongModal(song){
+  if(!song) return;
   modalTrack=song;
   document.getElementById('modal-song-art').src=(song.artworkUrl100||'').replace('100x100','300x300');
   document.getElementById('modal-song-title').textContent=song.trackName||'Unknown';
@@ -1111,7 +1129,7 @@ function playNext(){
   modalTrack=null;
 }
 
-// ── MODAL DOWNLOAD & APPLE MUSIC ──
+// ── MODAL DOWNLOAD & FULL SONG ──
 function modalDownload(){
   if(!modalTrack) return;
   const song=modalTrack;
@@ -1163,12 +1181,6 @@ function addToPlaylist(i){
   modalTrack=null;
 }
 
-function toggleSaveCurrentTrack(){
-  if(!currentTrack) return;
-  toggleSave(currentTrack);
-  updateSaveBtn();
-}
-
 // ── DOWNLOAD ──
 async function downloadSong(song){
   song = song || currentTrack;
@@ -1198,52 +1210,54 @@ async function downloadSong(song){
 }
 
 // ── FULL SONG (JioSaavn primary → YouTube fallback) ──
-let currentQuality = 'preview'; // 'preview' | 'full'
-
-// Update seekbar max when audio duration is known
-audio.addEventListener('loadedmetadata', ()=>{
-  const sb = document.getElementById('fp-seekbar');
-  if(sb) sb.max = audio.duration || 30;
-  document.getElementById('fp-duration').textContent = formatSec(audio.duration || 30);
-});
-
 async function tryFullSong(song){
   song = song || currentTrack;
   if(!song){showToast('Play a song first');return;}
-  closeQualitySheet();
+  // Close quality sheet if open
   document.getElementById('quality-modal').classList.remove('open');
   showToast('🔍 Finding full song…');
 
-  // ── Step 1: Try JioSaavn (direct audio, no popup) ──
+  // ── Step 1: Try JioSaavn via backend proxy ──
   try{
     const q = encodeURIComponent(`${song.trackName} ${song.artistName}`);
     const r = await fetch(`/api/saavn?q=${q}`);
     const d = await r.json();
     if(d.url){
+      // Use our stream proxy to bypass CORS on the Saavn CDN URL
+      const proxyUrl = `/api/stream?url=${encodeURIComponent(d.url)}`;
       audio.pause();
-      audio.src = d.url;
+      audio.src = proxyUrl;
+      audio.load();
       audio.play().then(()=>{
         isPlaying = true;
         currentQuality = 'full';
         updateQualityLabel();
         updatePlayerUI();
-        showToast('🎵 Full song playing!');
-      }).catch(()=>{
-        currentQuality = 'full';
-        updateQualityLabel();
-        showToast('Tap play to start');
+        showToast('🎵 Full song — JioSaavn');
+      }).catch((err)=>{
+        console.error('Saavn play error:', err);
+        // Playback failed even with proxy — fall through to YouTube
+        _tryYouTubeFallback(song);
       });
       return;
     }
-  }catch(e){}
+  }catch(e){
+    console.error('Saavn fetch error:', e);
+  }
 
-  // ── Step 2: Fallback → YouTube embed ──
+  // ── Step 2: YouTube embed fallback ──
+  _tryYouTubeFallback(song);
+}
+
+async function _tryYouTubeFallback(song){
   showToast('🔍 Trying YouTube…');
   const videoId = await searchYouTubeVideoId(song.trackName, song.artistName);
-  currentQuality = 'full';
-  updateQualityLabel();
   if(videoId){
     audio.pause();
+    isPlaying = false;
+    currentQuality = 'full';
+    updateQualityLabel();
+    updatePlayerUI();
     showYouTubeOverlay(videoId, song);
   } else {
     showYouTubeFallback(song);
@@ -1260,56 +1274,85 @@ async function searchYouTubeVideoId(trackName, artistName){
   }catch(e){ return null; }
 }
 
+// ── YOUTUBE OVERLAY ──
+// FIX: No autoplay=1 (blocked on mobile). playsinline=1 keeps video inline.
+// User taps play inside the iframe — this is the only reliable way on mobile.
 function showYouTubeOverlay(videoId, song){
-  let ov = document.getElementById('yt-overlay');
-  if(!ov){
-    ov = document.createElement('div');
-    ov.id = 'yt-overlay';
-    ov.style.cssText = 'position:absolute;inset:0;background:var(--bg);z-index:600;display:flex;flex-direction:column;transform:translateY(100%);transition:transform .45s cubic-bezier(0.4,0,0.2,1);';
-    document.getElementById('app').appendChild(ov);
+  // Remove existing overlay if any
+  const existing = document.getElementById('yt-overlay');
+  if(existing){
+    const existingIframe = existing.querySelector('iframe');
+    if(existingIframe) existingIframe.src='';
+    existing.remove();
   }
+
+  const ov = document.createElement('div');
+  ov.id = 'yt-overlay';
   ov.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:54px 24px 16px;flex-shrink:0;">
-      <div style="min-width:0;flex:1;margin-right:12px;">
-        <div style="font-size:12px;color:var(--gold);font-weight:600;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:6px;">● Full Song · YouTube</div>
-        <div style="font-size:18px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(song.trackName)}</div>
-        <div style="font-size:13px;color:var(--text2);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(song.artistName)}</div>
+    <div class="yt-header">
+      <div class="yt-meta">
+        <div class="yt-label">● Full Song · YouTube</div>
+        <div class="yt-title">${esc(song.trackName)}</div>
+        <div class="yt-artist">${esc(song.artistName)}</div>
       </div>
-      <button onclick="hideYouTubeOverlay()" style="background:var(--surface2);border:1px solid var(--border);border-radius:50%;width:40px;height:40px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--text)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      <button class="yt-close-btn" onclick="hideYouTubeOverlay()">
+        <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
     </div>
-    <div style="flex:1;padding:0 20px;min-height:0;">
+    <div class="yt-iframe-wrap">
       <iframe
         id="yt-iframe"
-        src="https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&rel=0&modestbranding=1"
-        style="width:100%;height:100%;border:none;border-radius:var(--r2);background:var(--surface2);"
-        allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
-        allowfullscreen>
+        src="https://www.youtube-nocookie.com/embed/${videoId}?rel=0&modestbranding=1&playsinline=1&iv_load_policy=3"
+        allow="autoplay; encrypted-media; fullscreen; picture-in-picture; web-share"
+        allowfullscreen
+        loading="lazy">
       </iframe>
+      <div class="yt-tap-hint" id="yt-tap-hint">Tap ▶ inside the video to play</div>
     </div>
-    <div style="padding:14px 24px 34px;display:flex;align-items:center;justify-content:center;gap:10px;flex-shrink:0;">
-      <a href="https://www.youtube.com/watch?v=${videoId}" target="_blank"
-        style="font-size:11px;color:var(--text3);text-decoration:none;display:flex;align-items:center;gap:5px;">
-        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+    <div class="yt-footer">
+      <a href="https://www.youtube.com/watch?v=${videoId}" target="_blank">
+        <svg viewBox="0 0 24 24"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
         Open in YouTube
       </a>
-      <span style="color:var(--text3);font-size:11px;">·</span>
-      <button onclick="hideYouTubeOverlay()" style="font-size:11px;color:var(--text3);background:none;border:none;cursor:pointer;">Tap ✕ to return</button>
+      <span class="yt-sep">·</span>
+      <button onclick="hideYouTubeOverlay()">
+        <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        Close
+      </button>
     </div>
   `;
-  requestAnimationFrame(()=>{ ov.style.transform='translateY(0)'; });
+  document.getElementById('app').appendChild(ov);
+  requestAnimationFrame(()=>{
+    ov.style.transform='translateY(0)';
+    // Hide the hint after 4 seconds
+    setTimeout(()=>{
+      const hint = document.getElementById('yt-tap-hint');
+      if(hint) hint.classList.add('hidden');
+    }, 4000);
+  });
+}
+
+function hideYouTubeOverlay(){
+  const ov = document.getElementById('yt-overlay');
+  if(!ov) return;
+  const iframe = ov.querySelector('iframe');
+  if(iframe) iframe.src = '';
+  ov.style.transform = 'translateY(100%)';
+  setTimeout(()=>{
+    if(ov.parentNode) ov.remove();
+  }, 450);
+  // Revert quality badge to preview
+  currentQuality = 'preview';
+  updateQualityLabel();
 }
 
 function showYouTubeFallback(song){
   const q = encodeURIComponent(`${song.trackName} ${song.artistName} official audio`);
-  let ov = document.getElementById('yt-overlay');
-  if(!ov){
-    ov = document.createElement('div');
-    ov.id = 'yt-overlay';
-    ov.style.cssText = 'position:absolute;inset:0;background:var(--bg);z-index:600;display:flex;flex-direction:column;align-items:center;justify-content:center;transform:translateY(100%);transition:transform .45s cubic-bezier(0.4,0,0.2,1);padding:40px 32px;gap:20px;text-align:center;';
-    document.getElementById('app').appendChild(ov);
-  }
+  const existing = document.getElementById('yt-overlay');
+  if(existing) existing.remove();
+
+  const ov = document.createElement('div');
+  ov.id = 'yt-overlay';
   ov.innerHTML = `
     <button onclick="hideYouTubeOverlay()" style="position:absolute;top:54px;right:24px;background:var(--surface2);border:1px solid var(--border);border-radius:50%;width:40px;height:40px;cursor:pointer;display:flex;align-items:center;justify-content:center;">
       <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="var(--text)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -1325,18 +1368,9 @@ function showYouTubeFallback(song){
       Open YouTube
     </a>
   `;
+  ov.style.cssText='position:absolute;inset:0;background:var(--bg);z-index:600;display:flex;flex-direction:column;align-items:center;justify-content:center;transform:translateY(100%);transition:transform .45s cubic-bezier(0.4,0,0.2,1);padding:40px 32px;gap:20px;text-align:center;';
+  document.getElementById('app').appendChild(ov);
   requestAnimationFrame(()=>{ ov.style.transform='translateY(0)'; });
-}
-
-function hideYouTubeOverlay(){
-  const ov = document.getElementById('yt-overlay');
-  if(!ov) return;
-  const iframe = ov.querySelector('iframe');
-  if(iframe) iframe.src = '';
-  ov.style.transform = 'translateY(100%)';
-  setTimeout(()=>ov.remove(), 450);
-  currentQuality = 'preview';
-  updateQualityLabel();
 }
 
 function switchToPreview(){
