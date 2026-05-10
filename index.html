@@ -27,14 +27,11 @@
 html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;color:var(--text);overflow:hidden;-webkit-font-smoothing:antialiased;}
 #app{width:100%;max-width:430px;height:100dvh;margin:0 auto;position:relative;overflow:hidden;background:var(--bg);}
 
-/* Scrollbar */
 ::-webkit-scrollbar{display:none;}*{scrollbar-width:none;}
 
-/* Pages */
 .page{position:absolute;inset:0;bottom:var(--nav);overflow-y:auto;padding-bottom:80px;opacity:0;pointer-events:none;transform:translateY(10px);transition:opacity .3s ease,transform .3s ease;}
 .page.active{opacity:1;pointer-events:all;transform:translateY(0);}
 
-/* Bottom Nav */
 #nav{position:absolute;bottom:0;left:0;right:0;height:var(--nav);background:rgba(14,14,14,0.97);backdrop-filter:blur(24px);border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-around;padding-bottom:env(safe-area-inset-bottom);z-index:100;}
 .nav-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;cursor:pointer;padding:10px 0;transition:opacity .2s;}
 .nav-btn svg{width:22px;height:22px;stroke:var(--text3);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;transition:stroke .25s;}
@@ -42,7 +39,6 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
 .nav-btn.active svg{stroke:var(--gold);}
 .nav-btn.active span{color:var(--gold);}
 
-/* Mini Player */
 #mini-player{position:absolute;bottom:calc(var(--nav) + 8px);left:10px;right:10px;background:rgba(28,28,28,0.96);backdrop-filter:blur(30px);border-radius:16px;border:1px solid rgba(255,255,255,0.09);padding:10px 14px;display:flex;align-items:center;gap:12px;z-index:99;box-shadow:0 -4px 30px rgba(0,0,0,0.5);cursor:pointer;transform:translateY(100px);opacity:0;transition:transform .4s cubic-bezier(0.34,1.56,0.64,1),opacity .3s ease;}
 #mini-player.show{transform:translateY(0);opacity:1;}
 #mini-player .mini-art{width:44px;height:44px;border-radius:10px;object-fit:cover;flex-shrink:0;background:var(--surface3);}
@@ -56,7 +52,6 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
 #mini-player .mini-progress{position:absolute;bottom:0;left:10px;right:10px;height:2px;background:var(--surface3);border-radius:2px;overflow:hidden;}
 #mini-player .mini-progress-bar{height:100%;background:var(--gold);border-radius:2px;width:0%;transition:width .5s linear;}
 
-/* Fullscreen Player */
 #fullscreen-player{position:absolute;inset:0;background:var(--bg);z-index:200;transform:translateY(100%);transition:transform .45s cubic-bezier(0.4,0,0.2,1);display:flex;flex-direction:column;overflow:hidden;}
 #fullscreen-player.open{transform:translateY(0);}
 .fp-header{display:flex;align-items:center;justify-content:space-between;padding:54px 24px 16px;}
@@ -91,28 +86,27 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
 .fp-bottom button svg{width:22px;height:22px;stroke:var(--text3);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;transition:stroke .2s;}
 .fp-bottom button:active svg{stroke:var(--gold);}
 
-/* Download button highlight */
+/* Preview button — gold tint so it's obvious */
+.fp-preview-btn svg{stroke:var(--text2) !important;}
+.fp-preview-btn.preview-active svg{stroke:var(--gold) !important;}
+
 .fp-dl-btn svg{stroke:var(--text2) !important;}
 .fp-dl-btn.loading svg{stroke:var(--gold) !important;animation:dl-pulse .8s ease-in-out infinite alternate;}
 @keyframes dl-pulse{from{opacity:.4}to{opacity:1}}
 
-/* Quality pill */
 .quality-pill{display:flex;align-items:center;gap:5px;padding:5px 11px;border-radius:100px;background:var(--surface2);border:1px solid var(--border);cursor:pointer;transition:border-color .2s;}
 .quality-pill:hover{border-color:rgba(201,168,76,0.3);}
 .quality-pill span{font-size:11px;font-weight:600;color:var(--text2);}
 .quality-pill svg{width:12px;height:12px;stroke:var(--text3);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
 
-/* Status bar */
 .status-bar{display:flex;justify-content:space-between;align-items:center;padding:14px 24px 0;position:sticky;top:0;background:linear-gradient(var(--bg) 70%,transparent);z-index:10;}
 .status-bar .time{font-size:15px;font-weight:600;color:var(--text);}
 .status-icons{display:flex;gap:5px;align-items:center;color:var(--text);font-size:13px;}
 
-/* Page header */
 .page-header{padding:8px 24px 18px;}
 .page-title{font-size:26px;font-weight:700;letter-spacing:-0.5px;margin-top:6px;}
 .page-subtitle{font-size:13px;color:var(--text2);margin-top:3px;}
 
-/* ─── HOME PAGE ─── */
 .home-header{padding:8px 24px 0;}
 .home-greet{font-size:13px;color:var(--text2);margin-top:12px;}
 .home-title{font-size:26px;font-weight:700;letter-spacing:-0.5px;margin-top:3px;}
@@ -122,7 +116,6 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
 .section-label h2{font-size:16px;font-weight:600;letter-spacing:-0.2px;}
 .section-label a{font-size:12px;color:var(--gold);cursor:pointer;font-weight:500;}
 
-/* Quick picks horizontal */
 .quick-picks{overflow-x:auto;display:flex;gap:12px;padding:0 24px;padding-right:0;}
 .quick-card{flex-shrink:0;width:148px;background:var(--surface2);border-radius:var(--r);overflow:hidden;cursor:pointer;transition:transform .25s ease,box-shadow .25s ease;border:1px solid var(--border);}
 .quick-card:active{transform:scale(0.97);}
@@ -131,7 +124,6 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
 .quick-card-title{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .quick-card-artist{font-size:11px;color:var(--text2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 
-/* Song list row */
 .song-row{display:flex;align-items:center;gap:14px;padding:10px 24px;cursor:pointer;transition:background .2s;border-radius:14px;margin:0 6px;}
 .song-row:active{background:var(--surface2);}
 .song-row img{width:52px;height:52px;border-radius:12px;object-fit:cover;flex-shrink:0;background:var(--surface3);}
@@ -144,7 +136,6 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
 .song-row-more svg{width:18px;height:18px;stroke:var(--text3);fill:none;stroke-width:2;stroke-linecap:round;}
 .song-row.playing .song-row-title{color:var(--gold);}
 
-/* ─── SEARCH PAGE ─── */
 .search-bar-wrap{padding:12px 20px 18px;}
 .search-bar{display:flex;align-items:center;gap:10px;background:var(--surface2);border-radius:var(--r);padding:12px 16px;border:1px solid var(--border);}
 .search-bar svg{width:18px;height:18px;stroke:var(--text2);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0;}
@@ -162,7 +153,6 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
 .spinner{width:28px;height:28px;border:2px solid var(--surface3);border-top-color:var(--gold);border-radius:50%;animation:spin .7s linear infinite;}
 @keyframes spin{to{transform:rotate(360deg);}}
 
-/* ─── LIBRARY PAGE ─── */
 .library-tabs{display:flex;gap:8px;padding:0 24px 18px;overflow-x:auto;}
 .lib-tab{flex-shrink:0;padding:8px 16px;border-radius:var(--r-pill,100px);font-size:12.5px;font-weight:600;font-family:'Sora',sans-serif;cursor:pointer;border:1px solid var(--border);background:var(--surface2);color:var(--text2);transition:all .2s;}
 .lib-tab.active{background:var(--gold-dim);color:var(--gold);border-color:rgba(201,168,76,0.3);}
@@ -173,7 +163,6 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
 .empty-library p{font-size:13px;color:var(--text3);line-height:1.6;}
 .empty-library button{margin-top:8px;padding:11px 24px;background:var(--gold-dim);color:var(--gold);border:1px solid rgba(201,168,76,0.3);border-radius:100px;font-size:13px;font-weight:600;font-family:'Sora',sans-serif;cursor:pointer;}
 
-/* Playlist card */
 .playlist-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;padding:0 20px;}
 .playlist-card{background:var(--surface2);border-radius:var(--r);overflow:hidden;cursor:pointer;border:1px solid var(--border);transition:transform .2s;}
 .playlist-card:active{transform:scale(0.97);}
@@ -188,7 +177,6 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
 .add-playlist-btn{display:flex;align-items:center;gap:10px;margin:0 20px 16px;padding:14px 16px;background:var(--surface2);border-radius:var(--r);border:1px solid var(--border);cursor:pointer;font-family:'Sora',sans-serif;color:var(--gold);font-size:13.5px;font-weight:600;transition:background .2s;}
 .add-playlist-btn svg{width:20px;height:20px;stroke:var(--gold);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
 
-/* ─── MODAL ─── */
 .modal-overlay{position:absolute;inset:0;background:rgba(0,0,0,0.7);backdrop-filter:blur(8px);z-index:300;opacity:0;pointer-events:none;transition:opacity .25s;}
 .modal-overlay.open{opacity:1;pointer-events:all;}
 .modal-sheet{position:absolute;bottom:0;left:0;right:0;background:var(--surface);border-radius:24px 24px 0 0;padding:20px 24px 40px;transform:translateY(100%);transition:transform .35s cubic-bezier(0.4,0,0.2,1);}
@@ -204,7 +192,6 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
 .modal-option.gold-opt span{color:var(--gold);}
 .modal-option.gold-opt svg{stroke:var(--gold);}
 
-/* ─── PLAYLIST NAME MODAL ─── */
 .input-modal{position:absolute;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(10px);z-index:400;display:flex;align-items:flex-end;opacity:0;pointer-events:none;transition:opacity .25s;}
 .input-modal.open{opacity:1;pointer-events:all;}
 .input-sheet{width:100%;background:var(--surface);border-radius:24px 24px 0 0;padding:24px 24px 40px;}
@@ -217,7 +204,6 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
 .btn-cancel{background:var(--surface2);color:var(--text2);}
 .btn-create{background:var(--gold);color:var(--bg);}
 
-/* ─── QUALITY MODAL ─── */
 #quality-modal{position:absolute;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(10px);z-index:500;display:flex;align-items:flex-end;opacity:0;pointer-events:none;transition:opacity .25s;}
 #quality-modal.open{opacity:1;pointer-events:all;}
 .quality-sheet{width:100%;background:var(--surface);border-radius:24px 24px 0 0;padding:24px 24px 44px;}
@@ -242,11 +228,9 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
 .qs-dl-btn.secondary svg{stroke:var(--text2);}
 .qs-dl-btn svg{width:16px;height:16px;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
 
-/* ─── TOAST ─── */
 #toast{position:absolute;bottom:calc(var(--nav) + 90px);left:50%;transform:translateX(-50%) translateY(20px);background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:12.5px;font-weight:500;padding:10px 18px;border-radius:100px;white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .3s ease,transform .3s ease;z-index:500;}
 #toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
 
-/* ─── PLAYLIST DETAIL ─── */
 #playlist-detail{position:absolute;inset:0;background:var(--bg);z-index:150;transform:translateX(100%);transition:transform .4s cubic-bezier(0.4,0,0.2,1);}
 #playlist-detail.open{transform:translateX(0);}
 .pl-detail-header{display:flex;align-items:center;gap:14px;padding:52px 24px 20px;}
@@ -269,7 +253,6 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
 .pl-shuffle-btn svg{width:20px;height:20px;stroke:var(--text);fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;}
 .pl-songs{overflow-y:auto;padding-bottom:100px;}
 
-/* Currently playing indicator */
 .now-playing-bar{display:flex;gap:3px;align-items:flex-end;height:14px;flex-shrink:0;}
 .now-playing-bar span{width:3px;background:var(--gold);border-radius:3px;animation:eq-bar 0.8s ease-in-out infinite alternate;}
 .now-playing-bar span:nth-child(2){animation-delay:.2s;height:60%;}
@@ -277,25 +260,18 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
 .now-playing-bar span:nth-child(1){height:100%;}
 @keyframes eq-bar{from{transform:scaleY(0.3);}to{transform:scaleY(1);}}
 
-/* Trending chips */
 .trending-chips{display:flex;gap:8px;padding:0 24px;overflow-x:auto;margin-bottom:24px;}
 .chip{flex-shrink:0;padding:8px 16px;border-radius:100px;font-size:12px;font-weight:600;font-family:'Sora',sans-serif;cursor:pointer;border:1px solid var(--border);background:var(--surface2);color:var(--text2);transition:all .2s;}
 .chip.active{background:var(--gold-dim);color:var(--gold);border-color:rgba(201,168,76,0.3);}
 
-/* Section spacing */
 .section{margin-bottom:28px;}
 .section-head{padding:0 24px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;}
 .section-head h2{font-size:16px;font-weight:600;}
 .section-head span{font-size:12px;color:var(--gold);cursor:pointer;}
 
-/* ─── Playlist songs in detail ─── */
-#pl-songs-list .song-row{position:relative;}
-
-/* ─── Full Song Loading State ─── */
 .quality-pill.loading-full{border-color:rgba(201,168,76,0.5);animation:pill-pulse 1s ease-in-out infinite alternate;}
 @keyframes pill-pulse{from{box-shadow:0 0 0 0 rgba(201,168,76,0);}to{box-shadow:0 0 0 4px rgba(201,168,76,0.15);}}
 .quality-pill.loading-full #quality-label{color:var(--gold);}
-/* Full song active glow on seekbar */
 .fp-seekbar.full-active::-webkit-slider-runnable-track{background:linear-gradient(to right,var(--gold-l) var(--prog,0%),var(--surface3) var(--prog,0%));}
 .fp-seekbar.full-active::-webkit-slider-thumb{background:var(--gold-l);box-shadow:0 0 6px rgba(201,168,76,0.6);}
 </style>
@@ -303,15 +279,13 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
 <body>
 <div id="app">
 
-  <!-- ── HOME PAGE ── -->
+  <!-- HOME -->
   <div class="page active" id="page-home">
     <div class="status-bar"><span class="time" id="home-time">9:41</span><span class="status-icons">▲ 5G 🔋</span></div>
     <div class="home-header">
       <div class="home-greet">Good evening,</div>
       <div class="home-title">Your <span>Music</span></div>
     </div>
-
-    <!-- Trending chips -->
     <div style="margin-top:20px;margin-bottom:18px;">
       <div class="trending-chips" id="home-chips">
         <div class="chip active" onclick="filterHome('all',this)">All</div>
@@ -322,23 +296,18 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
         <div class="chip" onclick="filterHome('rnb',this)">R&amp;B</div>
       </div>
     </div>
-
-    <!-- Featured horizontal -->
     <div class="section">
       <div class="section-head"><h2>Featured</h2><span>See all</span></div>
       <div class="quick-picks" id="featured-row" style="gap:12px;padding-right:24px;"></div>
     </div>
-
-    <!-- Song list -->
     <div class="section">
       <div class="section-head"><h2>Trending Now</h2><span id="home-song-count"></span></div>
       <div id="home-songs-list"></div>
     </div>
-
     <div style="height:20px;"></div>
   </div>
 
-  <!-- ── SEARCH PAGE ── -->
+  <!-- SEARCH -->
   <div class="page" id="page-search">
     <div class="status-bar"><span class="time" id="search-time">9:41</span><span class="status-icons">▲ 5G 🔋</span></div>
     <div class="page-header"><div class="page-title">Search</div><div class="page-subtitle">Find songs, artists &amp; more</div></div>
@@ -360,7 +329,7 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
     </div>
   </div>
 
-  <!-- ── LIBRARY PAGE ── -->
+  <!-- LIBRARY -->
   <div class="page" id="page-library">
     <div class="status-bar"><span class="time" id="lib-time">9:41</span><span class="status-icons">▲ 5G 🔋</span></div>
     <div class="page-header"><div class="page-title">Library</div><div class="page-subtitle">Your saved music</div></div>
@@ -368,8 +337,6 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
       <div class="lib-tab active" onclick="switchLibTab('playlists',this)">Playlists</div>
       <div class="lib-tab" onclick="switchLibTab('saved',this)">Saved Songs</div>
     </div>
-
-    <!-- Playlists -->
     <div id="lib-playlists">
       <button class="add-playlist-btn" onclick="openCreatePlaylist()">
         <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
@@ -377,14 +344,12 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
       </button>
       <div class="playlist-grid" id="playlist-grid"></div>
     </div>
-
-    <!-- Saved Songs -->
     <div id="lib-saved" style="display:none">
       <div id="saved-songs-list"></div>
     </div>
   </div>
 
-  <!-- ── BOTTOM NAV ── -->
+  <!-- BOTTOM NAV -->
   <nav id="nav">
     <div class="nav-btn active" onclick="goPage('home',this)" id="nav-home">
       <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
@@ -400,7 +365,7 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
     </div>
   </nav>
 
-  <!-- ── MINI PLAYER ── -->
+  <!-- MINI PLAYER -->
   <div id="mini-player" onclick="openFullscreen()">
     <img class="mini-art" id="mini-art" src="" alt="">
     <div class="mini-info">
@@ -421,7 +386,7 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
     <div class="mini-progress"><div class="mini-progress-bar" id="mini-progress-bar"></div></div>
   </div>
 
-  <!-- ── FULLSCREEN PLAYER ── -->
+  <!-- FULLSCREEN PLAYER -->
   <div id="fullscreen-player">
     <div class="fp-header">
       <button class="fp-close" onclick="closeFullscreen()">
@@ -445,10 +410,9 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
             <span id="fp-save-label">Save</span>
           </button>
         </div>
-        <!-- Quality pill -->
         <button class="quality-pill" onclick="openQualitySheet()" title="Quality &amp; Download">
           <svg viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
-          <span id="quality-label">128kbps</span>
+          <span id="quality-label">Loading…</span>
           <svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
         </button>
       </div>
@@ -457,7 +421,7 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
       <input type="range" class="fp-seekbar" id="fp-seekbar" min="0" max="30" value="0" step="0.1" oninput="seekTo(this.value)">
       <div class="fp-time-row">
         <span id="fp-current">0:00</span>
-        <span id="fp-duration">0:30</span>
+        <span id="fp-duration">—:——</span>
       </div>
     </div>
     <div class="fp-controls">
@@ -484,8 +448,9 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
       <button class="fp-dl-btn" id="fp-dl-btn" onclick="downloadSong()" title="Download Preview">
         <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
       </button>
-      <button onclick="tryFullSong()" title="Play Full Song">
-        <svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+      <!-- ✅ 30s Preview toggle button -->
+      <button class="fp-preview-btn" id="fp-preview-btn" onclick="togglePreviewMode()" title="30s Preview / Full Song">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
       </button>
       <button onclick="openSongModal(currentTrack)" title="More Options">
         <svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="19" r="1" fill="currentColor"/></svg>
@@ -493,7 +458,7 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
     </div>
   </div>
 
-  <!-- ── PLAYLIST DETAIL ── -->
+  <!-- PLAYLIST DETAIL -->
   <div id="playlist-detail">
     <div style="overflow-y:auto;height:100%;padding-bottom:100px;">
       <div class="pl-detail-header">
@@ -521,7 +486,7 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
     </div>
   </div>
 
-  <!-- ── SONG OPTIONS MODAL ── -->
+  <!-- SONG OPTIONS MODAL -->
   <div class="modal-overlay" id="song-modal" onclick="closeSongModal(event)">
     <div class="modal-sheet">
       <div class="modal-handle"></div>
@@ -545,10 +510,6 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
         <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         <span>Download Preview</span>
       </div>
-      <div class="modal-option" onclick="modalOpenAppleMusic()">
-        <svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-        <span>Play Full Song</span>
-      </div>
       <div class="modal-option" onclick="closeSongModal()">
         <svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
         <span>Close</span>
@@ -556,7 +517,7 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
     </div>
   </div>
 
-  <!-- ── ADD TO PLAYLIST MODAL ── -->
+  <!-- ADD TO PLAYLIST MODAL -->
   <div class="modal-overlay" id="add-playlist-modal" onclick="closeAddToPlaylistModal(event)">
     <div class="modal-sheet">
       <div class="modal-handle"></div>
@@ -565,7 +526,7 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
     </div>
   </div>
 
-  <!-- ── CREATE PLAYLIST MODAL ── -->
+  <!-- CREATE PLAYLIST MODAL -->
   <div class="input-modal" id="create-playlist-modal">
     <div class="input-sheet">
       <div class="input-modal-handle"></div>
@@ -578,33 +539,33 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
     </div>
   </div>
 
-  <!-- ── QUALITY MODAL ── -->
+  <!-- QUALITY MODAL -->
   <div id="quality-modal" onclick="closeQualitySheet(event)">
     <div class="quality-sheet">
       <div class="quality-sheet-handle"></div>
       <h3>Audio Quality</h3>
       <div class="qs-sub" id="qs-track-name">Select quality for playback</div>
 
-      <div class="quality-option" onclick="selectQuality('preview')">
-        <div class="quality-option-left">
-          <svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
-          <div>
-            <div class="qo-title">Standard Preview</div>
-            <div class="qo-desc">128kbps AAC · 30 second preview</div>
-          </div>
-        </div>
-        <span class="quality-badge active" id="q-badge-preview">● Active</span>
-      </div>
-
       <div class="quality-option" onclick="selectQuality('full')">
         <div class="quality-option-left">
           <svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
           <div>
             <div class="qo-title">Full Song</div>
-            <div class="qo-desc">Streams via JioSaavn · Full track length</div>
+            <div class="qo-desc">Streams via JioSaavn · Full track</div>
           </div>
         </div>
-        <span class="quality-badge ext" id="q-badge-full">▶ Stream</span>
+        <span class="quality-badge active" id="q-badge-full">● Active</span>
+      </div>
+
+      <div class="quality-option" onclick="selectQuality('preview')">
+        <div class="quality-option-left">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          <div>
+            <div class="qo-title">30s Preview</div>
+            <div class="qo-desc">128kbps AAC · Ringtone / quick listen</div>
+          </div>
+        </div>
+        <span class="quality-badge ext" id="q-badge-preview">○ Switch</span>
       </div>
 
       <div class="qs-dl-row">
@@ -612,15 +573,14 @@ html,body{width:100%;height:100%;background:#000;font-family:'Sora',sans-serif;c
           <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           Download Preview
         </button>
-        <button class="qs-dl-btn secondary" onclick="tryFullSong()">
-          <svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-          Full Song
+        <button class="qs-dl-btn secondary" onclick="selectQuality('preview');closeQualitySheet()">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          30s Preview
         </button>
       </div>
     </div>
   </div>
 
-  <!-- ── TOAST ── -->
   <div id="toast"></div>
 </div>
 
@@ -641,7 +601,8 @@ let currentPlaylistIndex = null;
 let modalTrack = null;
 let searchTimeout = null;
 let currentLibTab = 'playlists';
-let currentQuality = 'preview'; // 'preview' | 'full'
+let currentQuality = 'loading'; // 'loading' | 'full' | 'preview'
+let _fullSongAbort = null;
 
 // ── CLOCK ──
 function updateClock(){
@@ -676,9 +637,8 @@ async function loadHomeSongs(genre='all'){
   const key=genre;
   if(homeCache[key]){renderHomeSongs(homeCache[key]);return;}
   const q=encodeURIComponent(genreMap[genre]||'top songs');
-  const url=`/api/songs?q=${q}`;
   try{
-    const r=await fetch(url);
+    const r=await fetch(`/api/songs?q=${q}`);
     const d=await r.json();
     const songs=d.results.filter(s=>s.previewUrl);
     homeCache[key]=songs;
@@ -687,7 +647,6 @@ async function loadHomeSongs(genre='all'){
 }
 
 function renderHomeSongs(songs){
-  // Featured row (first 6)
   const fr=document.getElementById('featured-row');
   fr.innerHTML='';
   songs.slice(0,6).forEach((s,i)=>{
@@ -698,16 +657,10 @@ function renderHomeSongs(songs){
     div.onclick=()=>playSongs(songs,i);
     fr.appendChild(div);
   });
-
-  // Song list
   const list=document.getElementById('home-songs-list');
   list.innerHTML='';
-  const cnt=document.getElementById('home-song-count');
-  cnt.textContent=songs.length+' songs';
-  songs.forEach((s,i)=>{
-    list.appendChild(makeSongRow(s,i,songs));
-  });
-
+  document.getElementById('home-song-count').textContent=songs.length+' songs';
+  songs.forEach((s,i)=>list.appendChild(makeSongRow(s,i,songs)));
   if(currentTrack) updateActiveRow();
 }
 
@@ -745,36 +698,27 @@ document.getElementById('search-input').addEventListener('input',function(){
   if(!v){showSearchPlaceholder();return;}
   searchTimeout=setTimeout(()=>doSearch(v),500);
 });
-
 function clearSearch(){
   document.getElementById('search-input').value='';
   document.getElementById('search-clear').style.display='none';
   showSearchPlaceholder();
 }
-
 function showSearchPlaceholder(){
   document.getElementById('search-body').innerHTML=`<div class="search-placeholder"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><h3>Search for music</h3><p>Type a song name, artist or album to discover music</p></div>`;
 }
-
 async function doSearch(q){
   document.getElementById('search-body').innerHTML=`<div class="loading-spinner"><div class="spinner"></div></div>`;
   try{
-    const url=`/api/songs?q=${encodeURIComponent(q)}`;
-    const r=await fetch(url);
+    const r=await fetch(`/api/songs?q=${encodeURIComponent(q)}`);
     const d=await r.json();
-    const songs=d.results.filter(s=>s.previewUrl);
-    renderSearchResults(songs,q);
+    renderSearchResults(d.results.filter(s=>s.previewUrl),q);
   }catch(e){
     document.getElementById('search-body').innerHTML=`<div class="search-placeholder"><h3>Something went wrong</h3><p>Please check your connection</p></div>`;
   }
 }
-
 function renderSearchResults(songs,q){
   const body=document.getElementById('search-body');
-  if(!songs.length){
-    body.innerHTML=`<div class="search-placeholder"><h3>No results for "${esc(q)}"</h3><p>Try a different song or artist name</p></div>`;
-    return;
-  }
+  if(!songs.length){body.innerHTML=`<div class="search-placeholder"><h3>No results for "${esc(q)}"</h3><p>Try a different song or artist name</p></div>`;return;}
   body.innerHTML=`<div style="padding:0 0 8px;"><div style="font-size:12px;color:var(--text3);padding:0 24px 12px;">${songs.length} results</div></div><div id="search-results-list"></div>`;
   const list=document.getElementById('search-results-list');
   songs.forEach((s,i)=>list.appendChild(makeSongRow(s,i,songs)));
@@ -787,88 +731,192 @@ function playSongs(queue, index){
   loadTrack(currentQueue[currentIndex]);
 }
 
+// ✅ KEY CHANGE: play preview instantly → auto-fetch full song in background
 function loadTrack(song){
   if(!song||!song.previewUrl) return;
-  // Cancel any pending full-song fetch when switching tracks
+
+  // Cancel any previous full-song fetch
   if(_fullSongAbort){ _fullSongAbort.abort(); _fullSongAbort=null; }
-  const pill = document.querySelector('.quality-pill');
+
+  // Reset visual states
+  const pill=document.querySelector('.quality-pill');
   if(pill) pill.classList.remove('loading-full');
-  const sb = document.getElementById('fp-seekbar');
-  if(sb) sb.classList.remove('full-active');
+  const sb=document.getElementById('fp-seekbar');
+  if(sb){ sb.classList.remove('full-active'); sb.max=30; }
+
   currentTrack=song;
-  // Reset to preview mode when loading a new track
-  currentQuality='preview';
+  currentQuality='loading';
+
+  // 1. Play preview immediately — zero wait
   audio.src=song.previewUrl;
-  audio.play().then(()=>{isPlaying=true;updatePlayerUI();}).catch(()=>{});
+  audio.play().then(()=>{ isPlaying=true; updatePlayerUI(); }).catch(()=>{});
+
   updatePlayerUI();
   showMiniPlayer();
   updateActiveRow();
   updateQualityLabel();
+
+  // 2. Auto-fetch full song silently in background
+  _autoFetchFullSong(song);
 }
 
+// ✅ Background full-song fetch — no intrusive toast, seamless swap
+async function _autoFetchFullSong(song){
+  const pill=document.querySelector('.quality-pill');
+  if(pill) pill.classList.add('loading-full');
+
+  const ctrl=new AbortController();
+  _fullSongAbort=ctrl;
+
+  try{
+    const rawTitle  = song.trackName  || '';
+    const rawArtist = song.artistName || '';
+    const movieMatch= rawTitle.match(/\(From\s+[""]?(.+?)[""]?\)/i);
+    const movieName = movieMatch ? movieMatch[1].trim() : '';
+    const cleanTitle= rawTitle.replace(/\(.*?\)|\[.*?\]/g,'').trim();
+    const cleanArtist=rawArtist.split(/[&,]|feat\.|ft\./i)[0].trim();
+
+    const primaryQ = movieName
+      ? encodeURIComponent(`${cleanTitle} ${movieName}`)
+      : encodeURIComponent(`${cleanTitle} ${cleanArtist}`);
+    const fallbackQ= encodeURIComponent(`${cleanTitle} ${cleanArtist}`);
+
+    const r=await fetch(`/api/saavn?q=${primaryQ}&fallback=${fallbackQ}`,{signal:ctrl.signal});
+    if(!r.ok) throw new Error('saavn_err');
+    const d=await r.json();
+
+    if(ctrl.signal.aborted) return; // track changed, ignore
+    if(!d.url) throw new Error('no_url');
+
+    // Swap to full song
+    const proxyUrl=`/api/stream?url=${encodeURIComponent(d.url)}`;
+    const savedTime=audio.currentTime; // try to resume near same position
+
+    audio.pause();
+    audio.src=proxyUrl;
+    audio.load();
+
+    const sbEl=document.getElementById('fp-seekbar');
+    if(sbEl) sbEl.classList.add('full-active');
+
+    audio.play().then(()=>{
+      if(ctrl.signal.aborted){ audio.pause(); return; }
+      isPlaying=true;
+      currentQuality='full';
+      _fullSongAbort=null;
+      if(pill) pill.classList.remove('loading-full');
+      updateQualityLabel();
+      updatePlayerUI();
+      // Subtle toast — just a small indicator
+      showToast('🎵 Full song');
+    }).catch(()=>{
+      if(ctrl.signal.aborted) return;
+      if(pill) pill.classList.remove('loading-full');
+      _fallbackToPreview(song, null); // silent fallback
+    });
+
+  }catch(e){
+    if(e.name==='AbortError') return;
+    if(pill) pill.classList.remove('loading-full');
+    _fallbackToPreview(song, null); // silent — preview was already playing
+  }
+}
+
+// ✅ Manual full song retry (from quality sheet)
+async function tryFullSong(song){
+  song=song||currentTrack;
+  if(!song){showToast('Play a song first');return;}
+  document.getElementById('quality-modal').classList.remove('open');
+  if(_fullSongAbort){ _fullSongAbort.abort(); _fullSongAbort=null; }
+  showToast('🔍 Fetching full song…');
+  await _autoFetchFullSong(song);
+}
+
+function _fallbackToPreview(song, msg){
+  if(!song?.previewUrl) return;
+  const sb=document.getElementById('fp-seekbar');
+  if(sb){ sb.classList.remove('full-active'); sb.max=30; }
+  audio.pause();
+  audio.src=song.previewUrl;
+  audio.load();
+  audio.play().then(()=>{ isPlaying=true; updatePlayerUI(); }).catch(()=>{});
+  currentQuality='preview';
+  updateQualityLabel();
+  if(msg) showToast(msg);
+}
+
+// ✅ Toggle button: if full song → switch to preview; if preview → fetch full
+function togglePreviewMode(){
+  if(currentQuality==='preview'){
+    // Switch back to full song
+    tryFullSong(currentTrack);
+  } else if(currentQuality==='full'){
+    // Switch to 30s preview
+    switchToPreview();
+  }
+}
+
+function switchToPreview(){
+  if(!currentTrack?.previewUrl) return;
+  if(_fullSongAbort){ _fullSongAbort.abort(); _fullSongAbort=null; }
+  const pill=document.querySelector('.quality-pill');
+  if(pill) pill.classList.remove('loading-full');
+  _fallbackToPreview(currentTrack, '⏱ 30s preview');
+  document.getElementById('quality-modal').classList.remove('open');
+}
+
+// ── CONTROLS ──
 function togglePlay(){
   if(!currentTrack) return;
   if(isPlaying){audio.pause();isPlaying=false;}
   else{audio.play();isPlaying=true;}
   updatePlayerUI();
 }
-
 function nextTrack(){
   if(!currentQueue.length) return;
   if(shuffle) currentIndex=Math.floor(Math.random()*currentQueue.length);
   else currentIndex=(currentIndex+1)%currentQueue.length;
   loadTrack(currentQueue[currentIndex]);
 }
-
 function prevTrack(){
   if(audio.currentTime>3){audio.currentTime=0;return;}
   if(!currentQueue.length) return;
   currentIndex=(currentIndex-1+currentQueue.length)%currentQueue.length;
   loadTrack(currentQueue[currentIndex]);
 }
-
-function seekTo(v){
-  audio.currentTime=parseFloat(v);
-}
-
+function seekTo(v){ audio.currentTime=parseFloat(v); }
 function toggleShuffle(){
   shuffle=!shuffle;
-  const btn=document.getElementById('shuffle-btn');
-  btn.querySelector('svg').style.stroke=shuffle?'var(--gold)':'';
+  document.getElementById('shuffle-btn').querySelector('svg').style.stroke=shuffle?'var(--gold)':'';
   showToast(shuffle?'Shuffle on':'Shuffle off');
 }
 function toggleRepeat(){
   repeat=!repeat;
   audio.loop=repeat;
-  const btn=document.getElementById('repeat-btn');
-  btn.querySelector('svg').style.stroke=repeat?'var(--gold)':'';
+  document.getElementById('repeat-btn').querySelector('svg').style.stroke=repeat?'var(--gold)':'';
   showToast(repeat?'Repeat on':'Repeat off');
 }
 
-audio.addEventListener('ended',()=>{if(!repeat) nextTrack();});
+audio.addEventListener('ended',()=>{ if(!repeat) nextTrack(); });
 audio.addEventListener('error',(e)=>{
-  // Only auto-fallback if we were trying to stream a full song
-  if(currentQuality==='full' && currentTrack?.previewUrl){
-    console.warn('Full song stream error, falling back to preview:', e);
-    const pill = document.querySelector('.quality-pill');
+  if(currentQuality==='full'&&currentTrack?.previewUrl){
+    const pill=document.querySelector('.quality-pill');
     if(pill) pill.classList.remove('loading-full');
-    _fallbackToPreview(currentTrack, 'Stream error');
+    _fallbackToPreview(currentTrack,'Stream error · 30s preview');
   }
 });
 audio.addEventListener('timeupdate',()=>{
-  const dur = isFinite(audio.duration) && audio.duration > 0 ? audio.duration : (currentQuality==='full' ? 0 : 30);
-  const p = dur ? audio.currentTime/dur*100 : 0;
+  const dur=isFinite(audio.duration)&&audio.duration>0?audio.duration:(currentQuality==='full'?0:30);
+  const p=dur?audio.currentTime/dur*100:0;
   document.getElementById('mini-progress-bar').style.width=p+'%';
   const s=document.getElementById('fp-seekbar');
   if(!s.matches(':active')) s.value=audio.currentTime;
-  s.style.setProperty('--prog',(dur ? audio.currentTime/dur*100 : 0)+'%');
+  s.style.setProperty('--prog',(dur?audio.currentTime/dur*100:0)+'%');
   document.getElementById('fp-current').textContent=formatSec(audio.currentTime);
   if(isFinite(audio.duration)&&audio.duration>0){
     document.getElementById('fp-duration').textContent=formatSec(audio.duration);
   }
 });
-
-// Update seekbar max when duration is known
 audio.addEventListener('loadedmetadata',()=>{
   if(!isFinite(audio.duration)||audio.duration<=0) return;
   const sb=document.getElementById('fp-seekbar');
@@ -876,6 +924,7 @@ audio.addEventListener('loadedmetadata',()=>{
   document.getElementById('fp-duration').textContent=formatSec(audio.duration);
 });
 
+// ── UI UPDATES ──
 function updatePlayerUI(){
   if(!currentTrack) return;
   const art=(currentTrack.artworkUrl100||'').replace('100x100','300x300');
@@ -890,24 +939,31 @@ function updatePlayerUI(){
   document.getElementById('mini-play-icon').innerHTML=isPlaying?pausePoly:playPoly;
   document.getElementById('fp-play-icon').innerHTML=isPlaying?pausePoly:playPoly;
   const fp=document.getElementById('fullscreen-player');
-  if(isPlaying) fp.classList.add('playing'); else fp.classList.remove('playing');
+  isPlaying?fp.classList.add('playing'):fp.classList.remove('playing');
   updateSaveBtn();
   updateActiveRow();
+  updatePreviewBtn();
+}
+
+function updatePreviewBtn(){
+  const btn=document.getElementById('fp-preview-btn');
+  if(!btn) return;
+  if(currentQuality==='preview'){
+    btn.classList.add('preview-active');
+    btn.title='Switch to Full Song';
+  } else {
+    btn.classList.remove('preview-active');
+    btn.title='30s Preview';
+  }
 }
 
 function updateSaveBtn(){
   if(!currentTrack) return;
   const saved=isSaved(currentTrack);
-  const btn=document.getElementById('fp-save-btn');
-  const lbl=document.getElementById('fp-save-label');
-  btn.classList.toggle('saved',saved);
-  lbl.textContent=saved?'Saved':'Save';
+  document.getElementById('fp-save-btn').classList.toggle('saved',saved);
+  document.getElementById('fp-save-label').textContent=saved?'Saved':'Save';
 }
-
-function showMiniPlayer(){
-  document.getElementById('mini-player').classList.add('show');
-}
-
+function showMiniPlayer(){ document.getElementById('mini-player').classList.add('show'); }
 function updateActiveRow(){
   document.querySelectorAll('.song-row').forEach(r=>{
     const active=currentTrack&&r.dataset.trackId==currentTrack.trackId;
@@ -927,7 +983,7 @@ function updateActiveRow(){
       if(existing){
         const s=document.createElement('span');
         s.className='song-row-duration';
-        s.textContent=currentTrack&&r.dataset.trackId==currentTrack.trackId?formatMs(currentTrack.trackTimeMillis||30000):'';
+        s.textContent='';
         rightDiv.replaceChild(s,existing);
       }
     }
@@ -935,57 +991,72 @@ function updateActiveRow(){
 }
 
 // ── FULLSCREEN ──
-function openFullscreen(){
-  document.getElementById('fullscreen-player').classList.add('open');
+function openFullscreen(){ document.getElementById('fullscreen-player').classList.add('open'); }
+function closeFullscreen(){ document.getElementById('fullscreen-player').classList.remove('open'); }
+
+// ── QUALITY LABEL ──
+function updateQualityLabel(){
+  const lbl=document.getElementById('quality-label');
+  if(!lbl) return;
+  if(currentQuality==='full'){
+    lbl.textContent='Full Song';
+    lbl.parentElement.style.borderColor='rgba(201,168,76,0.45)';
+    lbl.style.color='var(--gold)';
+  } else if(currentQuality==='loading'){
+    lbl.textContent='Loading…';
+    lbl.parentElement.style.borderColor='rgba(201,168,76,0.3)';
+    lbl.style.color='var(--gold-l)';
+  } else {
+    lbl.textContent='30s Preview';
+    lbl.parentElement.style.borderColor='';
+    lbl.style.color='var(--text2)';
+  }
+  updateQualityBadges();
+  updatePreviewBtn();
 }
-function closeFullscreen(){
-  document.getElementById('fullscreen-player').classList.remove('open');
+function updateQualityBadges(){
+  const pb=document.getElementById('q-badge-preview');
+  const fb=document.getElementById('q-badge-full');
+  if(fb){ fb.textContent=currentQuality==='full'?'● Active':'▶ Stream'; fb.className='quality-badge'+(currentQuality==='full'?' active':' ext'); }
+  if(pb){ pb.textContent=currentQuality==='preview'?'● Active':'○ Switch'; pb.className='quality-badge'+(currentQuality==='preview'?' active':' ext'); }
+}
+
+// ── QUALITY SHEET ──
+function openQualitySheet(){
+  if(!currentTrack){showToast('Play a song first');return;}
+  const sub=document.getElementById('qs-track-name');
+  if(sub) sub.textContent=`${currentTrack.trackName||'Unknown'} · ${currentTrack.artistName||'Unknown'}`;
+  updateQualityBadges();
+  document.getElementById('quality-modal').classList.add('open');
+}
+function closeQualitySheet(e){
+  if(e&&e.target!==document.getElementById('quality-modal')) return;
+  document.getElementById('quality-modal').classList.remove('open');
+}
+function selectQuality(q){
+  if(q==='preview') switchToPreview();
+  else if(q==='full') tryFullSong();
 }
 
 // ── SAVE / LIBRARY ──
-function isSaved(song){
-  return savedSongs.some(s=>s.trackId===song.trackId);
-}
-
-function toggleSaveCurrentTrack(){
-  if(!currentTrack) return;
-  toggleSave(currentTrack);
-  updateSaveBtn();
-}
-
+function isSaved(song){ return savedSongs.some(s=>s.trackId===song.trackId); }
+function toggleSaveCurrentTrack(){ if(!currentTrack) return; toggleSave(currentTrack); updateSaveBtn(); }
 function toggleSave(song){
-  if(isSaved(song)){
-    savedSongs=savedSongs.filter(s=>s.trackId!==song.trackId);
-    showToast('Removed from Library');
-  } else {
-    savedSongs.push(song);
-    showToast('Saved to Library');
-  }
+  if(isSaved(song)){ savedSongs=savedSongs.filter(s=>s.trackId!==song.trackId); showToast('Removed from Library'); }
+  else { savedSongs.push(song); showToast('Saved to Library'); }
   localStorage.setItem('aurum_saved',JSON.stringify(savedSongs));
-  renderLibrary();
-  updateSaveBtn();
+  renderLibrary(); updateSaveBtn();
 }
 
 // ── LIBRARY ──
-function switchLibTab(tab, el){
+function switchLibTab(tab,el){
   document.querySelectorAll('.lib-tab').forEach(t=>t.classList.remove('active'));
-  el.classList.add('active');
-  currentLibTab=tab;
-  if(tab==='playlists'){
-    document.getElementById('lib-playlists').style.display='';
-    document.getElementById('lib-saved').style.display='none';
-  } else {
-    document.getElementById('lib-playlists').style.display='none';
-    document.getElementById('lib-saved').style.display='';
-  }
+  el.classList.add('active'); currentLibTab=tab;
+  document.getElementById('lib-playlists').style.display=tab==='playlists'?'':'none';
+  document.getElementById('lib-saved').style.display=tab==='saved'?'':'none';
   renderLibrary();
 }
-
-function renderLibrary(){
-  renderPlaylists();
-  renderSavedSongs();
-}
-
+function renderLibrary(){ renderPlaylists(); renderSavedSongs(); }
 function renderPlaylists(){
   const grid=document.getElementById('playlist-grid');
   grid.innerHTML='';
@@ -994,31 +1065,20 @@ function renderPlaylists(){
     return;
   }
   playlists.forEach((pl,i)=>{
-    const card=document.createElement('div');
-    card.className='playlist-card';
+    const card=document.createElement('div'); card.className='playlist-card';
     const songs=pl.songs||[];
     let coverHtml='';
-    if(songs.length===0){
-      coverHtml=`<div class="playlist-card-cover empty"></div>`;
-    } else if(songs.length<4){
-      const art=(songs[0].artworkUrl100||'').replace('100x100','300x300');
-      coverHtml=`<div class="playlist-card-cover single"><img src="${art}" alt=""></div>`;
-    } else {
-      coverHtml=`<div class="playlist-card-cover">${songs.slice(0,4).map(s=>`<img src="${(s.artworkUrl100||'').replace('100x100','300x300')}" alt="">`).join('')}</div>`;
-    }
+    if(!songs.length) coverHtml=`<div class="playlist-card-cover empty"></div>`;
+    else if(songs.length<4) coverHtml=`<div class="playlist-card-cover single"><img src="${(songs[0].artworkUrl100||'').replace('100x100','300x300')}" alt=""></div>`;
+    else coverHtml=`<div class="playlist-card-cover">${songs.slice(0,4).map(s=>`<img src="${(s.artworkUrl100||'').replace('100x100','300x300')}" alt="">`).join('')}</div>`;
     card.innerHTML=`${coverHtml}<div class="playlist-card-info"><div class="playlist-card-name">${esc(pl.name)}</div><div class="playlist-card-count">${songs.length} songs</div></div>`;
     card.onclick=()=>openPlaylistDetail(i);
     grid.appendChild(card);
   });
 }
-
 function renderSavedSongs(){
-  const list=document.getElementById('saved-songs-list');
-  list.innerHTML='';
-  if(!savedSongs.length){
-    list.innerHTML=`<div class="empty-library"><svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg><h3>No saved songs</h3><p>Save songs from Home or Search to find them here</p></div>`;
-    return;
-  }
+  const list=document.getElementById('saved-songs-list'); list.innerHTML='';
+  if(!savedSongs.length){ list.innerHTML=`<div class="empty-library"><svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg><h3>No saved songs</h3><p>Save songs from Home or Search to find them here</p></div>`; return; }
   savedSongs.forEach((s,i)=>list.appendChild(makeSongRow(s,i,savedSongs)));
 }
 
@@ -1030,86 +1090,44 @@ function openPlaylistDetail(i){
   document.getElementById('pl-detail-title').textContent=pl.name;
   const songs=pl.songs||[];
   document.getElementById('pl-detail-sub').textContent=songs.length+' songs';
-
   const coverEl=document.getElementById('pl-big-cover');
-  if(songs.length===0){
-    coverEl.className='pl-big-cover-grid empty';
-    coverEl.innerHTML='<div style="display:flex;align-items:center;justify-content:height:100%;font-size:48px;color:var(--text3);">♪</div>';
-    coverEl.style.cssText='width:100%;max-width:260px;aspect-ratio:1;border-radius:var(--r2);background:var(--surface2);display:flex;align-items:center;justify-content:center;';
-  } else if(songs.length<4){
-    const img=document.createElement('img');
-    img.className='pl-big-cover';
-    img.id='pl-big-cover';
-    img.src=(songs[0].artworkUrl100||'').replace('100x100','300x300');
-    coverEl.replaceWith(img);
-  } else {
-    const gridDiv=document.createElement('div');
-    gridDiv.id='pl-big-cover';
-    gridDiv.className='pl-big-cover-grid';
-    gridDiv.innerHTML=songs.slice(0,4).map(s=>`<img src="${(s.artworkUrl100||'').replace('100x100','300x300')}" alt="">`).join('');
-    coverEl.replaceWith(gridDiv);
-  }
-
-  const sl=document.getElementById('pl-songs-list');
-  sl.innerHTML='';
-  if(!songs.length){
-    sl.innerHTML=`<div style="text-align:center;padding:40px 24px;color:var(--text3);font-size:13px;">No songs in this playlist yet.<br>Search for songs and add them here.</div>`;
-  } else {
-    songs.forEach((s,i)=>sl.appendChild(makeSongRow(s,i,songs)));
-  }
-
+  if(!songs.length){ coverEl.className='pl-big-cover-grid empty'; coverEl.innerHTML=''; coverEl.style.cssText='width:100%;max-width:260px;aspect-ratio:1;border-radius:var(--r2);background:var(--surface2);display:flex;align-items:center;justify-content:center;font-size:48px;color:var(--text3);'; }
+  else if(songs.length<4){ const img=document.createElement('img'); img.className='pl-big-cover'; img.id='pl-big-cover'; img.src=(songs[0].artworkUrl100||'').replace('100x100','300x300'); coverEl.replaceWith(img); }
+  else { const g=document.createElement('div'); g.id='pl-big-cover'; g.className='pl-big-cover-grid'; g.innerHTML=songs.slice(0,4).map(s=>`<img src="${(s.artworkUrl100||'').replace('100x100','300x300')}" alt="">`).join(''); coverEl.replaceWith(g); }
+  const sl=document.getElementById('pl-songs-list'); sl.innerHTML='';
+  if(!songs.length) sl.innerHTML=`<div style="text-align:center;padding:40px 24px;color:var(--text3);font-size:13px;">No songs yet.</div>`;
+  else songs.forEach((s,i)=>sl.appendChild(makeSongRow(s,i,songs)));
   document.getElementById('playlist-detail').classList.add('open');
 }
-
-function closePlaylistDetail(){
-  document.getElementById('playlist-detail').classList.remove('open');
-  renderLibrary();
-}
-
+function closePlaylistDetail(){ document.getElementById('playlist-detail').classList.remove('open'); renderLibrary(); }
 function playPlaylist(){
   if(currentPlaylistIndex===null) return;
   const songs=playlists[currentPlaylistIndex].songs||[];
   if(!songs.length){showToast('No songs in playlist');return;}
-  playSongs(songs,0);
-  closePlaylistDetail();
-  openFullscreen();
+  playSongs(songs,0); closePlaylistDetail(); openFullscreen();
 }
-
 function shufflePlaylist(){
   if(currentPlaylistIndex===null) return;
   const songs=playlists[currentPlaylistIndex].songs||[];
   if(!songs.length){showToast('No songs in playlist');return;}
-  const i=Math.floor(Math.random()*songs.length);
-  playSongs(songs,i);
-  shuffle=true;
-  document.getElementById('shuffle-btn').querySelector('svg').style.stroke='var(--gold)';
-  closePlaylistDetail();
-  openFullscreen();
+  playSongs(songs,Math.floor(Math.random()*songs.length));
+  shuffle=true; document.getElementById('shuffle-btn').querySelector('svg').style.stroke='var(--gold)';
+  closePlaylistDetail(); openFullscreen();
 }
 
 // ── CREATE PLAYLIST ──
-function openCreatePlaylist(){
-  document.getElementById('create-playlist-modal').classList.add('open');
-  setTimeout(()=>document.getElementById('playlist-name-input').focus(),300);
-}
-function closeCreatePlaylist(){
-  document.getElementById('create-playlist-modal').classList.remove('open');
-  document.getElementById('playlist-name-input').value='';
-}
+function openCreatePlaylist(){ document.getElementById('create-playlist-modal').classList.add('open'); setTimeout(()=>document.getElementById('playlist-name-input').focus(),300); }
+function closeCreatePlaylist(){ document.getElementById('create-playlist-modal').classList.remove('open'); document.getElementById('playlist-name-input').value=''; }
 function createPlaylist(){
   const name=document.getElementById('playlist-name-input').value.trim();
   if(!name){showToast('Enter a playlist name');return;}
-  playlists.push({name,songs:[]});
-  localStorage.setItem('aurum_playlists',JSON.stringify(playlists));
-  closeCreatePlaylist();
-  renderPlaylists();
-  showToast('Playlist "'+name+'" created');
+  playlists.push({name,songs:[]}); localStorage.setItem('aurum_playlists',JSON.stringify(playlists));
+  closeCreatePlaylist(); renderPlaylists(); showToast('Playlist "'+name+'" created');
 }
 
 // ── SONG MODAL ──
 function openSongModal(song){
-  if(!song) return;
-  modalTrack=song;
+  if(!song) return; modalTrack=song;
   document.getElementById('modal-song-art').src=(song.artworkUrl100||'').replace('100x100','300x300');
   document.getElementById('modal-song-title').textContent=song.trackName||'Unknown';
   document.getElementById('modal-song-artist').textContent=song.artistName||'Unknown';
@@ -1118,268 +1136,63 @@ function openSongModal(song){
 }
 function closeSongModal(e){
   if(e&&e.target!==document.getElementById('song-modal')) return;
-  document.getElementById('song-modal').classList.remove('open');
-  modalTrack=null;
+  document.getElementById('song-modal').classList.remove('open'); modalTrack=null;
 }
 function modalSave(){
-  if(!modalTrack) return;
-  toggleSave(modalTrack);
+  if(!modalTrack) return; toggleSave(modalTrack);
   document.getElementById('modal-save-label').textContent=isSaved(modalTrack)?'Remove from Library':'Save to Library';
-  document.getElementById('song-modal').classList.remove('open');
-  modalTrack=null;
+  document.getElementById('song-modal').classList.remove('open'); modalTrack=null;
 }
 function playNext(){
   if(!modalTrack) return;
-  const i=currentIndex+1;
-  currentQueue.splice(i,0,modalTrack);
-  showToast('Playing next');
-  document.getElementById('song-modal').classList.remove('open');
-  modalTrack=null;
+  currentQueue.splice(currentIndex+1,0,modalTrack);
+  showToast('Playing next'); document.getElementById('song-modal').classList.remove('open'); modalTrack=null;
 }
+function modalDownload(){ if(!modalTrack) return; const s=modalTrack; document.getElementById('song-modal').classList.remove('open'); modalTrack=null; downloadSong(s); }
 
-// ── MODAL DOWNLOAD & FULL SONG ──
-function modalDownload(){
-  if(!modalTrack) return;
-  const song=modalTrack;
-  document.getElementById('song-modal').classList.remove('open');
-  modalTrack=null;
-  downloadSong(song);
-}
-function modalOpenAppleMusic(){
-  if(!modalTrack) return;
-  const song=modalTrack;
-  document.getElementById('song-modal').classList.remove('open');
-  modalTrack=null;
-  tryFullSong(song);
-}
-
-// ── ADD TO PLAYLIST MODAL ──
+// ── ADD TO PLAYLIST ──
 function openAddToPlaylistModal(){
   document.getElementById('song-modal').classList.remove('open');
-  const opts=document.getElementById('add-playlist-options');
-  opts.innerHTML='';
-  if(!playlists.length){
-    opts.innerHTML=`<div style="padding:16px 0;text-align:center;color:var(--text3);font-size:13px;">No playlists. Create one first.</div>`;
-  } else {
-    playlists.forEach((pl,i)=>{
-      const div=document.createElement('div');
-      div.className='modal-option';
-      div.innerHTML=`<svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg><span>${esc(pl.name)} <span style="color:var(--text3);font-size:11px;">(${pl.songs.length} songs)</span></span>`;
-      div.onclick=()=>addToPlaylist(i);
-      opts.appendChild(div);
-    });
-  }
+  const opts=document.getElementById('add-playlist-options'); opts.innerHTML='';
+  if(!playlists.length){ opts.innerHTML=`<div style="padding:16px 0;text-align:center;color:var(--text3);font-size:13px;">No playlists. Create one first.</div>`; }
+  else { playlists.forEach((pl,i)=>{ const div=document.createElement('div'); div.className='modal-option'; div.innerHTML=`<svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg><span>${esc(pl.name)} <span style="color:var(--text3);font-size:11px;">(${pl.songs.length})</span></span>`; div.onclick=()=>addToPlaylist(i); opts.appendChild(div); }); }
   document.getElementById('add-playlist-modal').classList.add('open');
 }
-function closeAddToPlaylistModal(e){
-  if(e&&e.target!==document.getElementById('add-playlist-modal')) return;
-  document.getElementById('add-playlist-modal').classList.remove('open');
-}
+function closeAddToPlaylistModal(e){ if(e&&e.target!==document.getElementById('add-playlist-modal')) return; document.getElementById('add-playlist-modal').classList.remove('open'); }
 function addToPlaylist(i){
   if(!modalTrack) return;
   const pl=playlists[i];
-  if(pl.songs.some(s=>s.trackId===modalTrack.trackId)){
-    showToast('Already in "'+pl.name+'"');
-  } else {
-    pl.songs.push(modalTrack);
-    localStorage.setItem('aurum_playlists',JSON.stringify(playlists));
-    showToast('Added to "'+pl.name+'"');
-  }
-  document.getElementById('add-playlist-modal').classList.remove('open');
-  modalTrack=null;
+  if(pl.songs.some(s=>s.trackId===modalTrack.trackId)){ showToast('Already in "'+pl.name+'"'); }
+  else { pl.songs.push(modalTrack); localStorage.setItem('aurum_playlists',JSON.stringify(playlists)); showToast('Added to "'+pl.name+'"'); }
+  document.getElementById('add-playlist-modal').classList.remove('open'); modalTrack=null;
 }
 
 // ── DOWNLOAD ──
 async function downloadSong(song){
-  song = song || currentTrack;
+  song=song||currentTrack;
   if(!song?.previewUrl){showToast('Nothing to download');return;}
-  const btn = document.getElementById('fp-dl-btn');
+  const btn=document.getElementById('fp-dl-btn');
   if(btn) btn.classList.add('loading');
   showToast('Preparing download…');
   try{
-    const res = await fetch(song.previewUrl);
-    if(!res.ok) throw new Error('fetch failed');
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    const fname = `${(song.trackName||'track').replace(/[/\\?%*:|"<>]/g,'-')} - ${(song.artistName||'artist').replace(/[/\\?%*:|"<>]/g,'-')}.m4a`;
-    a.download = fname;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    const res=await fetch(song.previewUrl);
+    if(!res.ok) throw new Error();
+    const blob=await res.blob();
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a'); a.href=url;
+    a.download=`${(song.trackName||'track').replace(/[/\\?%*:|"<>]/g,'-')} - ${(song.artistName||'artist').replace(/[/\\?%*:|"<>]/g,'-')}.m4a`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(()=>URL.revokeObjectURL(url),2000);
     showToast('Download started! 🎵');
-  }catch(e){
-    showToast('Download failed — try again');
-  } finally {
-    if(btn) btn.classList.remove('loading');
-  }
-}
-
-// ── FULL SONG (JioSaavn stream → preview fallback) ──
-let _fullSongAbort = null; // AbortController for in-flight fetch
-
-async function tryFullSong(song){
-  song = song || currentTrack;
-  if(!song){showToast('Play a song first');return;}
-
-  // Close quality sheet if open
-  document.getElementById('quality-modal').classList.remove('open');
-
-  // Cancel any previous in-flight full-song request
-  if(_fullSongAbort){ _fullSongAbort.abort(); _fullSongAbort = null; }
-
-  // Visual: loading state on quality pill
-  const pill = document.querySelector('.quality-pill');
-  if(pill) pill.classList.add('loading-full');
-  showToast('🔍 Finding full song…');
-
-  const ctrl = new AbortController();
-  _fullSongAbort = ctrl;
-
-  try{
-    const rawTitle  = song.trackName  || '';
-    const rawArtist = song.artistName || '';
-
-    // Extract movie/album from "(From "MovieName")" or "(From MovieName)"
-    const movieMatch = rawTitle.match(/\(From\s+[""]?(.+?)[""]?\)/i);
-    const movieName  = movieMatch ? movieMatch[1].trim() : '';
-
-    // Clean title — remove all parenthetical notes
-    const cleanTitle  = rawTitle.replace(/\(.*?\)|\[.*?\]/g, '').trim();
-
-    // First artist only
-    const cleanArtist = rawArtist.split(/[&,]|feat\.|ft\./i)[0].trim();
-
-    // Best query: title + movie name (e.g. "Shararat Dhurandhar")
-    // Fallback query: title + artist
-    const primaryQ  = movieName
-      ? encodeURIComponent(`${cleanTitle} ${movieName}`)
-      : encodeURIComponent(`${cleanTitle} ${cleanArtist}`);
-    const fallbackQ = encodeURIComponent(`${cleanTitle} ${cleanArtist}`);
-
-    // Try primary query first
-    let r = await fetch(`/api/saavn?q=${primaryQ}&fallback=${fallbackQ}`, { signal: ctrl.signal });
-    if(!r.ok) throw new Error('saavn_err');
-    const d = await r.json();
-
-    // Abort guard — track may have changed
-    if(ctrl.signal.aborted) return;
-
-    if(!d.url) throw new Error('no_url');
-
-    const proxyUrl = `/api/stream?url=${encodeURIComponent(d.url)}`;
-
-    // Swap src without destroying the player
-    const wasPlaying = isPlaying;
-    audio.pause();
-    audio.src = proxyUrl;
-    audio.load();
-
-    // Seek bar — full track
-    const sb = document.getElementById('fp-seekbar');
-    if(sb) sb.classList.add('full-active');
-
-    const playPromise = audio.play();
-    if(playPromise !== undefined){
-      playPromise.then(()=>{
-        if(ctrl.signal.aborted){ audio.pause(); return; }
-        isPlaying = true;
-        currentQuality = 'full';
-        _fullSongAbort = null;
-        if(pill) pill.classList.remove('loading-full');
-        updateQualityLabel();
-        updatePlayerUI();
-        showToast('🎵 Streaming full song');
-      }).catch((err)=>{
-        if(ctrl.signal.aborted) return;
-        console.error('Full song play error:', err);
-        if(pill) pill.classList.remove('loading-full');
-        _fallbackToPreview(song, 'Stream failed — using preview');
-      });
-    }
-
-  } catch(e){
-    if(e.name === 'AbortError') return; // intentional cancel
-    console.error('Full song fetch error:', e);
-    if(pill) pill.classList.remove('loading-full');
-    _fallbackToPreview(song, 'Song not found on JioSaavn');
-  }
-}
-
-function _fallbackToPreview(song, msg){
-  if(!song?.previewUrl){ showToast(msg||'Full song unavailable'); return; }
-  const sb = document.getElementById('fp-seekbar');
-  if(sb) sb.classList.remove('full-active');
-  audio.pause();
-  audio.src = song.previewUrl;
-  audio.load();
-  audio.play().then(()=>{ isPlaying=true; updatePlayerUI(); }).catch(()=>{});
-  currentQuality = 'preview';
-  updateQualityLabel();
-  showToast((msg||'Full song unavailable')+' · Playing preview');
-}
-
-function switchToPreview(){
-  if(!currentTrack?.previewUrl) return;
-  if(_fullSongAbort){ _fullSongAbort.abort(); _fullSongAbort=null; }
-  const pill = document.querySelector('.quality-pill');
-  if(pill) pill.classList.remove('loading-full');
-  const sb = document.getElementById('fp-seekbar');
-  if(sb) sb.classList.remove('full-active');
-  audio.pause();
-  audio.src = currentTrack.previewUrl;
-  audio.play().then(()=>{ isPlaying=true; updatePlayerUI(); }).catch(()=>{});
-  currentQuality = 'preview';
-  updateQualityLabel();
-  showToast('Switched to 30s preview');
-  document.getElementById('quality-modal').classList.remove('open');
-}
-
-// ── QUALITY SHEET ──
-function openQualitySheet(){
-  if(!currentTrack){showToast('Play a song first');return;}
-  const sub = document.getElementById('qs-track-name');
-  if(sub) sub.textContent = `${currentTrack.trackName||'Unknown'} · ${currentTrack.artistName||'Unknown'}`;
-  updateQualityBadges();
-  document.getElementById('quality-modal').classList.add('open');
-}
-function closeQualitySheet(e){
-  if(e && e.target!==document.getElementById('quality-modal')) return;
-  document.getElementById('quality-modal').classList.remove('open');
-}
-function selectQuality(q){
-  if(q==='preview') switchToPreview();
-  else if(q==='full') tryFullSong();
-}
-function updateQualityLabel(){
-  const lbl = document.getElementById('quality-label');
-  if(!lbl) return;
-  if(currentQuality==='full'){
-    lbl.textContent='Full Song';
-    lbl.parentElement.style.borderColor='rgba(201,168,76,0.45)';
-    lbl.style.color='var(--gold)';
-  } else {
-    lbl.textContent='128kbps';
-    lbl.parentElement.style.borderColor='';
-    lbl.style.color='';
-  }
-  updateQualityBadges();
-}
-function updateQualityBadges(){
-  const pb=document.getElementById('q-badge-preview');
-  const fb=document.getElementById('q-badge-full');
-  if(pb){pb.textContent=currentQuality==='preview'?'● Active':'○ Switch';pb.className='quality-badge'+(currentQuality==='preview'?' active':' ext');}
-  if(fb){fb.textContent=currentQuality==='full'?'● Playing':'▶ Stream';fb.className='quality-badge'+(currentQuality==='full'?' active':' ext');}
+  }catch(e){ showToast('Download failed — try again'); }
+  finally{ if(btn) btn.classList.remove('loading'); }
 }
 
 // ── TOAST ──
 let toastTimer=null;
 function showToast(msg){
   const t=document.getElementById('toast');
-  t.textContent=msg;
-  t.classList.add('show');
+  t.textContent=msg; t.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer=setTimeout(()=>t.classList.remove('show'),2200);
 }
@@ -1389,12 +1202,10 @@ function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replac
 function formatMs(ms){const s=Math.floor((ms||0)/1000);return `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`;}
 function formatSec(s){s=Math.floor(s||0);return `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`;}
 
-// ── KEYBOARD ──
 document.addEventListener('keydown',e=>{
   if(e.code==='Space'&&e.target.tagName!=='INPUT'){e.preventDefault();togglePlay();}
 });
 
-// ── INIT ──
 loadHomeSongs('all');
 renderLibrary();
 </script>
