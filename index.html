@@ -1239,11 +1239,28 @@ async function tryFullSong(song){
   _fullSongAbort = ctrl;
 
   try{
-    // Clean artist: take only first artist (before & , feat. ft.)
-    const cleanArtist = (song.artistName||'').split(/[&,]|feat\.|ft\./i)[0].trim();
-    const cleanTitle  = (song.trackName||'').replace(/\(.*?\)|\[.*?\]/g,'').trim();
-    const q = encodeURIComponent(`${cleanTitle} ${cleanArtist}`);
-    const r = await fetch(`/api/saavn?q=${q}`, { signal: ctrl.signal });
+    const rawTitle  = song.trackName  || '';
+    const rawArtist = song.artistName || '';
+
+    // Extract movie/album from "(From "MovieName")" or "(From MovieName)"
+    const movieMatch = rawTitle.match(/\(From\s+[""]?(.+?)[""]?\)/i);
+    const movieName  = movieMatch ? movieMatch[1].trim() : '';
+
+    // Clean title — remove all parenthetical notes
+    const cleanTitle  = rawTitle.replace(/\(.*?\)|\[.*?\]/g, '').trim();
+
+    // First artist only
+    const cleanArtist = rawArtist.split(/[&,]|feat\.|ft\./i)[0].trim();
+
+    // Best query: title + movie name (e.g. "Shararat Dhurandhar")
+    // Fallback query: title + artist
+    const primaryQ  = movieName
+      ? encodeURIComponent(`${cleanTitle} ${movieName}`)
+      : encodeURIComponent(`${cleanTitle} ${cleanArtist}`);
+    const fallbackQ = encodeURIComponent(`${cleanTitle} ${cleanArtist}`);
+
+    // Try primary query first
+    let r = await fetch(`/api/saavn?q=${primaryQ}&fallback=${fallbackQ}`, { signal: ctrl.signal });
     if(!r.ok) throw new Error('saavn_err');
     const d = await r.json();
 
