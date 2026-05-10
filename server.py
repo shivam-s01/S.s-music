@@ -1,31 +1,48 @@
 from flask import Flask, request, jsonify, send_file, Response, stream_with_context
-import requests, os
+import requests
+import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 app = Flask(__name__)
 
-# ── CORS helper ──
-def _cors(resp):
+
+# ─────────────────────────────────────────────
+# CORS
+# ─────────────────────────────────────────────
+def add_cors(resp):
     resp.headers['Access-Control-Allow-Origin'] = '*'
     resp.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
-    resp.headers['Access-Control-Allow-Headers'] = 'Range, Content-Type'
+    resp.headers['Access-Control-Allow-Headers'] = '*'
+    resp.headers['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range'
     return resp
+
 
 @app.after_request
 def after_request(resp):
-    return _cors(resp)
+    return add_cors(resp)
 
 
-# ── SERVE FRONTEND ──
+@app.route('/<path:path>', methods=['OPTIONS'])
+def options_handler(path):
+    return add_cors(Response(status=200))
+
+
+# ─────────────────────────────────────────────
+# FRONTEND
+# ─────────────────────────────────────────────
 @app.route('/')
 def index():
     return send_file(os.path.join(BASE_DIR, 'index.html'))
 
 
-# ── ITUNES SEARCH (metadata + 30s preview URLs) ──
+# ─────────────────────────────────────────────
+# ITUNES SEARCH
+# ─────────────────────────────────────────────
 @app.route('/api/songs')
 def get_songs():
     q = request.args.get('q', 'top songs')
+
     try:
         r = requests.get(
             'https://itunes.apple.com/search',
@@ -33,91 +50,203 @@ def get_songs():
                 'term': q,
                 'media': 'music',
                 'entity': 'song',
-                'limit': 25,
+                'limit': 30,
                 'country': 'US'
             },
-            timeout=8
+            timeout=15
         )
-        return jsonify(r.json())
-    except Exception:
-        return jsonify({'results': []})
+
+        data = r.json()
+
+        results = [
+            s for s in data.get('results', [])
+            if s.get('previewUrl')
+        ]
+
+        return jsonify({
+            'results': results
+        })
+
+    except Exception as e:
+        return jsonify({
+            'results': [],
+            'error': str(e)
+        })
 
 
-# ── JIOSAAVN FULL SONG URL ──
+# ─────────────────────────────────────────────
+# JIOSAAVN FULL SONG
+# ─────────────────────────────────────────────
 @app.route('/api/saavn')
-def get_saavn():
-    q = request.args.get('q', '')
+def get_saavn_song():
+
+    q = request.args.get('q', '').strip()
+
     if not q:
-        return jsonify({'url': None})
+        return jsonify({
+            'success': False,
+            'url': None
+        })
+
     try:
+
         r = requests.get(
             'https://saavn.dev/api/search/songs',
-            params={'query': q, 'limit': 5},
-            timeout=8
+            params={
+                'query': q,
+                'limit': 10
+            },
+            timeout=20,
+            headers={
+                'User-Agent': 'Mozilla/5.0'
+            }
         )
+
         data = r.json()
+
         results = data.get('data', {}).get('results', [])
-        for result in results:
-            # Try highest quality first (reversed = high quality last in list)
-            for item in reversed(result.get('downloadUrl', [])):
-                if item.get('url'):
-                    return jsonify({
-                        'url': item['url'],
-                        'quality': item.get('quality', ''),
-                        'name': result.get('name', '')
-                    })
-        return jsonify({'url': None})
+
+        if not results:
+            return jsonify({
+                'success': False,
+                'url': None
+            })
+
+        for song in results:
+
+            download_urls = song.get('downloadUrl', [])
+
+            if not download_urls:
+                continue
+
+            best = download_urls[-1]
+
+            url = best.get('url')
+
+            if url:
+                return jsonify({
+                    'success': True,
+                    'url': url,
+                    'quality': best.get('quality', '320kbps'),
+                    'title': song.get('name'),
+                    'artist': song.get('primaryArtists')
+                })
+
+        return jsonify({
+            'success': False,
+            'url': None
+        })
+
     except Exception as e:
-        return jsonify({'url': None, 'error': str(e)})
+        return jsonify({
+            'success': False,
+            'url': None,
+            'error': str(e)
+        })
 
 
-# ── AUDIO STREAM PROXY ──
-# Proxies Saavn (or any) audio URL through Flask to bypass browser CORS.
-# Supports Range requests so the <audio> element can seek properly.
+# ─────────────────────────────────────────────
+# AUDIO STREAM PROXY
+# ─────────────────────────────────────────────
 @app.route('/api/stream')
 def stream_audio():
-    url = request.args.get('url', '')
+
+    url = request.args.get('url', '').strip()
+
     if not url:
-        return jsonify({'error': 'no url'}), 400
+        return jsonify({
+            'error': 'Missing URL'
+        }), 400
 
     try:
-        req_headers = {'User-Agent': 'Mozilla/5.0 (compatible; AurumMusic/1.0)'}
-        # Forward Range header so partial-content / seeking works
-        range_header = request.headers.get('Range')
-        if range_header:
-            req_headers['Range'] = range_header
 
-        upstream = requests.get(url, stream=True, timeout=20, headers=req_headers)
-
-        resp_headers = {
-            'Content-Type': upstream.headers.get('Content-Type', 'audio/mpeg'),
-            'Accept-Ranges': 'bytes',
-            'Access-Control-Allow-Origin': '*',
+        headers = {
+            'User-Agent': 'Mozilla/5.0',
+            'Accept': '*/*',
+            'Connection': 'keep-alive'
         }
-        # Pass through useful headers from upstream
-        for h in ('Content-Length', 'Content-Range', 'Content-Disposition'):
-            if h in upstream.headers:
-                resp_headers[h] = upstream.headers[h]
+
+        range_header = request.headers.get('Range')
+
+        if range_header:
+            headers['Range'] = range_header
+
+        upstream = requests.get(
+            url,
+            headers=headers,
+            stream=True,
+            timeout=60,
+            allow_redirects=True
+        )
+
+        excluded_headers = [
+            'content-encoding',
+            'transfer-encoding',
+            'connection'
+        ]
+
+        response_headers = {}
+
+        for name, value in upstream.headers.items():
+
+            if name.lower() not in excluded_headers:
+                response_headers[name] = value
+
+        response_headers['Access-Control-Allow-Origin'] = '*'
+        response_headers['Accept-Ranges'] = 'bytes'
+        response_headers['Cache-Control'] = 'no-cache'
+
+        def generate():
+            try:
+                for chunk in upstream.iter_content(chunk_size=1024 * 64):
+
+                    if chunk:
+                        yield chunk
+
+            finally:
+                upstream.close()
 
         return Response(
-            stream_with_context(upstream.iter_content(chunk_size=16384)),
+            stream_with_context(generate()),
             status=upstream.status_code,
-            headers=resp_headers
+            headers=response_headers,
+            direct_passthrough=True
         )
+
+    except requests.exceptions.Timeout:
+        return jsonify({
+            'error': 'Stream timeout'
+        }), 504
+
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({
+            'error': str(e)
+        }), 500
 
 
-# ── YOUTUBE VIDEO ID SEARCH ──
+# ─────────────────────────────────────────────
+# YOUTUBE SEARCH
+# ─────────────────────────────────────────────
 @app.route('/api/search')
 def search_youtube():
-    q = request.args.get('q', '')
+
+    q = request.args.get('q', '').strip()
+
     if not q:
-        return jsonify({'error': 'no query'}), 400
+        return jsonify({
+            'videoId': None
+        })
+
     api_key = os.environ.get('YT_API_KEY', '')
+
     if not api_key:
-        return jsonify({'videoId': None, 'error': 'no api key'})
+        return jsonify({
+            'videoId': None,
+            'error': 'Missing API key'
+        })
+
     try:
+
         r = requests.get(
             'https://www.googleapis.com/youtube/v3/search',
             params={
@@ -127,15 +256,51 @@ def search_youtube():
                 'maxResults': 1,
                 'key': api_key
             },
-            timeout=8
+            timeout=15
         )
+
         data = r.json()
-        video_id = data.get('items', [{}])[0].get('id', {}).get('videoId', None)
-        return jsonify({'videoId': video_id})
-    except Exception:
-        return jsonify({'videoId': None})
+
+        items = data.get('items', [])
+
+        if not items:
+            return jsonify({
+                'videoId': None
+            })
+
+        video_id = items[0]['id']['videoId']
+
+        return jsonify({
+            'videoId': video_id
+        })
+
+    except Exception as e:
+        return jsonify({
+            'videoId': None,
+            'error': str(e)
+        })
 
 
+# ─────────────────────────────────────────────
+# HEALTH CHECK
+# ─────────────────────────────────────────────
+@app.route('/health')
+def health():
+    return jsonify({
+        'status': 'ok'
+    })
+
+
+# ─────────────────────────────────────────────
+# RUN
+# ─────────────────────────────────────────────
 if __name__ == '__main__':
+
     port = int(os.environ.get('PORT', 7700))
-    app.run(host='0.0.0.0', port=port, debug=False)
+
+    app.run(
+        host='0.0.0.0',
+        port=port,
+        threaded=True,
+        debug=False
+    )
