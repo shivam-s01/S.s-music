@@ -67,14 +67,27 @@ def icon512():
 @app.route('/api/songs')
 def get_songs():
     q = request.args.get('q', 'top songs')
+
     try:
         r = requests.get(
             'https://itunes.apple.com/search',
-            params={'term': q, 'media': 'music', 'entity': 'song', 'limit': 30, 'country': 'US'},
+            params={
+                'term': q,
+                'media': 'music',
+                'entity': 'song',
+                'limit': 30,
+                'country': 'US'
+            },
             timeout=15
         )
-        results = [s for s in r.json().get('results', []) if s.get('previewUrl')]
+
+        results = [
+            s for s in r.json().get('results', [])
+            if s.get('previewUrl')
+        ]
+
         return jsonify({'results': results})
+
     except Exception as e:
         return jsonify({'results': [], 'error': str(e)})
 
@@ -83,10 +96,23 @@ def get_songs():
 # QUERY CLEANER
 # ─────────────────────────────────────────────
 def clean_query(text):
-    text = re.sub(r'\(From\s+["\u201c\u201d\u2018\u2019]?[^)]*["\u201c\u201d\u2018\u2019]?\)', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'\((OST|official|audio|video|lyrics|full\s*song|feat\.?.*?)\)', '', text, flags=re.IGNORECASE)
+    text = re.sub(
+        r'\(From\s+["\u201c\u201d\u2018\u2019]?[^)]*["\u201c\u201d\u2018\u2019]?\)',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
+
+    text = re.sub(
+        r'\((OST|official|audio|video|lyrics|full\s*song|feat\.?.*?)\)',
+        '',
+        text,
+        flags=re.IGNORECASE
+    )
+
     text = re.sub(r'["\u201c\u201d\u2018\u2019\'()]', '', text)
     text = re.sub(r'\s+', ' ', text).strip()
+
     return text
 
 
@@ -98,6 +124,7 @@ def normalize(text):
     text = re.sub(r'[^a-z0-9\s]', '', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
+
 
 def title_score(query, song_title, song_artist=''):
     q = normalize(query)
@@ -124,15 +151,25 @@ def title_score(query, song_title, song_artist=''):
 # SINGLE MIRROR FETCH
 # ─────────────────────────────────────────────
 def fetch_from_mirror(mirror, query, min_score=0.4):
-    endpoints = ['/api/search/songs', '/api/search', '/search/songs']
+    endpoints = [
+        '/api/search/songs',
+        '/api/search',
+        '/search/songs'
+    ]
 
     for endpoint in endpoints:
         try:
             r = requests.get(
                 f'{mirror}{endpoint}',
-                params={'query': query, 'q': query, 'limit': 10},
+                params={
+                    'query': query,
+                    'q': query,
+                    'limit': 10
+                },
                 timeout=8,
-                headers={'User-Agent': 'Mozilla/5.0'}
+                headers={
+                    'User-Agent': 'Mozilla/5.0'
+                }
             )
 
             if r.status_code != 200:
@@ -161,13 +198,22 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
                     best_song = song
 
             if best_song and best_score >= min_score:
-                urls = best_song.get('downloadUrl') or best_song.get('download_url') or []
+                urls = (
+                    best_song.get('downloadUrl') or
+                    best_song.get('download_url') or
+                    []
+                )
 
                 for item in reversed(urls):
                     url = item.get('url') or item.get('link')
 
                     if url:
-                        print(f'[Saavn ✓] mirror={mirror} score={best_score:.2f} query="{query}" title="{best_song.get("name","")}"')
+                        print(
+                            f'[Saavn ✓] mirror={mirror} '
+                            f'score={best_score:.2f} '
+                            f'query="{query}" '
+                            f'title="{best_song.get("name","")}"'
+                        )
 
                         return {
                             'url': url,
@@ -190,7 +236,12 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
 def fetch_saavn_parallel(query, min_score=0.4):
     with ThreadPoolExecutor(max_workers=len(SAAVN_MIRRORS)) as executor:
         futures = {
-            executor.submit(fetch_from_mirror, mirror, query, min_score): mirror
+            executor.submit(
+                fetch_from_mirror,
+                mirror,
+                query,
+                min_score
+            ): mirror
             for mirror in SAAVN_MIRRORS
         }
 
@@ -212,7 +263,10 @@ def get_saavn_song():
     fallback = request.args.get('fallback', '').strip()
 
     if not q:
-        return jsonify({'success': False, 'url': None})
+        return jsonify({
+            'success': False,
+            'url': None
+        })
 
     q_clean = clean_query(q)
     fb_clean = clean_query(fallback) if fallback else ''
@@ -264,18 +318,27 @@ def get_saavn_song():
         result = fetch_saavn_parallel(query)
 
         if result:
-            return jsonify({'success': True, **result})
+            return jsonify({
+                'success': True,
+                **result
+            })
 
     print(f'[Saavn] Retrying with low threshold...')
 
     result = fetch_saavn_parallel(q_clean, min_score=0.1)
 
     if result:
-        return jsonify({'success': True, **result})
+        return jsonify({
+            'success': True,
+            **result
+        })
 
     print(f'[Saavn ✗] Failed for: "{q}"')
 
-    return jsonify({'success': False, 'url': None})
+    return jsonify({
+        'success': False,
+        'url': None
+    })
 
 
 # ─────────────────────────────────────────────
@@ -290,7 +353,10 @@ def stream_audio():
 
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'
+            ),
             'Accept': '*/*',
             'Accept-Language': 'en-US,en;q=0.9',
             'Connection': 'keep-alive',
@@ -309,7 +375,11 @@ def stream_audio():
             allow_redirects=True
         )
 
-        excluded = {'content-encoding', 'transfer-encoding', 'connection'}
+        excluded = {
+            'content-encoding',
+            'transfer-encoding',
+            'connection'
+        }
 
         resp_headers = {
             k: v for k, v in upstream.headers.items()
@@ -353,7 +423,10 @@ def health():
         try:
             r = requests.get(
                 f'{mirror}/api/search/songs',
-                params={'query': 'test', 'limit': 1},
+                params={
+                    'query': 'test',
+                    'limit': 1
+                },
                 timeout=5
             )
 
@@ -362,7 +435,10 @@ def health():
         except Exception as e:
             mirror_status[mirror] = f'down ({str(e)[:40]})'
 
-    return jsonify({'status': 'ok', 'mirrors': mirror_status})
+    return jsonify({
+        'status': 'ok',
+        'mirrors': mirror_status
+    })
 
 
 # ─────────────────────────────────────────────
@@ -370,4 +446,10 @@ def health():
 # ─────────────────────────────────────────────
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 7700))
-    app.run(host='0.0.0.0', port=port, threaded=True, debug=False)
+
+    app.run(
+        host='0.0.0.0',
+        port=port,
+        threaded=True,
+        debug=False
+    )
