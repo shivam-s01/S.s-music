@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Aurum</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#050508">
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -1556,6 +1558,11 @@ window.addEventListener('DOMContentLoaded',()=>{
   // Init volume
   const vs=document.getElementById('fp-vol-slider');if(vs)vs.style.setProperty('--vol','100%');
 });
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js');
+}
 </script>
 </body>
 </html>
