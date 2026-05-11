@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# STATIC FILES FIX
+# STATIC FILES ENABLED
 app = Flask(__name__, static_folder='.')
 
 SAAVN_MIRRORS = [
@@ -33,11 +33,6 @@ def add_cors(resp):
 @app.after_request
 def after_request(resp):
     return add_cors(resp)
-
-
-@app.route('/<path:path>', methods=['OPTIONS'])
-def options_handler(path):
-    return add_cors(Response(status=200))
 
 
 # ─────────────────────────────────────────────
@@ -76,7 +71,10 @@ def get_songs():
         return jsonify({'results': results})
 
     except Exception as e:
-        return jsonify({'results': [], 'error': str(e)})
+        return jsonify({
+            'results': [],
+            'error': str(e)
+        })
 
 
 # ─────────────────────────────────────────────
@@ -323,7 +321,9 @@ def stream_audio():
     url = request.args.get('url', '').strip()
 
     if not url:
-        return jsonify({'error': 'Missing URL'}), 400
+        return jsonify({
+            'error': 'Missing URL'
+        }), 400
 
     try:
         headers = {
@@ -380,10 +380,14 @@ def stream_audio():
         )
 
     except requests.exceptions.Timeout:
-        return jsonify({'error': 'Stream timeout'}), 504
+        return jsonify({
+            'error': 'Stream timeout'
+        }), 504
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({
+            'error': str(e)
+        }), 500
 
 
 # ─────────────────────────────────────────────
