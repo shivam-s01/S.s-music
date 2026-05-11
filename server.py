@@ -6,8 +6,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# STATIC FILES ENABLED
-app = Flask(__name__, static_folder='.')
+# ✅ STATIC FOLDER ENABLED
+app = Flask(__name__, static_folder='static')
 
 SAAVN_MIRRORS = [
     'https://saavn.dev',
@@ -29,10 +29,13 @@ def add_cors(resp):
     resp.headers['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range'
     return resp
 
-
 @app.after_request
 def after_request(resp):
     return add_cors(resp)
+
+@app.route('/<path:path>', methods=['OPTIONS'])
+def options_handler(path):
+    return add_cors(Response(status=200))
 
 
 # ─────────────────────────────────────────────
@@ -41,6 +44,14 @@ def after_request(resp):
 @app.route('/')
 def index():
     return send_file(os.path.join(BASE_DIR, 'index.html'))
+
+@app.route('/manifest.json')
+def manifest():
+    return send_file(os.path.join(BASE_DIR, 'manifest.json'))
+
+@app.route('/sw.js')
+def service_worker():
+    return send_file(os.path.join(BASE_DIR, 'sw.js'))
 
 
 # ─────────────────────────────────────────────
@@ -71,10 +82,7 @@ def get_songs():
         return jsonify({'results': results})
 
     except Exception as e:
-        return jsonify({
-            'results': [],
-            'error': str(e)
-        })
+        return jsonify({'results': [], 'error': str(e)})
 
 
 # ─────────────────────────────────────────────
@@ -193,13 +201,6 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
                     url = item.get('url') or item.get('link')
 
                     if url:
-                        print(
-                            f'[Saavn ✓] mirror={mirror} '
-                            f'score={best_score:.2f} '
-                            f'query="{query}" '
-                            f'title="{best_song.get("name","")}"'
-                        )
-
                         return {
                             'url': url,
                             'quality': item.get('quality', '320kbps'),
@@ -208,8 +209,7 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
                             'score': best_score,
                         }
 
-        except Exception as e:
-            print(f'[Saavn] {mirror}{endpoint} failed: {e}')
+        except:
             continue
 
     return None
@@ -255,42 +255,13 @@ def get_saavn_song():
 
     q_clean = clean_query(q)
     fb_clean = clean_query(fallback) if fallback else ''
-    parts = q_clean.split()
 
-    queries = []
+    queries = [q_clean]
 
-    queries.append(q_clean)
-
-    if q != q_clean:
-        queries.append(q)
-
-    if fb_clean and fb_clean not in queries:
+    if fb_clean:
         queries.append(fb_clean)
 
-    if fallback and fallback != q and fallback not in queries:
-        queries.append(fallback)
-
-    if len(parts) > 5:
-        queries.append(' '.join(parts[:5]))
-
-    if len(parts) > 3:
-        queries.append(' '.join(parts[:3]))
-
-    if len(parts) > 1:
-        queries.append(' '.join(parts[:2]))
-
-    seen, unique = set(), []
-
     for query in queries:
-        q_strip = query.strip()
-
-        if q_strip and q_strip not in seen:
-            seen.add(q_strip)
-            unique.append(q_strip)
-
-    print(f'[Saavn] Query ladder: {unique}')
-
-    for query in unique:
         result = fetch_saavn_parallel(query)
 
         if result:
@@ -298,14 +269,6 @@ def get_saavn_song():
                 'success': True,
                 **result
             })
-
-    result = fetch_saavn_parallel(q_clean, min_score=0.1)
-
-    if result:
-        return jsonify({
-            'success': True,
-            **result
-        })
 
     return jsonify({
         'success': False,
@@ -321,18 +284,12 @@ def stream_audio():
     url = request.args.get('url', '').strip()
 
     if not url:
-        return jsonify({
-            'error': 'Missing URL'
-        }), 400
+        return jsonify({'error': 'Missing URL'}), 400
 
     try:
         headers = {
-            'User-Agent': (
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'
-            ),
+            'User-Agent': 'Mozilla/5.0',
             'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
             'Connection': 'keep-alive',
         }
 
@@ -362,7 +319,6 @@ def stream_audio():
 
         resp_headers['Access-Control-Allow-Origin'] = '*'
         resp_headers['Accept-Ranges'] = 'bytes'
-        resp_headers['Cache-Control'] = 'no-cache'
 
         def generate():
             try:
@@ -379,15 +335,8 @@ def stream_audio():
             direct_passthrough=True
         )
 
-    except requests.exceptions.Timeout:
-        return jsonify({
-            'error': 'Stream timeout'
-        }), 504
-
     except Exception as e:
-        return jsonify({
-            'error': str(e)
-        }), 500
+        return jsonify({'error': str(e)}), 500
 
 
 # ─────────────────────────────────────────────
