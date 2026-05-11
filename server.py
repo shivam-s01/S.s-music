@@ -1,11 +1,13 @@
-from flask import Flask, request, jsonify, send_file, send_from_directory, Response, stream_with_context
+from flask import Flask, request, jsonify, send_file, Response, stream_with_context
 import requests
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-app = Flask(__name__)
+
+# STATIC FILES FIX
+app = Flask(__name__, static_folder='.')
 
 SAAVN_MIRRORS = [
     'https://saavn.dev',
@@ -27,9 +29,11 @@ def add_cors(resp):
     resp.headers['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range'
     return resp
 
+
 @app.after_request
 def after_request(resp):
     return add_cors(resp)
+
 
 @app.route('/<path:path>', methods=['OPTIONS'])
 def options_handler(path):
@@ -42,23 +46,6 @@ def options_handler(path):
 @app.route('/')
 def index():
     return send_file(os.path.join(BASE_DIR, 'index.html'))
-
-# PWA FILES
-@app.route('/manifest.json')
-def manifest():
-    return send_from_directory(BASE_DIR, 'manifest.json')
-
-@app.route('/sw.js')
-def service_worker():
-    return send_from_directory(BASE_DIR, 'sw.js')
-
-@app.route('/icon-192.png')
-def icon192():
-    return send_from_directory(BASE_DIR, 'icon-192.png')
-
-@app.route('/icon-512.png')
-def icon512():
-    return send_from_directory(BASE_DIR, 'icon-512.png')
 
 
 # ─────────────────────────────────────────────
@@ -117,7 +104,7 @@ def clean_query(text):
 
 
 # ─────────────────────────────────────────────
-# TITLE SIMILARITY — wrong song fix
+# TITLE SIMILARITY
 # ─────────────────────────────────────────────
 def normalize(text):
     text = text.lower()
@@ -294,15 +281,6 @@ def get_saavn_song():
     if len(parts) > 1:
         queries.append(' '.join(parts[:2]))
 
-    if fb_clean:
-        fb_parts = fb_clean.split()
-
-        if len(fb_parts) > 2:
-            queries.append(' '.join(fb_parts[:3]))
-
-        if len(fb_parts) > 1:
-            queries.append(' '.join(fb_parts[:2]))
-
     seen, unique = set(), []
 
     for query in queries:
@@ -323,8 +301,6 @@ def get_saavn_song():
                 **result
             })
 
-    print(f'[Saavn] Retrying with low threshold...')
-
     result = fetch_saavn_parallel(q_clean, min_score=0.1)
 
     if result:
@@ -332,8 +308,6 @@ def get_saavn_song():
             'success': True,
             **result
         })
-
-    print(f'[Saavn ✗] Failed for: "{q}"')
 
     return jsonify({
         'success': False,
@@ -417,27 +391,8 @@ def stream_audio():
 # ─────────────────────────────────────────────
 @app.route('/health')
 def health():
-    mirror_status = {}
-
-    for mirror in SAAVN_MIRRORS:
-        try:
-            r = requests.get(
-                f'{mirror}/api/search/songs',
-                params={
-                    'query': 'test',
-                    'limit': 1
-                },
-                timeout=5
-            )
-
-            mirror_status[mirror] = r.status_code
-
-        except Exception as e:
-            mirror_status[mirror] = f'down ({str(e)[:40]})'
-
     return jsonify({
-        'status': 'ok',
-        'mirrors': mirror_status
+        'status': 'ok'
     })
 
 
