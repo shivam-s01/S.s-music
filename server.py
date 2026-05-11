@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, send_file, Response, stream_with_context
+from flask import Flask, request, jsonify, send_file, send_from_directory, Response, stream_with_context
 import requests
 import os
 import re
@@ -46,19 +46,19 @@ def index():
 # PWA FILES
 @app.route('/manifest.json')
 def manifest():
-    return send_file(os.path.join(BASE_DIR, 'manifest.json'))
+    return send_from_directory(BASE_DIR, 'manifest.json')
 
 @app.route('/sw.js')
 def service_worker():
-    return send_file(os.path.join(BASE_DIR, 'sw.js'))
+    return send_from_directory(BASE_DIR, 'sw.js')
 
 @app.route('/icon-192.png')
 def icon192():
-    return send_file(os.path.join(BASE_DIR, 'icon-192.png'))
+    return send_from_directory(BASE_DIR, 'icon-192.png')
 
 @app.route('/icon-512.png')
 def icon512():
-    return send_file(os.path.join(BASE_DIR, 'icon-512.png'))
+    return send_from_directory(BASE_DIR, 'icon-512.png')
 
 
 # ─────────────────────────────────────────────
