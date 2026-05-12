@@ -53,6 +53,10 @@ def manifest():
 def service_worker():
     return send_file(os.path.join(BASE_DIR, 'sw.js'))
 
+@app.route('/.well-known/assetlinks.json')
+def assetlinks():
+    return app.send_static_file('assetlinks.json')
+
 
 # ─────────────────────────────────────────────
 # ITUNES SEARCH
