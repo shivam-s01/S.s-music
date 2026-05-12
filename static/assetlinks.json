@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "com.onrender.s_s_music.twa",
+        "sha256_cert_fingerprints": ["FA:95:30:7A:2B:AB:AC:BD:58:95:47:A3:9C:CB:53:50:2A:F0:DE:4C:67:5C:4E:85:A2:E7:34:3A:AE:46:C1:83"]
+      }
+    }]
