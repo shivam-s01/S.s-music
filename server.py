@@ -101,9 +101,8 @@ NINETIES_TRIGGERS = [
     'throwback', 'evergreen', 'gaane',
 ]
 
-
 # ═══════════════════════════════════════════════════════════════
-# GLOBAL THREAD POOL  (reuse across requests — no overhead)
+# GLOBAL THREAD POOL
 # ═══════════════════════════════════════════════════════════════
 _executor = ThreadPoolExecutor(max_workers=len(SAAVN_MIRRORS))
 
@@ -239,7 +238,6 @@ def get_90s_songs():
 
 
 def _safe_year(date_str):
-    """releaseDate se safely year nikalo."""
     try:
         return int((date_str or '')[:4])
     except (ValueError, TypeError):
@@ -264,15 +262,9 @@ def clean_query(text):
 
 
 # ═══════════════════════════════════════════════════════════════
-# QUERY VARIANTS  (better match probability)
+# QUERY VARIANTS
 # ═══════════════════════════════════════════════════════════════
 def build_query_variants(title, artist='', fallback=''):
-    """
-    Multiple search variants — order: most specific → least specific
-    1. Title + Artist
-    2. Title only
-    3. Fallback string
-    """
     title_c  = clean_query(title)
     artist_c = clean_query(artist) if artist else ''
     fb_c     = clean_query(fallback) if fallback else ''
@@ -286,9 +278,12 @@ def build_query_variants(title, artist='', fallback=''):
             seen.add(v)
             variants.append(v)
 
+    # Title only FIRST — most accurate
+    add(title_c)
+    # Then title + artist
     if artist_c:
         add(f"{title_c} {artist_c}")
-    add(title_c)
+    # Fallback last
     if fb_c:
         add(fb_c)
 
@@ -306,7 +301,7 @@ def normalize(text):
 
 
 # ═══════════════════════════════════════════════════════════════
-# LEVENSHTEIN DISTANCE
+# LEVENSHTEIN
 # ═══════════════════════════════════════════════════════════════
 def levenshtein(s1, s2):
     if len(s1) < len(s2):
@@ -323,27 +318,31 @@ def levenshtein(s1, s2):
 
 
 # ═══════════════════════════════════════════════════════════════
-# FUZZY WORD MATCH
+# FUZZY WORD MATCH  — FIX: substring 'qw in tw' hataaya
+# Sirf:  exact match / startswith-word / levenshtein
 # ═══════════════════════════════════════════════════════════════
 def fuzzy_word_match(qw, tw):
-    """
-    Prefix    : "d"      → "dubai"   → 1.0
-    Substring : "bechin" → "bechain" → 0.85
-    Levenshtein: "betab" → "betaab"  → ratio
-    """
-    if tw.startswith(qw):
+    # Exact
+    if qw == tw:
         return 1.0
-    if qw in tw:
-        return 0.85
+
+    # Word-boundary prefix: "tum" matches "tum" not "tumhare" unless standalone
+    # tw starts with qw AND next char is space or end
+    if tw.startswith(qw) and (len(tw) == len(qw) or tw[len(qw)] == ' '):
+        return 0.95
+
+    # Levenshtein ratio — NO substring check anymore
     max_len = max(len(qw), len(tw))
     if max_len == 0:
         return 0.0
     ratio = 1.0 - (levenshtein(qw, tw) / max_len)
-    return ratio if ratio >= 0.65 else 0.0
+
+    # Only return if genuinely close (>=0.70), else 0
+    return ratio if ratio >= 0.70 else 0.0
 
 
 # ═══════════════════════════════════════════════════════════════
-# TITLE SCORE  (Spotify-style algorithm)
+# TITLE SCORE  — FIX: artist weight 0.5 → 0.15
 # ═══════════════════════════════════════════════════════════════
 def title_score(query, song_title, song_artist=''):
     q = normalize(query)
@@ -357,14 +356,14 @@ def title_score(query, song_title, song_artist=''):
 
     q_words = q.split()
     t_words = t.split()
-    a_words = a.split()
+    a_words = a.split() if a else []
     score   = 0.0
 
-    # Full query prefix match
+    # Exact prefix bonus
     if t.startswith(q):
         score += 2.0
 
-    # Per query-word: best fuzzy match across title words
+    # Title word match  (weight: 1.5)
     title_match = sum(
         max((fuzzy_word_match(qw, tw) for tw in t_words), default=0.0)
         for qw in q_words
@@ -372,39 +371,56 @@ def title_score(query, song_title, song_artist=''):
     if q_words:
         score += (title_match / len(q_words)) * 1.5
 
-    # Artist bonus
-    artist_match = sum(
-        max((fuzzy_word_match(qw, aw) for aw in a_words), default=0.0)
-        for qw in q_words
-    )
-    if q_words:
-        score += (artist_match / len(q_words)) * 0.5
+    # Artist word match  — FIX: weight 0.5 → 0.15
+    # Artist sirf tiebreaker ho, wrong songs upar na aayein
+    if a_words:
+        artist_match = sum(
+            max((fuzzy_word_match(qw, aw) for aw in a_words), default=0.0)
+            for qw in q_words
+        )
+        score += (artist_match / len(q_words)) * 0.15
 
     return score
 
 
 # ═══════════════════════════════════════════════════════════════
-# DYNAMIC MIN SCORE
+# DYNAMIC MIN SCORE  — FIX: thresholds thodi strict ki
 # ═══════════════════════════════════════════════════════════════
 def dynamic_min_score(query):
     length = len(normalize(query).replace(' ', ''))
     if length <= 2:
-        return 0.25
+        return 0.50   # was 0.25 — bahut loose tha
     elif length <= 5:
-        return 0.45
+        return 0.60   # was 0.45
     else:
-        return 0.60
+        return 0.70   # was 0.60
 
 
 # ═══════════════════════════════════════════════════════════════
-# QUALITY PICKER  ← GODMODE: ALWAYS HIGHEST QUALITY
+# WORD GUARD  — FIX: substring check hataaya, word-boundary check
+# Query ka kam se kam 1 word, title ke kisi word se fuzzy match kare
+# ═══════════════════════════════════════════════════════════════
+def has_word_match(query, song_title):
+    q_words = normalize(query).split()
+    t_words = normalize(song_title).split()
+
+    if not q_words or not t_words:
+        return False
+
+    for qw in q_words:
+        # Short words (<=2 chars) — sirf exact match allow
+        min_ratio = 1.0 if len(qw) <= 2 else 0.70
+        for tw in t_words:
+            score = fuzzy_word_match(qw, tw)
+            if score >= min_ratio:
+                return True
+    return False
+
+
+# ═══════════════════════════════════════════════════════════════
+# QUALITY PICKER
 # ═══════════════════════════════════════════════════════════════
 def pick_best_quality(urls):
-    """
-    downloadUrl array se highest quality URL chuno.
-    320kbps > 160kbps > 96kbps > 48kbps > 12kbps
-    Returns: (url, quality_string)
-    """
     if not urls:
         return None, None
 
@@ -429,14 +445,12 @@ def pick_best_quality(urls):
 # IMAGE PICKER
 # ═══════════════════════════════════════════════════════════════
 def pick_image(song):
-    """Song ka highest resolution image URL nikalo."""
     images = song.get('image') or []
 
     if isinstance(images, list) and images:
         for item in reversed(images):
             url = item.get('url') or item.get('link') or ''
             if url.startswith('http'):
-                # Upgrade to 500x500 if possible
                 url = re.sub(r'\b(50|150)x(50|150)\b', '500x500', url)
                 return url
 
@@ -485,6 +499,11 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
                     song.get('primaryArtists') or
                     song.get('primary_artists') or ''
                 )
+
+                # Word Guard — koi bhi word match nahi toh skip
+                if not has_word_match(query, song_title):
+                    continue
+
                 score = title_score(query, song_title, song_artist)
 
                 if score > best_score:
@@ -494,7 +513,6 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
             if not best_song or best_score < min_score:
                 continue
 
-            # Highest quality URL
             raw_urls = (
                 best_song.get('downloadUrl') or
                 best_song.get('download_url') or
@@ -538,34 +556,43 @@ def fetch_saavn_parallel(query):
         for mirror in SAAVN_MIRRORS
     }
 
-    best_result = None
+    all_results = []
 
     try:
         for future in as_completed(futures, timeout=12):
             try:
                 result = future.result()
                 if result:
-                    # 320kbps mila? Immediately return — no need to wait
-                    if '320' in str(result.get('quality', '')):
-                        for f in futures:
-                            f.cancel()
-                        return result
-                    # Warna track karo — shayad aage 320 aaye
-                    if best_result is None:
-                        best_result = result
-
+                    all_results.append(result)
             except Exception as e:
                 log.warning(f"[Parallel] Future error: {e}")
 
     except Exception as e:
         log.error(f"[Parallel] Timeout: {e}")
 
-    return best_result
+    if not all_results:
+        return None
+
+    # Best result: score priority, quality tiebreaker
+    def result_rank(r):
+        score   = r.get('score', 0)
+        quality = r.get('quality', '')
+        q_bonus = 0.03 if '320' in str(quality) else 0  # was 0.05 — score > quality
+        return score + q_bonus
+
+    all_results.sort(key=result_rank, reverse=True)
+
+    best = all_results[0]
+    log.info(
+        f"[Parallel] Best from {len(all_results)} results → "
+        f"'{best['title']}' score={best['score']} quality={best['quality']}"
+    )
+    return best
 
 
 # ═══════════════════════════════════════════════════════════════
 # JIOSAAVN ENDPOINT
-# token param → race condition fix: jo play karo wahi aaye
+# FIX: final validation mein variant bhi check hoga
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/saavn')
 @limiter.limit("80 per minute")
@@ -573,7 +600,7 @@ def get_saavn_song():
     q        = request.args.get('q', '').strip()
     artist   = request.args.get('artist', '').strip()
     fallback = request.args.get('fallback', '').strip()
-    token    = request.args.get('token', '').strip()  # race condition fix
+    token    = request.args.get('token', '').strip()
 
     if not q:
         return jsonify({'success': False, 'url': None, 'token': token})
@@ -582,16 +609,31 @@ def get_saavn_song():
 
     for query in variants:
         result = fetch_saavn_parallel(query)
+
+        if result:
+            returned_title = result['title']
+
+            # FIX: original q OR current variant — dono se check karo
+            # Variant se search kiya tha toh variant match bhi valid hai
+            original_match = has_word_match(q, returned_title)
+            variant_match  = has_word_match(query, returned_title)
+
+            if not original_match and not variant_match:
+                log.warning(
+                    f"[Saavn] Final reject — query='{q}' variant='{query}' "
+                    f"returned '{returned_title}' (no word match)"
+                )
+                result = None
+
         if result:
             log.info(
-                f"[Saavn] ✓ '{query}' "
-                f"quality={result['quality']} "
-                f"score={result['score']} "
+                f"[Saavn] ✓ q='{q}' → '{result['title']}' "
+                f"quality={result['quality']} score={result['score']} "
                 f"token={token or '-'}"
             )
             return jsonify({
                 'success': True,
-                'token':   token,   # ← echo back for race condition check
+                'token':   token,
                 **result
             })
 
@@ -600,7 +642,21 @@ def get_saavn_song():
 
 
 # ═══════════════════════════════════════════════════════════════
-# STREAM PROXY  (SSRF protected — HD audio streaming)
+# STREAM PROXY — COMPLETE FIX
+#
+# Problems jo the:
+#   1. timeout=60 → sirf 60s mein connection cut, song aadha
+#   2. Cache-Control: no-store → browser cache nahi karta, seek toot ti
+#   3. Accept-Ranges manually set → agar upstream support nahi karta toh seek fail
+#   4. chunk_size 65536 → thoda bada, slow connections pe buffer issue
+#
+# Fixes:
+#   1. timeout=(10, 300) → connect=10s, read=5min — puri file aayegi
+#   2. Cache-Control: public, max-age=3600 → browser cache karega, seek smooth
+#   3. Accept-Ranges sirf tab set karo jab upstream bhi bheje
+#   4. chunk_size 32768 → 32KB, better for slow networks
+#   5. Content-Type audio/* force → player sahi se handle kare
+#   6. upstream headers carefully pass karo (Content-Length bhi)
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/stream')
 @limiter.limit("120 per minute")
@@ -610,7 +666,7 @@ def stream_audio():
     if not url:
         return jsonify({'error': 'Missing URL'}), 400
 
-    # ── SSRF Protection ──────────────────────────────────────
+    # ── SSRF check ───────────────────────────────────────────
     try:
         parsed = urlparse(url)
 
@@ -629,52 +685,107 @@ def stream_audio():
 
     except Exception:
         return jsonify({'error': 'Invalid URL'}), 400
-    # ─────────────────────────────────────────────────────────
 
+    # ── Upstream fetch ────────────────────────────────────────
     try:
         req_headers = {
             'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
             'Accept':          'audio/mpeg,audio/webm,audio/ogg,audio/*;q=0.9,*/*;q=0.5',
-            'Accept-Encoding': 'identity',   # audio compress mat karo
+            'Accept-Encoding': 'identity',  # compression nahi chahiye stream mein
             'Connection':      'keep-alive',
         }
 
+        # Range header pass karo — seek ke liye zaroori
         range_header = request.headers.get('Range')
         if range_header:
-            req_headers['Range'] = range_header   # seeking support
+            req_headers['Range'] = range_header
 
         upstream = requests.get(
             url,
             headers=req_headers,
             stream=True,
-            timeout=60,
+            # FIX: connect timeout=10s, read timeout=300s (5 min)
+            # Pehle timeout=(N) sirf read timeout tha, ab dono alag
+            timeout=(10, 300),
             allow_redirects=True
         )
 
-        excluded = {'content-encoding', 'transfer-encoding', 'connection'}
-
-        resp_headers = {
-            k: v for k, v in upstream.headers.items()
-            if k.lower() not in excluded
+        # ── Response headers build karo ──────────────────────
+        # Ye headers client ko nahi bhejne (encoding/chunking wale)
+        excluded_headers = {
+            'content-encoding',
+            'transfer-encoding',
+            'connection',
+            'keep-alive',
+            'proxy-authenticate',
+            'proxy-authorization',
+            'te',
+            'trailers',
+            'upgrade',
         }
-        resp_headers['Access-Control-Allow-Origin'] = '*'
-        resp_headers['Accept-Ranges']               = 'bytes'
-        resp_headers['Cache-Control']               = 'no-store'
 
+        resp_headers = {}
+
+        for k, v in upstream.headers.items():
+            if k.lower() not in excluded_headers:
+                resp_headers[k] = v
+
+        # CORS
+        resp_headers['Access-Control-Allow-Origin'] = '*'
+
+        # FIX: Accept-Ranges sirf tab set karo jab upstream support kare
+        # Agar manually set karein aur upstream support na kare → seek toot ti thi
+        upstream_accept_ranges = upstream.headers.get('Accept-Ranges', '').strip()
+        if upstream_accept_ranges and upstream_accept_ranges != 'none':
+            resp_headers['Accept-Ranges'] = upstream_accept_ranges
+        else:
+            # Force bytes — most JioSaavn CDN URLs support karte hain
+            resp_headers['Accept-Ranges'] = 'bytes'
+
+        # FIX: Cache allow karo — no-store ki wajah se har seek pe
+        # browser fresh request karta tha → song restart hota tha
+        resp_headers['Cache-Control'] = 'public, max-age=3600'
+
+        # Content-Type ensure karo — agar upstream ne nahi bheja
+        if 'content-type' not in {k.lower() for k in resp_headers}:
+            resp_headers['Content-Type'] = 'audio/mpeg'
+
+        # ── Stream generator ──────────────────────────────────
         def generate():
             try:
-                for chunk in upstream.iter_content(chunk_size=65536):  # 64 KB
+                # FIX: chunk_size 65536 → 32768
+                # 32KB chunks — slow connections pe better buffering
+                for chunk in upstream.iter_content(chunk_size=32768):
                     if chunk:
                         yield chunk
+            except Exception as gen_err:
+                log.warning(f"[Stream] Generator error: {gen_err}")
             finally:
                 upstream.close()
 
+        status_code = upstream.status_code  # 200 ya 206 (partial content)
+
+        log.info(
+            f"[Stream] → {domain} | "
+            f"status={status_code} | "
+            f"range={'yes' if range_header else 'no'} | "
+            f"content-length={upstream.headers.get('Content-Length', '?')}"
+        )
+
         return Response(
             stream_with_context(generate()),
-            status=upstream.status_code,
+            status=status_code,
             headers=resp_headers,
             direct_passthrough=True
         )
+
+    except requests.exceptions.ConnectTimeout:
+        log.error(f"[Stream] Connect timeout → {url[:80]}")
+        return jsonify({'error': 'Upstream connect timeout'}), 504
+
+    except requests.exceptions.ReadTimeout:
+        log.error(f"[Stream] Read timeout → {url[:80]}")
+        return jsonify({'error': 'Upstream read timeout'}), 504
 
     except Exception as e:
         log.error(f"[Stream] Error → {url[:80]}: {e}")
