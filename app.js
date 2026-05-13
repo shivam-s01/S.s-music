@@ -197,8 +197,7 @@ async function _autoFetchFullSong(song) {
       return; // Do NOT play wrong song — just keep preview
     }
 
-    // ── CHANGED: Cloudflare Workers proxy instead of /api/stream ─────────────
-    const proxyUrl = `https://aurum-stream.sharmashivam9109.workers.dev?url=${encodeURIComponent(d.url)}`;
+    const proxyUrl = `/api/stream?url=${encodeURIComponent(d.url)}`;
     _currentSaavnUrl = proxyUrl;
     _currentSaavnQuality = d.quality || 'unknown';
 
@@ -950,19 +949,19 @@ function addToRecentlyPlayed(song) {
 const SECTION_POOL = [
   {id:'recent',  title:'Continue Listening', type:'wide', fn:getRecentlyPlayedSongs},
   {id:'featured',title:'Made For You',        type:'featured', queries:[
-    'top bollywood songs 2024 hits','best hindi songs 2024','latest bollywood hits 2024',
-    'top hindi songs trending 2024','best bollywood songs playlist 2024'
+    'top bollywood songs hits','best hindi songs','latest bollywood hits',
+    'top hindi songs trending','best bollywood songs playlist'
   ]},
   {id:'trending',title:'Trending Now',        type:'cards', queries:[
-    'trending hindi songs chart 2024','bollywood chart toppers 2024',
-    'top 10 hindi songs this week','most popular bollywood 2024'
+    'trending hindi songs chart','bollywood chart toppers',
+    'top hindi songs this week','most popular bollywood songs'
   ]},
   {id:'mood',    title:'Mood: Late Night',    type:'bw', queries:[
     'sad emotional bollywood songs','heartbreak hindi songs arijit',
     'late night slow songs hindi','emotional romantic songs hindi'
   ]},
   {id:'classic', title:'Golden Era',          type:'bw', queries:[
-    '90s bollywood romantic classic songs hits','80s hindi classic songs',
+    '90s bollywood romantic classic songs','80s hindi classic songs',
     'old is gold bollywood songs kishore kumar','retro bollywood hits lata mangeshkar'
   ]},
   {id:'hiphop',  title:'Desi Hip-Hop',        type:'cards', queries:[
@@ -974,7 +973,7 @@ const SECTION_POOL = [
     'lo-fi hindi songs study chill','lofi beats india relaxing'
   ]},
   {id:'arijit', title:'Arijit Singh',         type:'rows', queries:[
-    'arijit singh best romantic songs','arijit singh top hits 2024',
+    'arijit singh best romantic songs','arijit singh top hits',
     'arijit singh soulful songs','arijit singh emotional hits'
   ]},
   {id:'workout', title:'Energy Boost',        type:'cards', queries:[
@@ -982,18 +981,18 @@ const SECTION_POOL = [
     'party hindi songs badshah','high energy bollywood beats'
   ]},
   {id:'new',     title:'New Releases',        type:'cards', queries:[
-    'new hindi songs 2024 latest','new bollywood songs released 2024',
-    'hindi songs december 2024','latest releases bollywood 2024'
+    'new hindi songs latest','new bollywood songs released',
+    'latest hindi songs hits','new bollywood songs trending'
   ]},
 ];
 
 const genreMap = {
-  all:'top bollywood songs 2024',
-  bollywood:'bollywood romantic songs 2024',
-  hiphop:'desi hip hop rap india 2024',
-  pop:'pop hits bollywood 2024',
+  all:'top bollywood songs hits',
+  bollywood:'bollywood romantic songs hits',
+  hiphop:'desi hip hop rap india',
+  pop:'pop hits bollywood',
   rock:'rock songs hindi',
-  indie:'indie bollywood songs 2024',
+  indie:'indie bollywood songs',
   rnb:'rnb soul songs india',
   lofi:'lofi chill beats hindi songs',
 };
@@ -1023,15 +1022,31 @@ function getRecentlyPlayedSongs() { return Promise.resolve(recentlyPlayed); }
 function _pickQuery(sec) { return sec.queries ? sec.queries[Math.floor(Math.random()*sec.queries.length)] : sec.query; }
 
 async function loadHomeSection(sec) {
-  // Never cache — always fresh content
   try {
     let songs;
     if (sec.fn) { songs = await sec.fn(); }
     else {
       const q = _pickQuery(sec);
-      const r = await fetch(`/api/songs?q=${encodeURIComponent(q)}`);
-      const d = await r.json();
-      songs = (d.results || []).filter(s => s.previewUrl);
+      // Timeout after 12s so sections don't hang forever
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 12000);
+      try {
+        const r = await fetch(`/api/songs?q=${encodeURIComponent(q)}`, { signal: ctrl.signal });
+        clearTimeout(to);
+        const d = await r.json();
+        songs = (d.results || []).filter(s => s.previewUrl);
+      } catch(fe) {
+        clearTimeout(to);
+        // Timeout ya network error — fallback query try karo
+        if (sec.queries && sec.queries.length > 1) {
+          const fallbackQ = sec.queries[Math.floor(Math.random() * sec.queries.length)];
+          const r2 = await fetch(`/api/songs?q=${encodeURIComponent(fallbackQ)}`);
+          const d2 = await r2.json();
+          songs = (d2.results || []).filter(s => s.previewUrl);
+        } else {
+          return [];
+        }
+      }
       // Shuffle for variety
       for (let i = songs.length - 1; i > 0; i--) { const j = Math.floor(Math.random()*(i+1)); [songs[i],songs[j]]=[songs[j],songs[i]]; }
     }
@@ -1092,7 +1107,12 @@ async function buildHomeSections(genre = 'all') {
 
 async function _renderSection(sec, wrap) {
   const songs = await loadHomeSection(sec);
-  if (!songs || !songs.length) { wrap.remove(); return; }
+  if (!songs || !songs.length) {
+    // Retry button dikhao — silently mat hatao
+    const el = document.getElementById('sec-' + sec.id);
+    if (el) el.innerHTML = `<div style="padding:18px 4px;text-align:center;"><button onclick="refreshSection('${sec.id}')" style="background:var(--surface2);border:none;color:var(--text2);font-size:12px;padding:8px 18px;border-radius:20px;cursor:pointer;font-family:inherit;">Retry</button></div>`;
+    return;
+  }
   const el = document.getElementById('sec-' + sec.id); if (!el) return;
   el.innerHTML = '';
   const type = sec.type === 'featured' ? 'cards' : sec.type;
@@ -1576,4 +1596,146 @@ function openAddToPlaylistModal() {
   if (!playlists.length) { opts.innerHTML = `<div style="padding:12px 0;text-align:center;color:var(--text3);font-size:12px;">No playlists yet.</div>`; }
   else playlists.forEach((pl, i) => {
     const div = document.createElement('div'); div.className = 'modal-option';
-    div.innerHTML = `<svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg><span
+    div.innerHTML = `<svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg><span>${esc(pl.name)} <span style="color:var(--text3);font-size:10px;">(${pl.songs.length})</span></span>`;
+    div.onclick = () => addToPlaylist(i); opts.appendChild(div);
+  });
+  document.getElementById('add-playlist-modal').classList.add('open');
+}
+function closeAddToPlaylistModal(e) { if (e && e.target !== document.getElementById('add-playlist-modal')) return; document.getElementById('add-playlist-modal').classList.remove('open'); }
+function addToPlaylist(i) { if (!modalTrack) return; const pl = playlists[i]; if (pl.songs.some(s => s.trackId === modalTrack.trackId)) { showToast('Already in "' + pl.name + '"'); } else { pl.songs.push(modalTrack); localStorage.setItem('aurum_playlists', JSON.stringify(playlists)); showToast('Added to "' + pl.name + '"'); } document.getElementById('add-playlist-modal').classList.remove('open'); modalTrack = null; }
+
+// ─── QUALITY MODAL ────────────────────────────────────────────────────────────
+function openQualitySheet() { if (!currentTrack) { showToast('Play a song first'); return; } const sub = document.getElementById('qs-track-name'); if (sub) sub.textContent = `${currentTrack.trackName || 'Unknown'} · ${currentTrack.artistName || 'Unknown'}`; updateQualityLabel(); document.getElementById('quality-modal').classList.add('open'); }
+function closeQualitySheet(e) { if (e && e.target !== document.getElementById('quality-modal')) return; document.getElementById('quality-modal').classList.remove('open'); }
+function selectQuality(q) {
+  if (q === 'preview') { _fallbackToPreview(currentTrack); document.getElementById('quality-modal').classList.remove('open'); }
+  else { if (_fullSongAbort) { _fullSongAbort.abort(); _fullSongAbort = null; } _autoFetchFullSong(currentTrack); document.getElementById('quality-modal').classList.remove('open'); }
+}
+
+// ─── DOWNLOAD ─────────────────────────────────────────────────────────────────
+function openDownloadModal() {
+  const song = currentTrack;
+  if (!song) { showToast('Play a song first'); return; }
+  _downloadSong = song;
+  const sub = document.getElementById('dl-track-name');
+  if (sub) sub.textContent = `${song.trackName || 'Unknown'} · ${song.artistName || 'Unknown'}`;
+  if (_currentSaavnQuality) { _updateDlSheetQuality(_currentSaavnQuality); }
+  else {
+    const desc = document.getElementById('dl-full-desc');
+    const badge = document.getElementById('dl-full-badge');
+    if (desc) desc.textContent = currentQuality === 'loading' ? 'Fetching stream…' : 'Play song first';
+    if (badge) { badge.textContent = '—'; badge.className = 'dl-kbps-badge b128'; }
+  }
+  document.getElementById('download-modal').classList.add('open');
+}
+function closeDownloadModal(e) {
+  if (e && e.target !== document.getElementById('download-modal')) return;
+  document.getElementById('download-modal').classList.remove('open'); _downloadSong = null;
+}
+async function triggerDownload(quality) {
+  const song = _downloadSong || currentTrack; _downloadSong = null;
+  if (!song) { showToast('No track selected'); return; }
+  document.getElementById('download-modal').classList.remove('open');
+
+  if (quality === 'preview') {
+    try {
+      showToast('Saving preview…');
+      const res = await fetch(song.previewUrl); if (!res.ok) throw new Error();
+      const blob = await res.blob(); const objUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = objUrl;
+      a.download = (song.trackName||'preview').replace(/[/\?%*:|"<>]/g,'-')+'_preview.m4a';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(objUrl), 5000);
+      showToast('Preview saved ✓'); haptic([10,30,10]);
+    } catch(e) { showToast('Download failed'); }
+
+  } else if (quality === 'ringtone') {
+    try {
+      showToast('Saving ringtone…');
+      const res = await fetch(song.previewUrl); if (!res.ok) throw new Error();
+      const blob = await res.blob(); const objUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = objUrl;
+      a.download = (song.trackName||'ringtone').replace(/[/\?%*:|"<>]/g,'-')+'_ringtone.m4a';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(objUrl), 5000);
+      showToast('Ringtone saved ✓'); haptic([10,30,10]);
+    } catch(e) { showToast('Download failed'); }
+
+  } else if (quality === 'full') {
+    if (!_currentSaavnUrl) { showToast('Play full song first'); return; }
+    await downloadSongOffline(song, _currentSaavnUrl);
+
+  } else if (quality === 'gift') {
+    showToast('Fetching 320 kbps…');
+    try {
+      const cleanTitle  = (song.trackName  || '').replace(/\(.*?\)/g,'').trim();
+      const cleanArtist = (song.artistName || '').split(/[&,]/)[0].trim();
+      const q = encodeURIComponent(`${cleanTitle} ${cleanArtist}`);
+      const r = await fetch(`/api/saavn?q=${q}&artist=${encodeURIComponent(cleanArtist)}`);
+      const d = await r.json();
+      if (!d.success || !d.url) {
+        showToast('320 kbps not available');
+        if (_currentSaavnUrl) await downloadSongOffline(song, _currentSaavnUrl);
+        return;
+      }
+      if (!_titleMatches(d.title, song.trackName)) { showToast('Song mismatch — aborted'); return; }
+      const proxyUrl = `/api/stream?url=${encodeURIComponent(d.url)}`;
+      await downloadSongOffline(song, proxyUrl, d.quality);
+    } catch(e) { showToast('Owner Gift failed'); }
+  }
+}
+
+// ─── TOAST ────────────────────────────────────────────────────────────────────
+let _toastTimer = null;
+function showToast(msg) {
+  const t = document.getElementById('toast'); t.textContent = msg;
+  t.classList.add('show'); clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+// ─── UTILS ────────────────────────────────────────────────────────────────────
+function esc(s) { return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+function formatMs(ms) { const s = Math.floor((ms || 0) / 1000); return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`; }
+function formatSec(s) { s = Math.floor(s || 0); return `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, '0')}`; }
+function haptic(pattern) { try { if (navigator.vibrate) navigator.vibrate(pattern); } catch(e) {} }
+document.addEventListener('keydown', e => { if (e.code === 'Space' && e.target.tagName !== 'INPUT') { e.preventDefault(); togglePlay(); } });
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  // ── Theme color sync with OS ──────────────────────────────────────
+  const mq = window.matchMedia('(prefers-color-scheme: light)');
+  function syncThemeColor(isLight) {
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = isLight ? '#f9f6f0' : '#050508';
+  }
+  mq.addEventListener('change', e => syncThemeColor(e.matches));
+  syncThemeColor(mq.matches);
+
+  // ── Low-end device detection ──────────────────────────────────────
+  const isLowEnd = (navigator.hardwareConcurrency || 8) <= 4 ||
+    (typeof navigator.deviceMemory !== 'undefined' && navigator.deviceMemory <= 2);
+  if (isLowEnd) {
+    document.documentElement.classList.add('low-end');
+    // Kill visualizer RAF entirely on low-end
+    if (vizRaf) { cancelAnimationFrame(vizRaf); vizRaf = null; }
+  }
+
+  initViz();
+  buildHomeSections('all');
+  renderSearchIdle();
+  renderLibrary();
+  const vs = document.getElementById('fp-vol-slider');
+  if (vs) vs.style.setProperty('--vol', '100%');
+  
+  // Fix viewport height for Android/Chrome
+  function setVH() {
+    document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`);
+  }
+  setVH();
+  window.addEventListener('resize', setVH, { passive: true });
+});
+
+// ─── SERVICE WORKER ───────────────────────────────────────────────────────────
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js');
+}
