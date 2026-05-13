@@ -9,6 +9,9 @@ requests>=2.31,<3.0
 # Rate limiting
 flask-limiter>=3.5,<4.0
 
+# Cache
+cachetools>=5.3.0
+
 # Production server (gevent WSGI)
 gunicorn>=21.2,<23.0
 gevent>=23.9,<25.0
