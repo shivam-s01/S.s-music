@@ -8,6 +8,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+from cachetools import TTLCache
+import threading
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -36,6 +38,26 @@ limiter = Limiter(
     default_limits=[],
     storage_uri="memory://"
 )
+
+
+# ═══════════════════════════════════════════════════════════════
+# CACHE  (thread-safe TTL cache)
+# ═══════════════════════════════════════════════════════════════
+_saavn_cache      = TTLCache(maxsize=600, ttl=3600)   # 1 hour
+_itunes_cache     = TTLCache(maxsize=400, ttl=1800)   # 30 min
+_cache_lock       = threading.Lock()
+
+
+def cache_get(cache, key):
+    with _cache_lock:
+        return cache.get(key)
+
+def cache_set(cache, key, value):
+    with _cache_lock:
+        try:
+            cache[key] = value
+        except Exception:
+            pass  # cache full — ignore silently
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -101,10 +123,38 @@ NINETIES_TRIGGERS = [
     'throwback', 'evergreen', 'gaane',
 ]
 
+# iTunes country routing by detected language/genre
+# Japanese songs → JP store has more complete catalog
+# English songs  → US store is most complete
+# Hindi/Bollywood → IN store
+ITUNES_COUNTRY_MAP = {
+    'japanese': 'JP',
+    'english':  'US',
+    'hindi':    'IN',
+    'default':  'IN',
+}
+
+# Japanese artist/keyword triggers
+JAPANESE_TRIGGERS = [
+    'japanese', 'jpop', 'j-pop', 'jrock', 'j-rock', 'anime',
+    'vocaloid', 'touhou', 'yoasobi', 'ado', 'fujii kaze',
+    'kenshi yonezu', 'yorushika', 'lisa', 'aimer', 'eve',
+    'bump of chicken', 'radwimps', 'one ok rock', 'back number',
+    'official hige dandism', 'king gnu', 'reol', 'zutomayo',
+]
+
+# English (non-Hindi) triggers — use US store
+ENGLISH_TRIGGERS = [
+    'english', 'pop', 'rock', 'hip hop', 'hiphop', 'rap',
+    'rnb', 'r&b', 'jazz', 'blues', 'country', 'edm', 'electronic',
+    'metal', 'punk', 'indie', 'alternative', 'kpop', 'k-pop',
+]
+
+
 # ═══════════════════════════════════════════════════════════════
-# GLOBAL THREAD POOL
+# GLOBAL THREAD POOL  (reduced from 6 → 3 to save RAM)
 # ═══════════════════════════════════════════════════════════════
-_executor = ThreadPoolExecutor(max_workers=len(SAAVN_MIRRORS))
+_executor = ThreadPoolExecutor(max_workers=3)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -156,7 +206,6 @@ def manifest():
 @app.route('/sw.js')
 def service_worker():
     resp = send_file(os.path.join(BASE_DIR, 'sw.js'), mimetype='application/javascript')
-    # SW must NOT be cached — always fresh
     resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
     resp.headers['Service-Worker-Allowed'] = '/'
     return resp
@@ -167,7 +216,29 @@ def assetlinks():
 
 
 # ═══════════════════════════════════════════════════════════════
-# ITUNES SEARCH  (90s era support)
+# LANGUAGE DETECTOR
+# ═══════════════════════════════════════════════════════════════
+def detect_query_language(q: str) -> str:
+    """Returns 'japanese', 'english', 'hindi', or 'default'."""
+    q_lower = q.lower()
+
+    # Check for Japanese Unicode characters
+    for ch in q:
+        cp = ord(ch)
+        if (0x3040 <= cp <= 0x30FF) or (0x4E00 <= cp <= 0x9FFF) or (0xFF00 <= cp <= 0xFFEF):
+            return 'japanese'
+
+    if any(t in q_lower for t in JAPANESE_TRIGGERS):
+        return 'japanese'
+
+    if any(t in q_lower for t in ENGLISH_TRIGGERS):
+        return 'english'
+
+    return 'default'
+
+
+# ═══════════════════════════════════════════════════════════════
+# ITUNES SEARCH  (multi-country, 90s era support)
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/songs')
 @limiter.limit("60 per minute")
@@ -178,6 +249,15 @@ def get_songs():
     is_90s      = (era == '90s') or any(t in q.lower() for t in NINETIES_TRIGGERS)
     search_term = random.choice(NINETIES_SEEDS) if is_90s else q
 
+    lang    = detect_query_language(q)
+    country = ITUNES_COUNTRY_MAP.get(lang, 'IN')
+
+    cache_key = f"itunes:{search_term}:{country}:{era}"
+    cached    = cache_get(_itunes_cache, cache_key)
+    if cached is not None:
+        log.info(f"[iTunes] Cache hit → '{search_term}' country={country}")
+        return jsonify(cached)
+
     try:
         r = requests.get(
             'https://itunes.apple.com/search',
@@ -186,7 +266,7 @@ def get_songs():
                 'media':   'music',
                 'entity':  'song',
                 'limit':   50,
-                'country': 'IN',
+                'country': country,
             },
             timeout=15
         )
@@ -202,11 +282,14 @@ def get_songs():
             if len(filtered) < 5:
                 filtered = [s for s in results if s.get('previewUrl')]
             random.shuffle(filtered)
-            return jsonify({'results': filtered[:30]})
+            payload = {'results': filtered[:30]}
+        else:
+            payload = {
+                'results': [s for s in results if s.get('previewUrl')]
+            }
 
-        return jsonify({
-            'results': [s for s in results if s.get('previewUrl')]
-        })
+        cache_set(_itunes_cache, cache_key, payload)
+        return jsonify(payload)
 
     except Exception as e:
         log.error(f"[iTunes] Search failed '{search_term}': {e}")
@@ -219,7 +302,12 @@ def get_songs():
 @app.route('/api/songs/90s')
 @limiter.limit("60 per minute")
 def get_90s_songs():
-    seed = random.choice(NINETIES_SEEDS)
+    seed      = random.choice(NINETIES_SEEDS)
+    cache_key = f"itunes:90s:{seed}"
+    cached    = cache_get(_itunes_cache, cache_key)
+    if cached is not None:
+        log.info(f"[iTunes/90s] Cache hit → '{seed}'")
+        return jsonify(cached)
 
     try:
         r = requests.get(
@@ -245,7 +333,9 @@ def get_90s_songs():
             filtered = [s for s in results if s.get('previewUrl')]
 
         random.shuffle(filtered)
-        return jsonify({'results': filtered[:30], 'seed': seed})
+        payload = {'results': filtered[:30], 'seed': seed}
+        cache_set(_itunes_cache, cache_key, payload)
+        return jsonify(payload)
 
     except Exception as e:
         log.error(f"[iTunes/90s] Seed '{seed}' failed: {e}")
@@ -307,7 +397,8 @@ def build_query_variants(title, artist='', fallback=''):
 # ═══════════════════════════════════════════════════════════════
 def normalize(text):
     text = text.lower()
-    text = re.sub(r'[^a-z0-9\s]', '', text)
+    # Keep Japanese characters intact for matching
+    text = re.sub(r'[^a-z0-9\s\u3040-\u30ff\u4e00-\u9fff\uff00-\uffef]', '', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -345,9 +436,9 @@ def fuzzy_word_match(qw, tw):
 
 
 # ═══════════════════════════════════════════════════════════════
-# TITLE SCORE
+# TITLE SCORE  (improved — artist name weighted more for JP/EN)
 # ═══════════════════════════════════════════════════════════════
-def title_score(query, song_title, song_artist=''):
+def title_score(query, song_title, song_artist='', lang='default'):
     q = normalize(query)
     t = normalize(song_title)
     a = normalize(song_artist)
@@ -373,11 +464,13 @@ def title_score(query, song_title, song_artist=''):
         score += (title_match / len(q_words)) * 1.5
 
     if a_words:
-        artist_match = sum(
+        # For Japanese/English, artist match matters more — boost weight
+        artist_weight = 0.40 if lang in ('japanese', 'english') else 0.15
+        artist_match  = sum(
             max((fuzzy_word_match(qw, aw) for aw in a_words), default=0.0)
             for qw in q_words
         )
-        score += (artist_match / len(q_words)) * 0.15
+        score += (artist_match / len(q_words)) * artist_weight
 
     return score
 
@@ -458,9 +551,9 @@ def pick_image(song):
 
 
 # ═══════════════════════════════════════════════════════════════
-# SINGLE MIRROR FETCH
+# SINGLE MIRROR FETCH  (lang-aware scoring)
 # ═══════════════════════════════════════════════════════════════
-def fetch_from_mirror(mirror, query, min_score=0.4):
+def fetch_from_mirror(mirror, query, min_score=0.4, lang='default'):
     endpoints = [
         '/api/search/songs',
         '/api/search',
@@ -500,7 +593,7 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
                 if not has_word_match(query, song_title):
                     continue
 
-                score = title_score(query, song_title, song_artist)
+                score = title_score(query, song_title, song_artist, lang)
 
                 if score > best_score:
                     best_score = score
@@ -542,14 +635,17 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
 
 
 # ═══════════════════════════════════════════════════════════════
-# PARALLEL MIRROR FETCH
+# PARALLEL MIRROR FETCH  (3 workers, lang-aware)
 # ═══════════════════════════════════════════════════════════════
-def fetch_saavn_parallel(query):
+def fetch_saavn_parallel(query, lang='default'):
     threshold = dynamic_min_score(query)
 
+    # Pick top 3 mirrors to keep thread usage minimal
+    mirrors_to_try = SAAVN_MIRRORS[:3]
+
     futures = {
-        _executor.submit(fetch_from_mirror, mirror, query, threshold): mirror
-        for mirror in SAAVN_MIRRORS
+        _executor.submit(fetch_from_mirror, mirror, query, threshold, lang): mirror
+        for mirror in mirrors_to_try
     }
 
     all_results = []
@@ -560,13 +656,25 @@ def fetch_saavn_parallel(query):
                 result = future.result()
                 if result:
                     all_results.append(result)
+                    # Early exit — if we have a high-confidence match, stop waiting
+                    if result.get('score', 0) >= 2.5:
+                        break
             except Exception as e:
                 log.warning(f"[Parallel] Future error: {e}")
 
     except Exception as e:
         log.error(f"[Parallel] Timeout: {e}")
 
+    # Cancel remaining futures to free threads ASAP
+    for f in futures:
+        f.cancel()
+
     if not all_results:
+        # Fallback: try remaining mirrors sequentially
+        for mirror in SAAVN_MIRRORS[3:]:
+            result = fetch_from_mirror(mirror, query, threshold, lang)
+            if result:
+                return result
         return None
 
     def result_rank(r):
@@ -586,7 +694,7 @@ def fetch_saavn_parallel(query):
 
 
 # ═══════════════════════════════════════════════════════════════
-# JIOSAAVN ENDPOINT
+# JIOSAAVN ENDPOINT  (with cache + lang detection)
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/saavn')
 @limiter.limit("80 per minute")
@@ -599,10 +707,18 @@ def get_saavn_song():
     if not q:
         return jsonify({'success': False, 'url': None, 'token': token})
 
+    # Cache key — based on normalized query + artist
+    cache_key = f"saavn:{normalize(q)}:{normalize(artist)}"
+    cached    = cache_get(_saavn_cache, cache_key)
+    if cached is not None:
+        log.info(f"[Saavn] Cache hit → '{q}' token={token or '-'}")
+        return jsonify({**cached, 'token': token})
+
+    lang     = detect_query_language(f"{q} {artist}")
     variants = build_query_variants(q, artist, fallback)
 
     for query in variants:
-        result = fetch_saavn_parallel(query)
+        result = fetch_saavn_parallel(query, lang)
 
         if result:
             returned_title = result['title']
@@ -618,22 +734,20 @@ def get_saavn_song():
 
         if result:
             log.info(
-                f"[Saavn] ✓ q='{q}' → '{result['title']}' "
+                f"[Saavn] ✓ q='{q}' lang={lang} → '{result['title']}' "
                 f"quality={result['quality']} score={result['score']} "
                 f"token={token or '-'}"
             )
-            return jsonify({
-                'success': True,
-                'token':   token,
-                **result
-            })
+            payload = {'success': True, **result}
+            cache_set(_saavn_cache, cache_key, payload)
+            return jsonify({**payload, 'token': token})
 
-    log.info(f"[Saavn] ✗ No match — q='{q}' token={token or '-'}")
+    log.info(f"[Saavn] ✗ No match — q='{q}' lang={lang} token={token or '-'}")
     return jsonify({'success': False, 'url': None, 'token': token})
 
 
 # ═══════════════════════════════════════════════════════════════
-# STREAM PROXY
+# STREAM PROXY  (larger chunks = fewer iterations = less CPU)
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/stream')
 @limiter.limit("120 per minute")
@@ -708,7 +822,8 @@ def stream_audio():
 
         def generate():
             try:
-                for chunk in upstream.iter_content(chunk_size=32768):
+                # 64KB chunks — half the system calls vs 32KB
+                for chunk in upstream.iter_content(chunk_size=65536):
                     if chunk:
                         yield chunk
             except Exception as gen_err:
