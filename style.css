@@ -273,7 +273,25 @@ img.img-error{opacity:1;}
 }
 #fp-bg-overlay{position:absolute;inset:0;background:var(--fp-overlay);}
 
-/* ── FIX: ambient glow nearly invisible in light mode ── */
+/* ── FIX: light mode — art ultra-bright so only subtle color tint shows, no dark shadow ── */
+[data-theme="light"] #fp-bg-art{
+  display:block !important;
+  filter:blur(80px) saturate(1.4) brightness(2.2) !important;
+  opacity:0.35 !important;
+}
+/* ── FIX: overlay = strong cream wash so dark patches can't bleed through ── */
+[data-theme="light"] #fp-bg-overlay{
+  background:linear-gradient(
+    to bottom,
+    rgba(249,246,240,0.82) 0%,
+    rgba(249,246,240,0.62) 20%,
+    rgba(249,246,240,0.82) 55%,
+    rgba(249,246,240,0.97) 75%,
+    rgba(249,246,240,1)   100%
+  ) !important;
+}
+
+/* ── FIX: ambient glow completely off in light mode ── */
 #fp-ambient-glow{
   position:absolute;bottom:-12%;left:-5%;right:-5%;height:54%;
   border-radius:50%;
@@ -283,8 +301,7 @@ img.img-error{opacity:1;}
   opacity:0.5;pointer-events:none;
 }
 [data-theme="light"] #fp-ambient-glow{
-  background:rgba(184,150,64,0.04);
-  opacity:0.12;
+  display:none !important;
 }
 
 #fullscreen-player>*:not(#fp-bg){position:relative;z-index:1;}
