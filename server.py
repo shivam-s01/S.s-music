@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify, send_file, Response, stream_with_context
+from werkzeug.middleware.proxy_fix import ProxyFix
 import requests
 import os
 import re
@@ -16,6 +17,9 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # ═══════════════════════════════════════════════════════════════
 app = Flask(__name__, static_folder='static')
 
+# ── Cloudflare / Render proxy ke peeche sahi IP milega ────────
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
 
 # ═══════════════════════════════════════════════════════════════
 # LOGGING
@@ -28,10 +32,22 @@ log = logging.getLogger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════
-# RATE LIMITER  (in-memory — no Redis needed)
+# REAL IP  (Cloudflare → CF-Connecting-IP pehle check karo)
+# ═══════════════════════════════════════════════════════════════
+def get_real_ip():
+    return (
+        request.headers.get('CF-Connecting-IP') or
+        request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or
+        request.remote_addr or
+        '127.0.0.1'
+    )
+
+
+# ═══════════════════════════════════════════════════════════════
+# RATE LIMITER
 # ═══════════════════════════════════════════════════════════════
 limiter = Limiter(
-    get_remote_address,
+    get_real_ip,
     app=app,
     default_limits=[],
     storage_uri="memory://"
@@ -41,7 +57,6 @@ limiter = Limiter(
 # ═══════════════════════════════════════════════════════════════
 # CONSTANTS
 # ═══════════════════════════════════════════════════════════════
-
 SAAVN_MIRRORS = [
     'https://saavn.dev',
     'https://jiosaavn-api-privatecvc2.vercel.app',
@@ -51,7 +66,6 @@ SAAVN_MIRRORS = [
     'https://saavn-api-eight.vercel.app',
 ]
 
-# SSRF protection — sirf inhi CDN domains se stream allowed
 ALLOWED_STREAM_DOMAINS = [
     'akamaized.net',
     'jiocdn.com',
@@ -63,36 +77,22 @@ ALLOWED_STREAM_DOMAINS = [
     'h.saavncdn.com',
 ]
 
-# Quality ranking — higher number = better quality
 QUALITY_RANK = {
-    '320kbps': 7,
-    '320':     7,
-    '160kbps': 5,
-    '160':     5,
-    '96kbps':  3,
-    '96':      3,
-    '48kbps':  2,
-    '48':      2,
-    '12kbps':  1,
-    '12':      1,
+    '320kbps': 7, '320': 7,
+    '160kbps': 5, '160': 5,
+    '96kbps':  3, '96':  3,
+    '48kbps':  2, '48':  2,
+    '12kbps':  1, '12':  1,
 }
 
 NINETIES_SEEDS = [
-    "Kumar Sanu hits",
-    "Udit Narayan 90s",
-    "Alka Yagnik 90s",
-    "Lata Mangeshkar 90s",
-    "Sonu Nigam 90s hits",
-    "Kavita Krishnamurthy songs",
-    "Asha Bhosle 90s",
-    "Abhijeet Bhattacharya hits",
-    "Shankar Mahadevan 90s",
-    "AR Rahman 90s",
-    "Anu Malik 90s hits",
-    "Nadeem Shravan songs",
-    "Jatin Lalit songs",
-    "Kumar Sanu Alka Yagnik duets",
-    "90s Bollywood superhits",
+    "Kumar Sanu hits", "Udit Narayan 90s", "Alka Yagnik 90s",
+    "Lata Mangeshkar 90s", "Sonu Nigam 90s hits",
+    "Kavita Krishnamurthy songs", "Asha Bhosle 90s",
+    "Abhijeet Bhattacharya hits", "Shankar Mahadevan 90s",
+    "AR Rahman 90s", "Anu Malik 90s hits",
+    "Nadeem Shravan songs", "Jatin Lalit songs",
+    "Kumar Sanu Alka Yagnik duets", "90s Bollywood superhits",
 ]
 
 NINETIES_TRIGGERS = [
@@ -101,15 +101,11 @@ NINETIES_TRIGGERS = [
     'throwback', 'evergreen', 'gaane',
 ]
 
-
-# ═══════════════════════════════════════════════════════════════
-# GLOBAL THREAD POOL
-# ═══════════════════════════════════════════════════════════════
 _executor = ThreadPoolExecutor(max_workers=len(SAAVN_MIRRORS))
 
 
 # ═══════════════════════════════════════════════════════════════
-# CORS
+# CORS  (Cloudflare ke saath bhi kaam karega)
 # ═══════════════════════════════════════════════════════════════
 def add_cors(resp):
     resp.headers['Access-Control-Allow-Origin']   = '*'
@@ -130,7 +126,7 @@ def options_handler(path):
 
 
 # ═══════════════════════════════════════════════════════════════
-# FRONTEND ROUTES  (PWA — TOUCH NAHI KARNA)
+# FRONTEND ROUTES  (PWA — static files sahi serve honge)
 # ═══════════════════════════════════════════════════════════════
 @app.route('/')
 def index():
@@ -139,12 +135,24 @@ def index():
 
 @app.route('/manifest.json')
 def manifest():
-    return send_file(os.path.join(BASE_DIR, 'manifest.json'))
+    resp = send_file(
+        os.path.join(BASE_DIR, 'manifest.json'),
+        mimetype='application/manifest+json'
+    )
+    resp.headers['Cache-Control'] = 'public, max-age=86400'
+    return resp
 
 
 @app.route('/sw.js')
 def service_worker():
-    return send_file(os.path.join(BASE_DIR, 'sw.js'))
+    resp = send_file(
+        os.path.join(BASE_DIR, 'sw.js'),
+        mimetype='application/javascript'
+    )
+    # SW ko cache mat karo — PWABuilder requirement
+    resp.headers['Cache-Control']        = 'no-cache, no-store, must-revalidate'
+    resp.headers['Service-Worker-Allowed'] = '/'
+    return resp
 
 
 @app.route('/.well-known/assetlinks.json')
@@ -153,7 +161,19 @@ def assetlinks():
 
 
 # ═══════════════════════════════════════════════════════════════
-# ITUNES SEARCH  (90s era support)
+# STATIC FILES CATCH-ALL  ← 405 FIX
+# app.js, style.css, icons, fonts — sab serve honge
+# ═══════════════════════════════════════════════════════════════
+@app.route('/<path:filename>')
+def serve_static(filename):
+    file_path = os.path.join(BASE_DIR, filename)
+    if os.path.isfile(file_path):
+        return send_file(file_path)
+    return jsonify({'error': 'Not found'}), 404
+
+
+# ═══════════════════════════════════════════════════════════════
+# ITUNES SEARCH
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/songs')
 @limiter.limit("60 per minute")
@@ -200,7 +220,7 @@ def get_songs():
 
 
 # ═══════════════════════════════════════════════════════════════
-# 90s DEDICATED ENDPOINT
+# 90s ENDPOINT
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/songs/90s')
 @limiter.limit("60 per minute")
@@ -246,7 +266,7 @@ def _safe_year(date_str):
 
 
 # ═══════════════════════════════════════════════════════════════
-# QUERY CLEANER
+# HELPERS
 # ═══════════════════════════════════════════════════════════════
 def clean_query(text):
     text = re.sub(
@@ -258,52 +278,34 @@ def clean_query(text):
         '', text, flags=re.IGNORECASE
     )
     text = re.sub(r'["\u201c\u201d\u2018\u2019\'()]', '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+    return re.sub(r'\s+', ' ', text).strip()
 
 
-# ═══════════════════════════════════════════════════════════════
-# QUERY VARIANTS
-# ═══════════════════════════════════════════════════════════════
 def build_query_variants(title, artist='', fallback=''):
     title_c  = clean_query(title)
     artist_c = clean_query(artist) if artist else ''
     fb_c     = clean_query(fallback) if fallback else ''
-
-    seen     = set()
-    variants = []
+    seen, variants = set(), []
 
     def add(v):
         v = v.strip()
         if v and v not in seen:
-            seen.add(v)
-            variants.append(v)
+            seen.add(v); variants.append(v)
 
-    # Title only FIRST — most accurate
     add(title_c)
-    # Then title + artist
     if artist_c:
         add(f"{title_c} {artist_c}")
-    # Fallback last
     if fb_c:
         add(fb_c)
-
     return variants
 
 
-# ═══════════════════════════════════════════════════════════════
-# NORMALIZER
-# ═══════════════════════════════════════════════════════════════
 def normalize(text):
     text = text.lower()
     text = re.sub(r'[^a-z0-9\s]', '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+    return re.sub(r'\s+', ' ', text).strip()
 
 
-# ═══════════════════════════════════════════════════════════════
-# LEVENSHTEIN
-# ═══════════════════════════════════════════════════════════════
 def levenshtein(s1, s2):
     if len(s1) < len(s2):
         return levenshtein(s2, s1)
@@ -313,92 +315,51 @@ def levenshtein(s1, s2):
     for i, c1 in enumerate(s1):
         curr = [i + 1]
         for j, c2 in enumerate(s2):
-            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (c1 != c2)))
+            curr.append(min(prev[j+1]+1, curr[j]+1, prev[j]+(c1 != c2)))
         prev = curr
     return prev[-1]
 
 
-# ═══════════════════════════════════════════════════════════════
-# FUZZY WORD MATCH
-# ═══════════════════════════════════════════════════════════════
 def fuzzy_word_match(qw, tw):
-    if tw.startswith(qw):
-        return 1.0
-    if qw in tw:
-        return 0.85
+    if tw.startswith(qw): return 1.0
+    if qw in tw:          return 0.85
     max_len = max(len(qw), len(tw))
-    if max_len == 0:
-        return 0.0
+    if max_len == 0:      return 0.0
     ratio = 1.0 - (levenshtein(qw, tw) / max_len)
     return ratio if ratio >= 0.65 else 0.0
 
 
-# ═══════════════════════════════════════════════════════════════
-# TITLE SCORE
-# ═══════════════════════════════════════════════════════════════
 def title_score(query, song_title, song_artist=''):
-    q = normalize(query)
-    t = normalize(song_title)
-    a = normalize(song_artist)
-
-    if not q:
-        return 0.0
-    if q == t:
-        return 3.0
-
-    q_words = q.split()
-    t_words = t.split()
-    a_words = a.split()
-    score   = 0.0
-
-    if t.startswith(q):
-        score += 2.0
-
+    q, t, a = normalize(query), normalize(song_title), normalize(song_artist)
+    if not q:   return 0.0
+    if q == t:  return 3.0
+    q_words, t_words, a_words = q.split(), t.split(), a.split()
+    score = 0.0
+    if t.startswith(q): score += 2.0
     title_match = sum(
         max((fuzzy_word_match(qw, tw) for tw in t_words), default=0.0)
         for qw in q_words
     )
-    if q_words:
-        score += (title_match / len(q_words)) * 1.5
-
+    if q_words: score += (title_match / len(q_words)) * 1.5
     artist_match = sum(
         max((fuzzy_word_match(qw, aw) for aw in a_words), default=0.0)
         for qw in q_words
     )
-    if q_words:
-        score += (artist_match / len(q_words)) * 0.5
-
+    if q_words: score += (artist_match / len(q_words)) * 0.5
     return score
 
 
-# ═══════════════════════════════════════════════════════════════
-# DYNAMIC MIN SCORE
-# ═══════════════════════════════════════════════════════════════
 def dynamic_min_score(query):
     length = len(normalize(query).replace(' ', ''))
-    if length <= 2:
-        return 0.25
-    elif length <= 5:
-        return 0.45
-    else:
-        return 0.60
+    if length <= 2:  return 0.25
+    elif length <= 5: return 0.45
+    else:            return 0.60
 
 
-# ═══════════════════════════════════════════════════════════════
-# WORD GUARD  ← FIX #1: zero-match songs block karo
-# ═══════════════════════════════════════════════════════════════
 def has_word_match(query, song_title):
-    """
-    Minimum check: query ka kam se kam 1 word
-    song title mein fuzzy match hona CHAHIYE.
-    Agar koi bhi word match nahi → reject karo.
-    """
     q_words = normalize(query).split()
     t_words = normalize(song_title).split()
-
-    if not q_words or not t_words:
-        return False
-
+    if not q_words or not t_words: return False
     for qw in q_words:
         for tw in t_words:
             if fuzzy_word_match(qw, tw) >= 0.60:
@@ -406,58 +367,39 @@ def has_word_match(query, song_title):
     return False
 
 
-# ═══════════════════════════════════════════════════════════════
-# QUALITY PICKER
-# ═══════════════════════════════════════════════════════════════
 def pick_best_quality(urls):
-    if not urls:
-        return None, None
+    if not urls: return None, None
 
     def rank(item):
         q = (item.get('quality') or '').lower().strip()
-        if q in QUALITY_RANK:
-            return QUALITY_RANK[q]
+        if q in QUALITY_RANK: return QUALITY_RANK[q]
         m = re.search(r'(\d+)', q)
         return int(m.group(1)) if m else 0
 
-    sorted_urls = sorted(urls, key=rank, reverse=True)
-
-    for item in sorted_urls:
+    for item in sorted(urls, key=rank, reverse=True):
         url = item.get('url') or item.get('link') or ''
         if url.startswith('http'):
             return url, item.get('quality', 'unknown')
-
     return None, None
 
 
-# ═══════════════════════════════════════════════════════════════
-# IMAGE PICKER
-# ═══════════════════════════════════════════════════════════════
 def pick_image(song):
     images = song.get('image') or []
-
     if isinstance(images, list) and images:
         for item in reversed(images):
             url = item.get('url') or item.get('link') or ''
             if url.startswith('http'):
-                url = re.sub(r'\b(50|150)x(50|150)\b', '500x500', url)
-                return url
-
+                return re.sub(r'\b(50|150)x(50|150)\b', '500x500', url)
     if isinstance(images, str) and images.startswith('http'):
         return re.sub(r'\b(50|150)x(50|150)\b', '500x500', images)
-
     return ''
 
 
 # ═══════════════════════════════════════════════════════════════
-# SINGLE MIRROR FETCH  ← FIX #2: word guard added
+# MIRROR FETCH
 # ═══════════════════════════════════════════════════════════════
 def fetch_from_mirror(mirror, query, min_score=0.4):
-    endpoints = [
-        '/api/search/songs',
-        '/api/search',
-        '/search/songs',
-    ]
+    endpoints = ['/api/search/songs', '/api/search', '/search/songs']
 
     for endpoint in endpoints:
         try:
@@ -467,20 +409,16 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
                 timeout=8,
                 headers={'User-Agent': 'Mozilla/5.0'}
             )
-
-            if r.status_code != 200:
-                continue
+            if r.status_code != 200: continue
 
             data    = r.json()
             results = (
                 data.get('data', {}).get('results') or
                 data.get('results') or
-                data.get('songs', {}).get('results') or
-                []
+                data.get('songs', {}).get('results') or []
             )
 
-            best_song  = None
-            best_score = -1
+            best_song, best_score = None, -1
 
             for song in results:
                 song_title  = song.get('name') or song.get('title', '')
@@ -488,34 +426,23 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
                     song.get('primaryArtists') or
                     song.get('primary_artists') or ''
                 )
-
-                # ── Word Guard ────────────────────────────────
-                # Ek bhi word match nahi? Skip karo — galat song hai
-                if not has_word_match(query, song_title):
-                    continue
-                # ─────────────────────────────────────────────
-
+                if not has_word_match(query, song_title): continue
                 score = title_score(query, song_title, song_artist)
-
                 if score > best_score:
                     best_score = score
                     best_song  = song
 
-            if not best_song or best_score < min_score:
-                continue
+            if not best_song or best_score < min_score: continue
 
             raw_urls = (
                 best_song.get('downloadUrl') or
-                best_song.get('download_url') or
-                []
+                best_song.get('download_url') or []
             )
             if isinstance(raw_urls, str):
                 raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
 
             best_url, quality = pick_best_quality(raw_urls)
-
-            if not best_url:
-                continue
+            if not best_url: continue
 
             return {
                 'url':     best_url,
@@ -536,56 +463,42 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
     return None
 
 
-# ═══════════════════════════════════════════════════════════════
-# PARALLEL MIRROR FETCH  ← FIX #3: best score wins, not first 320
-# ═══════════════════════════════════════════════════════════════
 def fetch_saavn_parallel(query):
     threshold = dynamic_min_score(query)
-
-    futures = {
+    futures   = {
         _executor.submit(fetch_from_mirror, mirror, query, threshold): mirror
         for mirror in SAAVN_MIRRORS
     }
-
     all_results = []
 
     try:
         for future in as_completed(futures, timeout=12):
             try:
                 result = future.result()
-                if result:
-                    all_results.append(result)
+                if result: all_results.append(result)
             except Exception as e:
                 log.warning(f"[Parallel] Future error: {e}")
-
     except Exception as e:
         log.error(f"[Parallel] Timeout: {e}")
 
-    if not all_results:
-        return None
+    if not all_results: return None
 
-    # ── Best result chuno: score > quality ───────────────────
-    # Pehle score dekho, phir quality
-    # Agar 2 results ka score same hai → 320kbps wala lelo
     def result_rank(r):
         score   = r.get('score', 0)
         quality = r.get('quality', '')
-        q_bonus = 0.05 if '320' in str(quality) else 0
-        return score + q_bonus
+        return score + (0.05 if '320' in str(quality) else 0)
 
     all_results.sort(key=result_rank, reverse=True)
-
     best = all_results[0]
     log.info(
-        f"[Parallel] Best from {len(all_results)} results → "
-        f"'{best['title']}' score={best['score']} quality={best['quality']}"
+        f"[Parallel] Best → '{best['title']}' "
+        f"score={best['score']} quality={best['quality']}"
     )
     return best
 
 
 # ═══════════════════════════════════════════════════════════════
 # JIOSAAVN ENDPOINT
-# token param → race condition fix
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/saavn')
 @limiter.limit("80 per minute")
@@ -598,40 +511,29 @@ def get_saavn_song():
     if not q:
         return jsonify({'success': False, 'url': None, 'token': token})
 
-    variants = build_query_variants(q, artist, fallback)
-
-    for query in variants:
+    for query in build_query_variants(q, artist, fallback):
         result = fetch_saavn_parallel(query)
 
-        # ── Final validation ──────────────────────────────────
-        # Result aaya lekin original query se match nahi karta?
-        # Reject karo — galat song return nahi hona chahiye
-        if result:
-            if not has_word_match(q, result['title']):
-                log.warning(
-                    f"[Saavn] Final reject — query='{q}' "
-                    f"returned '{result['title']}' (no word match)"
-                )
-                result = None
+        if result and not has_word_match(q, result['title']):
+            log.warning(
+                f"[Saavn] Final reject — query='{q}' "
+                f"returned '{result['title']}' (no word match)"
+            )
+            result = None
 
         if result:
             log.info(
                 f"[Saavn] ✓ q='{q}' → '{result['title']}' "
-                f"quality={result['quality']} score={result['score']} "
-                f"token={token or '-'}"
+                f"quality={result['quality']} score={result['score']}"
             )
-            return jsonify({
-                'success': True,
-                'token':   token,
-                **result
-            })
+            return jsonify({'success': True, 'token': token, **result})
 
-    log.info(f"[Saavn] ✗ No match — q='{q}' token={token or '-'}")
+    log.info(f"[Saavn] ✗ No match — q='{q}'")
     return jsonify({'success': False, 'url': None, 'token': token})
 
 
 # ═══════════════════════════════════════════════════════════════
-# STREAM PROXY  (SSRF protected)
+# STREAM PROXY  ← Cloudflare + full song ke liye improved
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/stream')
 @limiter.limit("120 per minute")
@@ -643,7 +545,6 @@ def stream_audio():
 
     try:
         parsed = urlparse(url)
-
         if parsed.scheme not in ('http', 'https'):
             return jsonify({'error': 'Invalid URL scheme'}), 400
 
@@ -652,7 +553,6 @@ def stream_audio():
             domain == d or domain.endswith('.' + d)
             for d in ALLOWED_STREAM_DOMAINS
         )
-
         if not allowed:
             log.warning(f"[Stream] Blocked domain: {domain}")
             return jsonify({'error': 'Domain not allowed'}), 403
@@ -681,14 +581,20 @@ def stream_audio():
         )
 
         excluded = {'content-encoding', 'transfer-encoding', 'connection'}
-
         resp_headers = {
             k: v for k, v in upstream.headers.items()
             if k.lower() not in excluded
         }
-        resp_headers['Access-Control-Allow-Origin'] = '*'
-        resp_headers['Accept-Ranges']               = 'bytes'
-        resp_headers['Cache-Control']               = 'no-store'
+
+        # ── Cloudflare + browser audio ke liye important headers ──
+        resp_headers['Access-Control-Allow-Origin']  = '*'
+        resp_headers['Accept-Ranges']                = 'bytes'
+        resp_headers['Cache-Control']                = 'no-store'
+        resp_headers['X-Content-Type-Options']       = 'nosniff'
+
+        # Content-Type audio set karo agar missing hai
+        if 'content-type' not in {k.lower() for k in resp_headers}:
+            resp_headers['Content-Type'] = 'audio/mpeg'
 
         def generate():
             try:
