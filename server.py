@@ -396,6 +396,40 @@ def pick_image(song):
 
 
 # ═══════════════════════════════════════════════════════════════
+# DATA SAVER — LOW QUALITY PICKER
+# ═══════════════════════════════════════════════════════════════
+def _pick_low_quality(urls):
+    """Data Saver mode ke liye lowest acceptable quality URL."""
+    if not urls:
+        return None, None
+
+    LOW_PREFERENCE = ['96kbps', '96', '128kbps', '128', '48kbps', '48']
+
+    for preferred in LOW_PREFERENCE:
+        for item in urls:
+            q = (item.get('quality') or '').lower().strip()
+            if q == preferred or preferred in q:
+                url = item.get('url') or item.get('link') or ''
+                if url.startswith('http'):
+                    return url, item.get('quality', preferred)
+
+    # Fallback: lowest available
+    def rank(item):
+        q = (item.get('quality') or '').lower().strip()
+        if q in QUALITY_RANK:
+            return QUALITY_RANK[q]
+        m = re.search(r'(\d+)', q)
+        return int(m.group(1)) if m else 999
+
+    for item in sorted(urls, key=rank):
+        url = item.get('url') or item.get('link') or ''
+        if url.startswith('http'):
+            return url, item.get('quality', 'low')
+
+    return None, None
+
+
+# ═══════════════════════════════════════════════════════════════
 # MIRROR FETCH
 # ═══════════════════════════════════════════════════════════════
 def fetch_from_mirror(mirror, query, min_score=0.4):
@@ -445,15 +479,16 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
             if not best_url: continue
 
             return {
-                'url':     best_url,
-                'quality': quality,
-                'title':   best_song.get('name') or best_song.get('title', ''),
-                'artist':  (
+                'url':       best_url,
+                'quality':   quality,
+                'title':     best_song.get('name') or best_song.get('title', ''),
+                'artist':    (
                     best_song.get('primaryArtists') or
                     best_song.get('primary_artists') or ''
                 ),
-                'image':   pick_image(best_song),
-                'score':   round(best_score, 3),
+                'image':     pick_image(best_song),
+                'score':     round(best_score, 3),
+                '_raw_urls': raw_urls,  # Data Saver ke liye
             }
 
         except Exception as e:
@@ -498,15 +533,16 @@ def fetch_saavn_parallel(query):
 
 
 # ═══════════════════════════════════════════════════════════════
-# JIOSAAVN ENDPOINT
+# JIOSAAVN ENDPOINT  ← low_quality param support added
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/saavn')
 @limiter.limit("80 per minute")
 def get_saavn_song():
-    q        = request.args.get('q', '').strip()
-    artist   = request.args.get('artist', '').strip()
-    fallback = request.args.get('fallback', '').strip()
-    token    = request.args.get('token', '').strip()
+    q           = request.args.get('q', '').strip()
+    artist      = request.args.get('artist', '').strip()
+    fallback    = request.args.get('fallback', '').strip()
+    token       = request.args.get('token', '').strip()
+    low_quality = request.args.get('low_quality', 'false').lower() == 'true'
 
     if not q:
         return jsonify({'success': False, 'url': None, 'token': token})
@@ -522,6 +558,14 @@ def get_saavn_song():
             result = None
 
         if result:
+            # ── DATA SAVER: low quality URL switch ───────────────
+            if low_quality:
+                low_url, low_q = _pick_low_quality(result.get('_raw_urls', []))
+                if low_url:
+                    result['url']     = low_url
+                    result['quality'] = low_q
+                    log.info(f"[Saavn/DataSaver] Switched to low quality: {low_q}")
+
             log.info(
                 f"[Saavn] ✓ q='{q}' → '{result['title']}' "
                 f"quality={result['quality']} score={result['score']}"
