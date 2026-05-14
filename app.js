@@ -75,6 +75,25 @@ let isPlaying = false;
 let shuffleOn = false;
 let repeatOn = false;
 let savedSongs = JSON.parse(localStorage.getItem('aurum_saved') || '[]');
+let giftMode = localStorage.getItem('aurum_gift_mode') === '1'; // Owner Gift — 320kbps always
+
+function setGiftMode(on) {
+  giftMode = on;
+  localStorage.setItem('aurum_gift_mode', on ? '1' : '0');
+  haptic(on ? [10, 40, 10] : 8);
+  if (on) {
+    showToast('★ Owner Gift ON — 320 kbps');
+    // Re-fetch current song at 320 if playing
+    if (currentTrack && isPlaying) _autoFetchFullSong(currentTrack);
+  } else {
+    showToast('Owner Gift OFF');
+  }
+}
+
+function _initGiftToggle() {
+  const toggle = document.getElementById('gift-mode-toggle');
+  if (toggle) toggle.checked = giftMode;
+}
 let playlists = JSON.parse(localStorage.getItem('aurum_playlists') || '[]');
 let recentlyPlayed = JSON.parse(localStorage.getItem('aurum_recent_played') || '[]');
 let recentSearches = JSON.parse(localStorage.getItem('aurum_recent') || '[]');
@@ -181,7 +200,8 @@ async function _autoFetchFullSong(song) {
     const fallbackQ = encodeURIComponent(`${cleanTitle} ${cleanArtist}`);
     const artistQ   = encodeURIComponent(cleanArtist);
 
-    const r = await fetch(`/api/saavn?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`, { signal: ctrl.signal });
+    const giftParam = giftMode ? '&gift=1' : '';
+    const r = await fetch(`/api/saavn?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}${giftParam}`, { signal: ctrl.signal });
     if (!r.ok) throw new Error('api-err');
     const d = await r.json();
 
@@ -273,16 +293,16 @@ function _updateDlSheetQuality(quality) {
   if (!desc || !badge) return;
   const q = (quality || '').toLowerCase();
   if (q.includes('320')) {
-    desc.textContent  = 'JioSaavn stream · 320 kbps';
+    desc.textContent  = 'Stream · 320 kbps';
     badge.textContent = '320 kbps'; badge.className = 'dl-kbps-badge b320';
   } else if (q.includes('160')) {
-    desc.textContent  = 'JioSaavn stream · 160 kbps';
+    desc.textContent  = 'Stream · 160 kbps';
     badge.textContent = '160 kbps'; badge.className = 'dl-kbps-badge b160';
   } else if (q.includes('96')) {
-    desc.textContent  = 'JioSaavn stream · 96 kbps';
+    desc.textContent  = 'Stream · 96 kbps';
     badge.textContent = '96 kbps';  badge.className = 'dl-kbps-badge b128';
   } else {
-    desc.textContent  = 'JioSaavn stream · best available';
+    desc.textContent  = 'Stream · best available';
     badge.textContent = 'HQ';       badge.className = 'dl-kbps-badge b320';
   }
 }
@@ -481,7 +501,10 @@ function updateMediaSession() {
 function updateSaveBtn() {
   if (!currentTrack) return;
   const saved = isSaved(currentTrack);
-  document.getElementById('fp-save-btn').classList.toggle('saved', saved);
+  const btn = document.getElementById('fp-save-btn');
+  btn.classList.toggle('saved', saved);
+  const lbl = document.getElementById('fp-save-label');
+  if (lbl) lbl.textContent = saved ? 'Liked' : 'Like';
   document.getElementById('fp-save-label').textContent = saved ? 'Saved' : 'Save';
 }
 
@@ -541,44 +564,122 @@ function updateQualityLabel() {
 
 // ─── AMBIENT PLAYER BG ────────────────────────────────────────────────────────
 let _lastAmbientSrc = '';
-function updateAmbientPlayer(artUrl) {
-  if (!artUrl || artUrl === _lastAmbientSrc) return;
-  _lastAmbientSrc = artUrl;
-  const bgArt = document.getElementById('fp-bg-art');
-  bgArt.onerror = () => { bgArt.style.opacity = '0'; };
-  bgArt.onload = () => {
-    bgArt.style.opacity = '1';
-    try {
-      extractDominantColor(bgArt, (r, g, b) => {
-        const glow = document.getElementById('fp-ambient-glow');
-        if (glow) glow.style.background = `radial-gradient(ellipse at 50% 80%,rgba(${r},${g},${b},0.2),transparent 72%)`;
-        document.querySelectorAll('.fp-viz-bar').forEach(bar => {
-          bar.style.background = `linear-gradient(to top,rgba(${r},${g},${b},0.75) 0%,rgba(${r},${g},${b},0.1) 100%)`;
-        });
-        document.getElementById('fullscreen-player').style.setProperty('--fp-art-glow', `rgba(${r},${g},${b},0.24)`);
-      });
-    } catch(e) {}
-  };
-  bgArt.style.opacity = '0';
-  bgArt.src = artUrl;
-  // If image was already cached, onload won't fire — trigger manually
-  if (bgArt.complete && bgArt.naturalWidth > 0) {
-    bgArt.onload && bgArt.onload();
-  }
-}
+// ─── GLOBAL ART COLOR SYSTEM ──────────────────────────────────────────────────
+// Song ke album art se dominant color nikaalte hain → poori app mein smooth apply
+let _artColorRaf = null;
+let _artColorCurrent = { r: 184, g: 150, b: 64 };
+let _artColorTarget  = { r: 184, g: 150, b: 64 };
 
 function extractDominantColor(imgEl, callback) {
   try {
-    const c = document.createElement('canvas'); c.width = 16; c.height = 16;
-    const ctx = c.getContext('2d'); ctx.drawImage(imgEl, 0, 0, 16, 16);
-    const data = ctx.getImageData(0, 0, 16, 16).data;
-    let r = 0, g = 0, b = 0, count = 0;
-    for (let i = 0; i < data.length; i += 16) { r += data[i]; g += data[i+1]; b += data[i+2]; count++; }
-    r = Math.round(r / count); g = Math.round(g / count); b = Math.round(b / count);
-    const max = Math.max(r, g, b, 1);
-    r = Math.round(r / max * 210); g = Math.round(g / max * 210); b = Math.round(b / max * 210);
-    callback(r, g, b);
+    // 24x24 canvas — better color sample than 16x16
+    const c = document.createElement('canvas'); c.width = 24; c.height = 24;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(imgEl, 0, 0, 24, 24);
+    const data = ctx.getImageData(0, 0, 24, 24).data;
+
+    // Weighted sampling — skip near-black, near-white, near-grey pixels
+    let rSum = 0, gSum = 0, bSum = 0, w = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i], g = data[i+1], b = data[i+2];
+      const brightness = (r + g + b) / 3;
+      const saturation = Math.max(r, g, b) - Math.min(r, g, b);
+      if (brightness < 18 || brightness > 238) continue; // skip black/white
+      if (saturation < 20) continue; // skip grey
+      const weight = saturation * 0.012 + 1;
+      rSum += r * weight; gSum += g * weight; bSum += b * weight; w += weight;
+    }
+    if (w === 0) { callback(184, 150, 64); return; }
+
+    let r = rSum / w, g = gSum / w, b = bSum / w;
+
+    // Boost saturation — vivid colors, not muddy
+    const avg = (r + g + b) / 3;
+    const sat = 1.7;
+    r = Math.min(255, Math.max(0, avg + (r - avg) * sat));
+    g = Math.min(255, Math.max(0, avg + (g - avg) * sat));
+    b = Math.min(255, Math.max(0, avg + (b - avg) * sat));
+
+    // Clamp brightness 80–200 — not too dark, not too blown
+    const lum = 0.299*r + 0.587*g + 0.114*b;
+    const lumScale = lum < 80 ? 80/Math.max(lum,1) : lum > 200 ? 200/lum : 1;
+    r = Math.min(255, r * lumScale);
+    g = Math.min(255, g * lumScale);
+    b = Math.min(255, b * lumScale);
+
+    callback(Math.round(r), Math.round(g), Math.round(b));
   } catch(e) { callback(184, 150, 64); }
+}
+
+// Smooth lerp transition between colors — no harsh flash
+function _lerpArtColor() {
+  const speed = 0.055; // transition speed — lower = smoother
+  const { r: cr, g: cg, b: cb } = _artColorCurrent;
+  const { r: tr, g: tg, b: tb } = _artColorTarget;
+  const nr = cr + (tr - cr) * speed;
+  const ng = cg + (tg - cg) * speed;
+  const nb = cb + (tb - cb) * speed;
+  _artColorCurrent = { r: nr, g: ng, b: nb };
+  _applyArtColor(Math.round(nr), Math.round(ng), Math.round(nb));
+  const diff = Math.abs(nr-tr) + Math.abs(ng-tg) + Math.abs(nb-tb);
+  if (diff > 0.8) {
+    _artColorRaf = requestAnimationFrame(_lerpArtColor);
+  } else {
+    _artColorCurrent = { ...._artColorTarget };
+    _applyArtColor(tr, tg, tb);
+    _artColorRaf = null;
+  }
+}
+
+function _applyArtColor(r, g, b) {
+  // ── ONLY fullscreen player gets the color treatment ──────────────────────────
+  const fp = document.getElementById('fullscreen-player');
+  if (fp) fp.style.setProperty('--fp-art-glow', `rgba(${r},${g},${b},0.28)`);
+
+  const glow = document.getElementById('fp-ambient-glow');
+  if (glow) glow.style.background =
+    `radial-gradient(ellipse at 50% 80%,rgba(${r},${g},${b},0.28),transparent 68%)`;
+
+  // Viz bars color
+  document.querySelectorAll('.fp-viz-bar').forEach(bar => {
+    bar.style.background =
+      `linear-gradient(to top,rgba(${r},${g},${b},0.85),rgba(${r},${g},${b},0.06))`;
+  });
+}
+
+function updateAmbientPlayer(artUrl) {
+  if (!artUrl || artUrl === _lastAmbientSrc) return;
+  _lastAmbientSrc = artUrl;
+
+  // Use a hidden canvas image — no flickering on screen
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => {
+    extractDominantColor(img, (r, g, b) => {
+      _artColorTarget = { r, g, b };
+      if (_artColorRaf) cancelAnimationFrame(_artColorRaf);
+      _artColorRaf = requestAnimationFrame(_lerpArtColor);
+    });
+  };
+  img.onerror = () => {
+    // Fallback — gold
+    _artColorTarget = { r: 184, g: 150, b: 64 };
+    if (_artColorRaf) cancelAnimationFrame(_artColorRaf);
+    _artColorRaf = requestAnimationFrame(_lerpArtColor);
+  };
+  img.src = artUrl;
+
+  // Also update fp-bg-art for blurred background
+  const bgArt = document.getElementById('fp-bg-art');
+  if (bgArt) {
+    bgArt.style.opacity = '0';
+    bgArt.onerror = () => { bgArt.style.opacity = '0'; };
+    bgArt.onload = () => { bgArt.style.opacity = '1'; };
+    bgArt.src = artUrl;
+    if (bgArt.complete && bgArt.naturalWidth > 0) {
+      bgArt.style.opacity = '1';
+    }
+  }
 }
 
 // ─── VISUALIZER ───────────────────────────────────────────────────────────────
@@ -616,41 +717,53 @@ function tickViz() {
 // Mini player swipe up → open fullscreen / swipe down → dismiss
 (function setupMiniGesture() {
   const mp = document.getElementById('mini-player');
-  let startY = 0, startX = 0, isDragging = false, startTime = 0, moved = false, rafId = null;
+  let startY = 0, startX = 0, isDragging = false, startTime = 0, moved = false, rafId = null, locked = false;
+
   mp.addEventListener('touchstart', e => {
     startY = e.touches[0].clientY; startX = e.touches[0].clientX;
-    isDragging = true; startTime = Date.now(); moved = false;
+    isDragging = true; startTime = Date.now(); moved = false; locked = false;
     mp.style.transition = 'none';
-    mp.style.willChange = 'transform';
   }, { passive: true });
+
   mp.addEventListener('touchmove', e => {
-    if (!isDragging) return;
+    if (!isDragging || locked) return;
     const dy = e.touches[0].clientY - startY;
     const dx = Math.abs(e.touches[0].clientX - startX);
-    if (!moved && dx > Math.abs(dy)) { isDragging = false; return; }
-    if (Math.abs(dy) > 6) {
-      moved = true;
-      e.preventDefault();
-      const clamped = dy < 0 ? Math.max(-70, dy * 0.3) : Math.min(80, dy * 0.45);
-      if (rafId) cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(() => { mp.style.transform = `translateY(${clamped}px)`; rafId = null; });
-    }
+    // Horizontal dominant → not our gesture, release
+    if (!moved && dx > Math.abs(dy) + 6) { locked = true; return; }
+    // Need clear vertical intent (>10px) before capturing
+    if (Math.abs(dy) < 10 && !moved) return;
+    moved = true;
+    e.preventDefault();
+    mp.style.willChange = 'transform';
+    const clamped = dy < 0 ? Math.max(-60, dy * 0.28) : Math.min(72, dy * 0.42);
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(() => { mp.style.transform = `translateY(${clamped}px)`; rafId = null; });
   }, { passive: false });
+
   mp.addEventListener('touchend', e => {
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
     if (!isDragging) return; isDragging = false;
+    mp.style.willChange = '';
+    if (!moved) { mp.style.transition = ''; return; }
     const dy = e.changedTouches[0].clientY - startY;
     const dt = Date.now() - startTime; const vel = Math.abs(dy) / dt;
     mp.style.transition = '';
-    mp.style.willChange = '';
-    if (!moved) return; // tap, handled by onclick
-    if (dy < -30 || vel > 0.45) { mp.style.transform = ''; openFullscreen(); }
-    else if (dy > 50 || vel > 0.55) {
+    if (dy < -28 || (vel > 0.5 && dy < -10)) {
+      mp.style.transform = ''; openFullscreen();
+    } else if (dy > 48 || (vel > 0.6 && dy > 16)) {
+      mp.style.transform = '';
+      // Swipe down — just close mini player, DON'T stop song
       mp.classList.remove('show');
-      if (isPlaying) { audio.pause(); isPlaying = false; updatePlayerUI(); }
     } else {
       mp.style.transform = '';
     }
+  }, { passive: true });
+
+  mp.addEventListener('touchcancel', () => {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    isDragging = false; moved = false;
+    mp.style.transform = ''; mp.style.transition = ''; mp.style.willChange = '';
   }, { passive: true });
 })();
 
@@ -658,80 +771,85 @@ function tickViz() {
 (function setupFullPlayerGesture() {
   const fp = document.getElementById('fullscreen-player');
   const qp = document.getElementById('queue-panel');
-  const dragHint = document.getElementById('fp-drag-hint');
-  let startY = 0, startX = 0, isDragging = false, startTime = 0, gestureTarget = null, moved = false, rafId = null;
-  
+  let startY = 0, startX = 0, isDragging = false, startTime = 0,
+      gestureTarget = null, moved = false, rafId = null, locked = false;
+
   function isGestureZone(el) {
-    return el.closest('#fp-drag-hint') ||
-           el.closest('.fp-header') ||
-           el.closest('.fp-art-wrap') ||
-           el.closest('.fp-info') ||
-           el.closest('.queue-panel-handle') ||
-           (el.closest('#queue-drag-handle'));
+    return el.closest('#fp-drag-hint') || el.closest('.fp-header') ||
+           el.closest('.fp-art-wrap') || el.closest('.fp-info') ||
+           el.closest('#queue-drag-handle');
   }
-  
+
   fp.addEventListener('touchstart', e => {
     const qpOpen = qp.classList.contains('open');
     const onQueueHandle = e.target.closest('#queue-drag-handle');
     const onQueueBody = qp.contains(e.target) && !onQueueHandle;
-    
     if (qpOpen && onQueueBody) { isDragging = false; return; }
     if (!qpOpen && !isGestureZone(e.target)) { isDragging = false; return; }
-    
     startY = e.touches[0].clientY; startX = e.touches[0].clientX;
-    isDragging = true; startTime = Date.now(); moved = false;
+    isDragging = true; startTime = Date.now(); moved = false; locked = false;
     gestureTarget = qpOpen ? 'queue' : 'player';
     fp.classList.add('dragging'); qp.classList.add('dragging');
-    (gestureTarget === 'player' ? fp : qp).style.willChange = 'transform';
   }, { passive: true });
 
   fp.addEventListener('touchmove', e => {
-    if (!isDragging) return;
+    if (!isDragging || locked) return;
     const dy = e.touches[0].clientY - startY;
     const dx = Math.abs(e.touches[0].clientX - startX);
-    if (!moved && dx > Math.abs(dy) + 4) { isDragging = false; fp.classList.remove('dragging'); qp.classList.remove('dragging'); return; }
-    if (Math.abs(dy) < 4 && !moved) return;
+    if (!moved && dx > Math.abs(dy) + 6) { locked = true; fp.classList.remove('dragging'); qp.classList.remove('dragging'); return; }
+    if (Math.abs(dy) < 5 && !moved) return;
     moved = true;
-    if (gestureTarget === 'player' && dy > 0) {
-      e.preventDefault();
-      const clamped = Math.max(0, dy * 0.5);
-      if (rafId) cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(() => { fp.style.transform = `translateY(${clamped}px)`; rafId = null; });
+
+    if (gestureTarget === 'player') {
+      if (dy > 0) {
+        e.preventDefault();
+        const clamped = Math.min(window.innerHeight * 0.6, dy * 0.52);
+        if (rafId) cancelAnimationFrame(rafId);
+        rafId = requestAnimationFrame(() => {
+          fp.style.transform = `translateY(${clamped}px)`;
+          fp.style.opacity = Math.max(0.4, 1 - clamped / 300);
+          rafId = null;
+        });
+      } else if (dy < -55 && !moved) {
+        openQueuePanel(); isDragging = false;
+        fp.classList.remove('dragging'); qp.classList.remove('dragging');
+        fp.style.transform = ''; fp.style.opacity = '';
+      }
     } else if (gestureTarget === 'queue' && dy > 0) {
       e.preventDefault();
-      const clamped = Math.min(120, dy * 0.55);
+      const clamped = Math.min(140, dy * 0.56);
       if (rafId) cancelAnimationFrame(rafId);
       rafId = requestAnimationFrame(() => { qp.style.transform = `translateY(${clamped}px)`; rafId = null; });
-    } else if (gestureTarget === 'player' && dy < -60) {
-      e.preventDefault();
-      openQueuePanel();
-      isDragging = false;
-      fp.classList.remove('dragging'); qp.classList.remove('dragging');
-      fp.style.transform = ''; qp.style.transform = '';
     }
   }, { passive: false });
 
-  fp.addEventListener('touchend', e => {
+  function cleanup() {
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-    if (!isDragging) return; isDragging = false;
     fp.classList.remove('dragging'); qp.classList.remove('dragging');
-    fp.style.willChange = ''; qp.style.willChange = '';
+  }
+
+  fp.addEventListener('touchend', e => {
+    cleanup(); if (!isDragging) return; isDragging = false;
+    if (!moved) return;
     const dy = e.changedTouches[0].clientY - startY;
     const dt = Date.now() - startTime; const vel = Math.abs(dy) / dt;
-    
     if (gestureTarget === 'player') {
-      if (dy > 90 || (vel > 0.55 && dy > 30)) {
+      if (dy > 80 || (vel > 0.5 && dy > 24)) {
+        fp.style.opacity = '';
         fp.style.transform = ''; closeFullscreen();
       } else {
-        fp.style.transform = '';
+        fp.style.transform = ''; fp.style.opacity = '';
       }
     } else if (gestureTarget === 'queue') {
-      if (dy > 70 || (vel > 0.5 && dy > 20)) {
+      if (dy > 65 || (vel > 0.48 && dy > 18)) {
         qp.style.transform = ''; closeQueuePanel();
-      } else {
-        qp.style.transform = '';
-      }
+      } else { qp.style.transform = ''; }
     }
+  }, { passive: true });
+
+  fp.addEventListener('touchcancel', () => {
+    cleanup(); isDragging = false;
+    fp.style.transform = ''; fp.style.opacity = ''; qp.style.transform = '';
   }, { passive: true });
 })();
 
@@ -846,14 +964,15 @@ function closeFullscreen() {
   const fp = document.getElementById('fullscreen-player');
   const mp = document.getElementById('mini-player');
   fp.style.transform = '';
+  fp.style.opacity = '';
   fp.classList.remove('open');
   closeQueuePanel();
-  // Restore mini player after fullscreen closes
+  // Song keeps playing — just close the view
   setTimeout(() => {
     mp.style.transition = '';
     mp.style.opacity = '';
     mp.style.pointerEvents = '';
-  }, 220);
+  }, 200);
 }
 
 // ─── QUEUE PANEL ──────────────────────────────────────────────────────────────
@@ -949,19 +1068,19 @@ function addToRecentlyPlayed(song) {
 const SECTION_POOL = [
   {id:'recent',  title:'Continue Listening', type:'wide', fn:getRecentlyPlayedSongs},
   {id:'featured',title:'Made For You',        type:'featured', queries:[
-    'top bollywood songs hits','best hindi songs','latest bollywood hits',
-    'top hindi songs trending','best bollywood songs playlist'
+    'top bollywood songs 2024 hits','best hindi songs 2024','latest bollywood hits 2024',
+    'top hindi songs trending 2024','best bollywood songs playlist 2024'
   ]},
   {id:'trending',title:'Trending Now',        type:'cards', queries:[
-    'trending hindi songs chart','bollywood chart toppers',
-    'top hindi songs this week','most popular bollywood songs'
+    'trending hindi songs chart 2024','bollywood chart toppers 2024',
+    'top 10 hindi songs this week','most popular bollywood 2024'
   ]},
   {id:'mood',    title:'Mood: Late Night',    type:'bw', queries:[
     'sad emotional bollywood songs','heartbreak hindi songs arijit',
     'late night slow songs hindi','emotional romantic songs hindi'
   ]},
   {id:'classic', title:'Golden Era',          type:'bw', queries:[
-    '90s bollywood romantic classic songs','80s hindi classic songs',
+    '90s bollywood romantic classic songs hits','80s hindi classic songs',
     'old is gold bollywood songs kishore kumar','retro bollywood hits lata mangeshkar'
   ]},
   {id:'hiphop',  title:'Desi Hip-Hop',        type:'cards', queries:[
@@ -973,7 +1092,7 @@ const SECTION_POOL = [
     'lo-fi hindi songs study chill','lofi beats india relaxing'
   ]},
   {id:'arijit', title:'Arijit Singh',         type:'rows', queries:[
-    'arijit singh best romantic songs','arijit singh top hits',
+    'arijit singh best romantic songs','arijit singh top hits 2024',
     'arijit singh soulful songs','arijit singh emotional hits'
   ]},
   {id:'workout', title:'Energy Boost',        type:'cards', queries:[
@@ -981,18 +1100,18 @@ const SECTION_POOL = [
     'party hindi songs badshah','high energy bollywood beats'
   ]},
   {id:'new',     title:'New Releases',        type:'cards', queries:[
-    'new hindi songs latest','new bollywood songs released',
-    'latest hindi songs hits','new bollywood songs trending'
+    'new hindi songs 2024 latest','new bollywood songs released 2024',
+    'hindi songs december 2024','latest releases bollywood 2024'
   ]},
 ];
 
 const genreMap = {
-  all:'top bollywood songs hits',
-  bollywood:'bollywood romantic songs hits',
-  hiphop:'desi hip hop rap india',
-  pop:'pop hits bollywood',
+  all:'top bollywood songs 2024',
+  bollywood:'bollywood romantic songs 2024',
+  hiphop:'desi hip hop rap india 2024',
+  pop:'pop hits bollywood 2024',
   rock:'rock songs hindi',
-  indie:'indie bollywood songs',
+  indie:'indie bollywood songs 2024',
   rnb:'rnb soul songs india',
   lofi:'lofi chill beats hindi songs',
 };
@@ -1022,31 +1141,15 @@ function getRecentlyPlayedSongs() { return Promise.resolve(recentlyPlayed); }
 function _pickQuery(sec) { return sec.queries ? sec.queries[Math.floor(Math.random()*sec.queries.length)] : sec.query; }
 
 async function loadHomeSection(sec) {
+  // Never cache — always fresh content
   try {
     let songs;
     if (sec.fn) { songs = await sec.fn(); }
     else {
       const q = _pickQuery(sec);
-      // Timeout after 12s so sections don't hang forever
-      const ctrl = new AbortController();
-      const to = setTimeout(() => ctrl.abort(), 12000);
-      try {
-        const r = await fetch(`/api/songs?q=${encodeURIComponent(q)}`, { signal: ctrl.signal });
-        clearTimeout(to);
-        const d = await r.json();
-        songs = (d.results || []).filter(s => s.previewUrl);
-      } catch(fe) {
-        clearTimeout(to);
-        // Timeout ya network error — fallback query try karo
-        if (sec.queries && sec.queries.length > 1) {
-          const fallbackQ = sec.queries[Math.floor(Math.random() * sec.queries.length)];
-          const r2 = await fetch(`/api/songs?q=${encodeURIComponent(fallbackQ)}`);
-          const d2 = await r2.json();
-          songs = (d2.results || []).filter(s => s.previewUrl);
-        } else {
-          return [];
-        }
-      }
+      const r = await fetch(`/api/songs?q=${encodeURIComponent(q)}`);
+      const d = await r.json();
+      songs = (d.results || []).filter(s => s.previewUrl);
       // Shuffle for variety
       for (let i = songs.length - 1; i > 0; i--) { const j = Math.floor(Math.random()*(i+1)); [songs[i],songs[j]]=[songs[j],songs[i]]; }
     }
@@ -1107,12 +1210,7 @@ async function buildHomeSections(genre = 'all') {
 
 async function _renderSection(sec, wrap) {
   const songs = await loadHomeSection(sec);
-  if (!songs || !songs.length) {
-    // Retry button dikhao — silently mat hatao
-    const el = document.getElementById('sec-' + sec.id);
-    if (el) el.innerHTML = `<div style="padding:18px 4px;text-align:center;"><button onclick="refreshSection('${sec.id}')" style="background:var(--surface2);border:none;color:var(--text2);font-size:12px;padding:8px 18px;border-radius:20px;cursor:pointer;font-family:inherit;">Retry</button></div>`;
-    return;
-  }
+  if (!songs || !songs.length) { wrap.remove(); return; }
   const el = document.getElementById('sec-' + sec.id); if (!el) return;
   el.innerHTML = '';
   const type = sec.type === 'featured' ? 'cards' : sec.type;
@@ -1336,13 +1434,18 @@ function renderSearchResults(songs, q) {
 
 // ─── NAVIGATION ───────────────────────────────────────────────────────────────
 function goPage(name, btn) {
+  const next = document.getElementById('page-' + name);
+  if (!next) return;
+  const cur = document.querySelector('.page.active');
+  if (cur === next) return;
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('page-' + name).classList.add('active');
-  btn.classList.add('active');
+  next.classList.add('active');
+  if (btn) btn.classList.add('active');
   if (name === 'library') renderLibrary();
   if (name === 'search') renderSearchIdle();
 }
+
 
 // ─── SAVE / LIBRARY ───────────────────────────────────────────────────────────
 function isSaved(song) { return savedSongs.some(s => s.trackId === song.trackId); }
@@ -1720,6 +1823,7 @@ window.addEventListener('DOMContentLoaded', () => {
     if (vizRaf) { cancelAnimationFrame(vizRaf); vizRaf = null; }
   }
 
+  _initGiftToggle();
   initViz();
   buildHomeSections('all');
   renderSearchIdle();
