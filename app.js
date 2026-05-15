@@ -1719,6 +1719,11 @@ window.addEventListener('DOMContentLoaded', () => {
     // Kill visualizer RAF entirely on low-end
     if (vizRaf) { cancelAnimationFrame(vizRaf); vizRaf = null; }
   }
+  if (navigator.storage && navigator.storage.persist) {
+  navigator.storage.persisted().then(already => {
+    if (!already) navigator.storage.persist();
+  });
+}
 
   initViz();
   buildHomeSections('all');
