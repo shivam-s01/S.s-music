@@ -1,21 +1,44 @@
-// ─── IMAGE SYSTEM ────────────────────────────────────────────────────────────
+// ─── DEVICE DETECTION (first — everything depends on this) ───────────────────
+const isTV = navigator.userAgent.includes('TV') ||
+             navigator.userAgent.includes('SmartTV') ||
+             navigator.userAgent.includes('SMART-TV') ||
+             (window.innerWidth >= 1280 &&
+              window.matchMedia('(hover:hover)').matches &&
+              !window.matchMedia('(pointer:fine)').matches);
+
+const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent) && !isTV;
+
+const isLowEnd = isTV || // TV always treated as low-end for rendering
+  (navigator.hardwareConcurrency || 8) <= 4 ||
+  (typeof navigator.deviceMemory !== 'undefined' && navigator.deviceMemory <= 2);
+
+// ─── FPS CAP (30fps) ──────────────────────────────────────────────────────────
+const TARGET_FPS   = 30;
+const FRAME_BUDGET = 1000 / TARGET_FPS; // 33.3ms
+let   _lastRafTime = 0;
+
+function cappedRaf(cb) {
+  return requestAnimationFrame(ts => {
+    if (ts - _lastRafTime < FRAME_BUDGET) { cappedRaf(cb); return; }
+    _lastRafTime = ts;
+    cb(ts);
+  });
+}
+
+// ─── IMAGE SYSTEM ─────────────────────────────────────────────────────────────
 const IMG_PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Crect width='100' height='100' fill='%230d0d12'/%3E%3Ccircle cx='50' cy='42' r='14' fill='none' stroke='%232e2b26' stroke-width='2'/%3E%3Cpath d='M44 42v-8l16 4v8' fill='none' stroke='%232e2b26' stroke-width='2' stroke-linecap='round'/%3E%3Ccircle cx='44' cy='44' r='3' fill='%232e2b26'/%3E%3Ccircle cx='60' cy='46' r='3' fill='%232e2b26'/%3E%3C/svg%3E";
 
-// Shared canvas for dominant color extraction — no per-call allocation
 const _sharedCanvas = document.createElement('canvas');
 _sharedCanvas.width = 16; _sharedCanvas.height = 16;
 const _sharedCtx = _sharedCanvas.getContext('2d', { willReadFrequently: true });
 
-// Intersection observer for lazy images
-const imgObserver = typeof IntersectionObserver !== 'undefined'
+// Lazy image observer — skip on TV (everything visible)
+const imgObserver = (!isTV && typeof IntersectionObserver !== 'undefined')
   ? new IntersectionObserver((entries) => {
       entries.forEach(entry => {
         if (entry.isIntersecting) {
           const img = entry.target;
-          if (img.dataset.lazySrc) {
-            img.src = img.dataset.lazySrc;
-            delete img.dataset.lazySrc;
-          }
+          if (img.dataset.lazySrc) { img.src = img.dataset.lazySrc; delete img.dataset.lazySrc; }
           imgObserver.unobserve(img);
         }
       });
@@ -52,10 +75,13 @@ function setImgSrc(img, src) {
   }
 }
 
-// Init existing images
-document.querySelectorAll('img').forEach(img => setupImg(img));
+// Art URL helper — lower res on TV/low-end
+function getArtUrl(song, size) {
+  const target = isLowEnd ? '300x300' : (size || '600x600');
+  return (song?.artworkUrl100 || '').replace('100x100', target);
+}
 
-// MutationObserver for dynamically added images
+document.querySelectorAll('img').forEach(img => setupImg(img));
 new MutationObserver(muts => {
   muts.forEach(m => m.addedNodes.forEach(n => {
     const imgs = n.nodeName === 'IMG' ? [n] : (n.querySelectorAll ? [...n.querySelectorAll('img')] : []);
@@ -63,20 +89,20 @@ new MutationObserver(muts => {
   }));
 }).observe(document.body, { childList: true, subtree: true });
 
-// ─── STATE ───────────────────────────────────────────────────────────────────
-let currentQueue      = [];
-let currentIndex      = 0;
-let currentTrack      = null;
-let isPlaying         = false;
-let shuffleOn         = false;
-let repeatOn          = false;
-let savedSongs        = JSON.parse(localStorage.getItem('aurum_saved')         || '[]');
-let playlists         = JSON.parse(localStorage.getItem('aurum_playlists')     || '[]');
-let recentlyPlayed    = JSON.parse(localStorage.getItem('aurum_recent_played') || '[]');
-let recentSearches    = JSON.parse(localStorage.getItem('aurum_recent')        || '[]');
-let currentLibTab     = 'playlists';
-let currentQuality    = 'loading';
-let currentGenre      = 'all';
+// ─── STATE ────────────────────────────────────────────────────────────────────
+let currentQueue         = [];
+let currentIndex         = 0;
+let currentTrack         = null;
+let isPlaying            = false;
+let shuffleOn            = false;
+let repeatOn             = false;
+let savedSongs           = JSON.parse(localStorage.getItem('aurum_saved')         || '[]');
+let playlists            = JSON.parse(localStorage.getItem('aurum_playlists')     || '[]');
+let recentlyPlayed       = JSON.parse(localStorage.getItem('aurum_recent_played') || '[]');
+let recentSearches       = JSON.parse(localStorage.getItem('aurum_recent')        || '[]');
+let currentLibTab        = 'playlists';
+let currentQuality       = 'loading';
+let currentGenre         = 'all';
 let currentPlaylistIndex = null;
 let optsPlaylistIndex    = null;
 let modalTrack           = null;
@@ -85,24 +111,23 @@ let _fullSongAbort       = null;
 let _searchTimeout       = null;
 let _recFetchTimeout     = null;
 let homeCache            = {};
-let sectionCache         = {};   // kept for future use — clear on hide
+let sectionCache         = {};
 let queuePanelOpen       = false;
-
-// FIX: mini player dismiss flag — prevents ghost re-appearance
 let _miniPlayerDismissed = false;
-
-// FIX: track last Object URL to revoke on next play (memory leak fix)
-let _lastObjectUrl = null;
+let _lastObjectUrl       = null;
+let _lastTuTime          = 0;        // throttle timeupdate
+let _uiHidden            = false;    // screen-off flag
 
 // ─── AUDIO ENGINE ─────────────────────────────────────────────────────────────
 const audio = new Audio();
 audio.preload = 'none';
 audio.crossOrigin = 'anonymous';
+window._aurumAudio = audio;
 
 let _currentSaavnUrl     = null;
 let _currentSaavnQuality = null;
 
-// ── MISMATCH GUARD ────────────────────────────────────────────────────────────
+// ── TITLE MISMATCH GUARD ──────────────────────────────────────────────────────
 function _titleMatches(saavnTitle, itunesTitle) {
   if (!saavnTitle || !itunesTitle) return false;
   const norm = s => s.toLowerCase()
@@ -136,7 +161,6 @@ function _titleMatches(saavnTitle, itunesTitle) {
 function loadTrack(song, autoplay = true) {
   if (!song?.previewUrl) return;
 
-  // FIX: Reset dismiss flag on every new track load
   _miniPlayerDismissed = false;
 
   if (_fullSongAbort) { _fullSongAbort.abort(); _fullSongAbort = null; }
@@ -151,10 +175,7 @@ function loadTrack(song, autoplay = true) {
   currentTrack = song; currentQuality = 'loading';
   document.getElementById('fp-duration').textContent = '0:30';
 
-  // FIX: Pause first — prevents flash/blank screen from abrupt src change
   audio.pause();
-
-  // FIX: Set event listeners BEFORE changing src to avoid loadedmetadata race
   audio.src = '';
   audio.load();
   audio.src = song.previewUrl;
@@ -164,7 +185,6 @@ function loadTrack(song, autoplay = true) {
     if (p && p.then) {
       p.then(() => { isPlaying = true; updatePlayerUI(); })
        .catch(err => {
-         // NotAllowedError = autoplay blocked; don't crash
          if (err.name !== 'AbortError') { isPlaying = false; updatePlayerUI(); }
        });
     }
@@ -219,7 +239,6 @@ async function _autoFetchFullSong(song) {
     _currentSaavnQuality = d.quality || 'unknown';
     _updateDlSheetQuality(d.quality);
 
-    // Preload in background
     const preAudio = new Audio();
     preAudio.preload = 'auto';
     preAudio.crossOrigin = 'anonymous';
@@ -239,7 +258,6 @@ async function _autoFetchFullSong(song) {
     const wasPlaying = isPlaying;
     const pos = audio.currentTime;
 
-    // FIX: Attach loadedmetadata BEFORE src change to avoid timing race → blank screen
     const onMeta = () => {
       if (isFinite(pos) && pos > 0 && pos < audio.duration) audio.currentTime = pos;
     };
@@ -264,9 +282,7 @@ async function _autoFetchFullSong(song) {
     preAudio.src = '';
 
   } catch(e) {
-    if (e.name !== 'AbortError') {
-      console.info('[AutoFetch] Staying on preview:', e.message);
-    }
+    if (e.name !== 'AbortError') console.info('[AutoFetch] Staying on preview:', e.message);
   }
 }
 
@@ -286,19 +302,10 @@ function _updateDlSheetQuality(quality) {
   const badge = document.getElementById('dl-full-badge');
   if (!desc || !badge) return;
   const q = (quality || '').toLowerCase();
-  if (q.includes('320')) {
-    desc.textContent = 'JioSaavn stream · 320 kbps';
-    badge.textContent = '320 kbps'; badge.className = 'dl-kbps-badge b320';
-  } else if (q.includes('160')) {
-    desc.textContent = 'JioSaavn stream · 160 kbps';
-    badge.textContent = '160 kbps'; badge.className = 'dl-kbps-badge b160';
-  } else if (q.includes('96')) {
-    desc.textContent = 'JioSaavn stream · 96 kbps';
-    badge.textContent = '96 kbps';  badge.className = 'dl-kbps-badge b128';
-  } else {
-    desc.textContent = 'JioSaavn stream · best available';
-    badge.textContent = 'HQ';       badge.className = 'dl-kbps-badge b320';
-  }
+  if (q.includes('320'))      { desc.textContent = 'JioSaavn stream · 320 kbps'; badge.textContent = '320 kbps'; badge.className = 'dl-kbps-badge b320'; }
+  else if (q.includes('160')) { desc.textContent = 'JioSaavn stream · 160 kbps'; badge.textContent = '160 kbps'; badge.className = 'dl-kbps-badge b160'; }
+  else if (q.includes('96'))  { desc.textContent = 'JioSaavn stream · 96 kbps';  badge.textContent = '96 kbps';  badge.className = 'dl-kbps-badge b128'; }
+  else                        { desc.textContent = 'JioSaavn stream · best available'; badge.textContent = 'HQ'; badge.className = 'dl-kbps-badge b320'; }
 }
 
 // ─── PLAYBACK CONTROLS ────────────────────────────────────────────────────────
@@ -311,7 +318,7 @@ function togglePlay() {
     if (p && p.then) {
       p.then(() => { isPlaying = true; updatePlayerUI(); })
        .catch(() => { isPlaying = false; updatePlayerUI(); });
-      return; // updatePlayerUI called in .then
+      return;
     }
     isPlaying = true;
   }
@@ -321,7 +328,6 @@ function togglePlay() {
 function nextTrack() {
   if (!currentQueue.length) return;
   if (shuffleOn) {
-    // FIX: Prevent same song repeating on shuffle
     let next;
     do { next = Math.floor(Math.random() * currentQueue.length); }
     while (next === currentIndex && currentQueue.length > 1);
@@ -372,7 +378,6 @@ function toggleRepeat() {
 audio.addEventListener('ended', () => { if (!repeatOn) nextTrack(); });
 
 audio.addEventListener('error', () => {
-  // FIX: Only fallback if we were on full quality, not on every error
   if (currentQuality === 'full' && currentTrack?.previewUrl) _fallbackToPreview(currentTrack);
   const pc = document.getElementById('fp-play-circle');
   if (pc) pc.classList.remove('buffering');
@@ -386,8 +391,6 @@ audio.addEventListener('playing', () => {
   const pc = document.getElementById('fp-play-circle');
   if (pc) pc.classList.remove('buffering');
   isPlaying = true;
-  // FIX: Do NOT call full updatePlayerUI here — only sync play state
-  // updatePlayerUI() → showMiniPlayer() which can un-dismiss mini player unexpectedly
   _syncPlayIcons();
   _syncPlayingClass();
   updateMediaSession();
@@ -400,52 +403,29 @@ audio.addEventListener('pause', () => {
   updateMediaSession();
 });
 
-// ─── OFFLINE DETECTION ────────────────────────────────────────────────────────
-function _handleConnectivity() {
-  const banner = document.getElementById('offline-banner');
-  if (!banner) return;
-  navigator.onLine ? banner.classList.remove('show') : banner.classList.add('show');
-}
-window.addEventListener('online',  _handleConnectivity, { passive: true });
-window.addEventListener('offline', _handleConnectivity, { passive: true });
-_handleConnectivity();
-
-// ─── VISIBILITY / MEMORY ──────────────────────────────────────────────────────
-document.addEventListener('visibilitychange', () => {
-  const canvas = document.getElementById('ambient-canvas');
-  if (canvas) canvas.classList.toggle('orbs-active', !document.hidden);
-
-  if (document.hidden) {
-    // Clear non-pinned section caches to free memory
-    const keep = new Set(['recent', 'featured']);
-    Object.keys(sectionCache).forEach(k => { if (!keep.has(k)) delete sectionCache[k]; });
-    // Pause visualizer RAF when hidden
-    if (vizRaf) { cancelAnimationFrame(vizRaf); vizRaf = null; }
-  } else {
-    // Resume viz only if fullscreen player is open
-    if (document.getElementById('fullscreen-player')?.classList.contains('open') && !vizRaf) tickViz();
-  }
-}, { passive: true });
-
-// ─── TIMEUPDATE (throttled) ────────────────────────────────────────────────────
-let _tuPending = false;
+// ─── TIMEUPDATE — 250ms throttle, no RAF ────────────────────────────────────
 audio.addEventListener('timeupdate', () => {
-  if (_tuPending) return;
-  _tuPending = true;
-  requestAnimationFrame(() => {
-    _tuPending = false;
-    const dur = isFinite(audio.duration) && audio.duration > 0 ? audio.duration : (currentQuality === 'full' ? 0 : 30);
-    const p   = dur ? audio.currentTime / dur * 100 : 0;
-    const mpb = document.getElementById('mini-progress-bar');
-    if (mpb) mpb.style.width = p + '%';
-    const s = document.getElementById('fp-seekbar');
-    if (s && !s.matches(':active')) {
-      s.value = audio.currentTime;
-      s.style.setProperty('--prog', p + '%');
-    }
-    const fc = document.getElementById('fp-current');
-    if (fc) fc.textContent = formatSec(audio.currentTime);
-  });
+  const now = Date.now();
+  if (now - _lastTuTime < 250) return;
+  _lastTuTime = now;
+
+  if (_uiHidden) return; // screen off — skip DOM entirely
+
+  const dur = isFinite(audio.duration) && audio.duration > 0
+    ? audio.duration : (currentQuality === 'full' ? 0 : 30);
+  const p = dur ? audio.currentTime / dur * 100 : 0;
+
+  const mpb = document.getElementById('mini-progress-bar');
+  if (mpb) mpb.style.width = p + '%';
+
+  const s = document.getElementById('fp-seekbar');
+  if (s && !s.matches(':active')) {
+    s.value = audio.currentTime;
+    s.style.setProperty('--prog', p + '%');
+  }
+
+  const fc = document.getElementById('fp-current');
+  if (fc) fc.textContent = formatSec(audio.currentTime);
 });
 
 audio.addEventListener('durationchange', () => {
@@ -457,8 +437,62 @@ audio.addEventListener('durationchange', () => {
   }
 });
 
+// ─── OFFLINE DETECTION ────────────────────────────────────────────────────────
+function _handleConnectivity() {
+  const banner = document.getElementById('offline-banner');
+  if (!banner) return;
+  navigator.onLine ? banner.classList.remove('show') : banner.classList.add('show');
+}
+window.addEventListener('online',  _handleConnectivity, { passive: true });
+window.addEventListener('offline', _handleConnectivity, { passive: true });
+_handleConnectivity();
+
+// ─── SCREEN OFF / ON — complete UI freeze ────────────────────────────────────
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    _uiHidden = true;
+
+    // Stop viz immediately
+    if (vizRaf) { cancelAnimationFrame(vizRaf); vizRaf = null; }
+
+    // Stop orbs
+    document.getElementById('ambient-canvas')?.classList.remove('orbs-active');
+
+    // Hide heavy DOM — GPU layers freed
+    const fp = document.getElementById('fullscreen-player');
+    const ac = document.getElementById('ambient-canvas');
+    if (fp) fp.style.setProperty('visibility', 'hidden', 'important');
+    if (ac) ac.style.setProperty('display',    'none',   'important');
+
+    // Clear non-critical section cache
+    const keep = new Set(['recent', 'featured']);
+    Object.keys(sectionCache).forEach(k => { if (!keep.has(k)) delete sectionCache[k]; });
+
+  } else {
+    _uiHidden = false;
+
+    // Restore DOM
+    const fp = document.getElementById('fullscreen-player');
+    const ac = document.getElementById('ambient-canvas');
+    if (fp) fp.style.removeProperty('visibility');
+    if (ac) ac.style.removeProperty('display');
+
+    // Restart viz only if fullscreen was open
+    if (fp?.classList.contains('open') && !vizRaf && !isLowEnd) tickViz();
+
+    // Restart orbs
+    if (!isLowEnd) document.getElementById('ambient-canvas')?.classList.add('orbs-active');
+
+    // Sync player state
+    if (currentTrack) {
+      _syncPlayIcons();
+      _syncPlayingClass();
+      updateQualityLabel();
+    }
+  }
+}, { passive: true });
+
 // ─── UI UPDATES ───────────────────────────────────────────────────────────────
-// FIX: Lightweight helpers to sync only play/pause icons — no showMiniPlayer() side effect
 function _syncPlayIcons() {
   const playIcon  = '<polygon points="5 3 19 12 5 21 5 3"/>';
   const pauseIcon = '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>';
@@ -478,7 +512,7 @@ function _syncPlayingClass() {
 
 function updatePlayerUI() {
   if (!currentTrack) return;
-  const artUrl = (currentTrack.artworkUrl100 || '').replace('100x100', '600x600');
+  const artUrl = getArtUrl(currentTrack, '600x600');
 
   const miniArt = document.getElementById('mini-art');
   if (miniArt) setImgSrc(miniArt, artUrl);
@@ -497,7 +531,7 @@ function updatePlayerUI() {
   updateAmbientPlayer(artUrl);
   updateNextStrip();
   updateMediaSession();
-  showMiniPlayer(); // safe here — only called from loadTrack / explicit actions
+  showMiniPlayer();
 }
 
 function updateNextStrip() {
@@ -510,7 +544,7 @@ function updateNextStrip() {
   const nextSong = currentQueue[nextIdx];
   if (!nextSong) { strip.style.display = 'none'; return; }
   strip.style.display = '';
-  setImgSrc(document.getElementById('fp-next-art'), (nextSong.artworkUrl100 || '').replace('100x100', '300x300'));
+  setImgSrc(document.getElementById('fp-next-art'), getArtUrl(nextSong, '300x300'));
   const nt = document.getElementById('fp-next-title');   if (nt) nt.textContent  = nextSong.trackName  || 'Unknown';
   const na = document.getElementById('fp-next-artist');  if (na) na.textContent  = nextSong.artistName || 'Unknown';
 }
@@ -518,7 +552,7 @@ function updateNextStrip() {
 function updateMediaSession() {
   if (!('mediaSession' in navigator) || !currentTrack) return;
   try {
-    const artUrl = (currentTrack.artworkUrl100 || '').replace('100x100', '512x512');
+    const artUrl = getArtUrl(currentTrack, '512x512');
     navigator.mediaSession.metadata = new MediaMetadata({
       title:   currentTrack.trackName  || 'Unknown',
       artist:  currentTrack.artistName || 'Unknown',
@@ -542,9 +576,9 @@ function updateSaveBtn() {
   if (lbl) lbl.textContent = saved ? 'Saved' : 'Save';
 }
 
-// FIX: Guard with _miniPlayerDismissed flag
 function showMiniPlayer() {
   if (_miniPlayerDismissed) return;
+  if (isTV) return; // TV pe mini player nahi — seedha fullscreen
   document.getElementById('mini-player').classList.add('show');
 }
 
@@ -561,7 +595,6 @@ function updateActiveRows() {
       if (!existing) {
         const bar = document.createElement('div'); bar.className = 'now-playing-bar';
         bar.innerHTML = '<span></span><span></span><span></span>';
-        // FIX: Insert before durSpan instead of replacing, preserving heart button order
         if (durSpan) durSpan.style.display = 'none';
         rightDiv.appendChild(bar);
       }
@@ -602,9 +635,10 @@ function updateQualityLabel() {
   }
 }
 
-// ─── AMBIENT PLAYER BG ────────────────────────────────────────────────────────
+// ─── AMBIENT PLAYER BG ───────────────────────────────────────────────────────
 let _lastAmbientSrc = '';
 function updateAmbientPlayer(artUrl) {
+  if (isLowEnd) return; // skip on TV/low-end — saves GPU
   if (!artUrl || artUrl === _lastAmbientSrc) return;
   _lastAmbientSrc = artUrl;
   const bgArt = document.getElementById('fp-bg-art');
@@ -629,7 +663,6 @@ function updateAmbientPlayer(artUrl) {
   if (bgArt.complete && bgArt.naturalWidth > 0) bgArt.onload && bgArt.onload();
 }
 
-// FIX: Use shared canvas — no per-call allocation
 function extractDominantColor(imgEl, callback) {
   try {
     _sharedCtx.drawImage(imgEl, 0, 0, 16, 16);
@@ -644,12 +677,13 @@ function extractDominantColor(imgEl, callback) {
   } catch(e) { callback(184, 150, 64); }
 }
 
-// ─── VISUALIZER ───────────────────────────────────────────────────────────────
-const VIZ_COUNT = 44;
+// ─── VISUALIZER — 30fps capped, stops when not visible ───────────────────────
+const VIZ_COUNT = isLowEnd ? 0 : 44; // TV/low-end pe viz off
 let vizBars = []; let vizRaf = null; let vizPhase = 0; let vizTarget = [];
 const vizRandOffsets = Array.from({ length: VIZ_COUNT }, () => Math.random() * 6.28);
 
 function initViz() {
+  if (isLowEnd) return; // TV pe skip
   const c = document.getElementById('fp-visualizer'); if (!c) return;
   c.innerHTML = ''; vizBars = []; vizTarget = [];
   for (let i = 0; i < VIZ_COUNT; i++) {
@@ -657,11 +691,17 @@ function initViz() {
     c.appendChild(b); vizBars.push(b); vizTarget.push(0.05);
   }
   if (vizRaf) cancelAnimationFrame(vizRaf);
-  // FIX: Only tick viz if fullscreen is open — saves battery
   if (document.getElementById('fullscreen-player')?.classList.contains('open')) tickViz();
 }
 
 function tickViz() {
+  // Hard stops — saves battery aggressively
+  if (document.hidden ||
+      !document.getElementById('fullscreen-player')?.classList.contains('open') ||
+      isLowEnd) {
+    vizRaf = null; return;
+  }
+
   vizPhase += 0.034 + Math.sin(vizPhase * 0.1) * 0.004;
   vizBars.forEach((b, i) => {
     if (!isPlaying) {
@@ -678,15 +718,18 @@ function tickViz() {
     vizTarget[i] = vizTarget[i] * 0.74 + target * 0.26;
     b.style.transform = `scaleY(${vizTarget[i].toFixed(3)})`;
   });
-  vizRaf = requestAnimationFrame(tickViz);
+
+  // 30fps cap
+  vizRaf = cappedRaf(() => tickViz());
 }
 
-// ─── GESTURE: MINI PLAYER ─────────────────────────────────────────────────────
-(function setupMiniGesture() {
+// ─── GESTURE: MINI PLAYER — FIXED ────────────────────────────────────────────
+function setupMiniGesture() {
   const mp = document.getElementById('mini-player');
   let startY = 0, startX = 0, isDragging = false, startTime = 0, moved = false, rafId = null;
 
   mp.addEventListener('touchstart', e => {
+    e.stopPropagation(); // FIX: prevent fullscreen gesture conflict
     startY = e.touches[0].clientY; startX = e.touches[0].clientX;
     isDragging = true; startTime = Date.now(); moved = false;
     mp.style.transition = 'none';
@@ -719,9 +762,9 @@ function tickViz() {
 
     if (dy < -30 || vel > 0.45) {
       mp.style.transform = ''; openFullscreen();
-    } else if (dy > 90 || (vel > 0.70 && dy > 50)) {
-      // FIX: Raised thresholds — harder to accidentally dismiss
-      // FIX: Set flag BEFORE hiding — prevents audio 'playing' event from re-showing it
+    } else if (dy > 60 || (vel > 0.55 && dy > 25)) {
+      // FIX: Lower threshold — fast swipe dismiss works correctly
+      // FIX: Flag set BEFORE hide — prevents audio event re-show
       _miniPlayerDismissed = true;
       mp.style.transform = '';
       mp.classList.remove('show');
@@ -730,10 +773,10 @@ function tickViz() {
       mp.style.transform = '';
     }
   }, { passive: true });
-})();
+}
 
-// ─── GESTURE: FULLSCREEN PLAYER ───────────────────────────────────────────────
-(function setupFullPlayerGesture() {
+// ─── GESTURE: FULLSCREEN PLAYER — FIXED ─────────────────────────────────────
+function setupFullPlayerGesture() {
   const fp = document.getElementById('fullscreen-player');
   const qp = document.getElementById('queue-panel');
   let startY = 0, startX = 0, isDragging = false, startTime = 0, gestureTarget = null, moved = false, rafId = null;
@@ -744,15 +787,13 @@ function tickViz() {
            el.closest('.fp-info')         ||
            el.closest('.queue-panel-handle') ||
            el.closest('#queue-drag-handle');
-    // FIX: Removed fp-art-wrap from gesture zone — it has its own swipe gesture
-    // to prevent conflict between art-swipe and player-close
   }
 
   fp.addEventListener('touchstart', e => {
     const qpOpen      = qp.classList.contains('open');
     const onQueueHandle = e.target.closest('#queue-drag-handle');
     const onQueueBody   = qp.contains(e.target) && !onQueueHandle;
-    if (qpOpen && onQueueBody)        { isDragging = false; return; }
+    if (qpOpen && onQueueBody)             { isDragging = false; return; }
     if (!qpOpen && !isGestureZone(e.target)) { isDragging = false; return; }
     startY = e.touches[0].clientY; startX = e.touches[0].clientX;
     isDragging = true; startTime = Date.now(); moved = false;
@@ -805,10 +846,10 @@ function tickViz() {
       else qp.style.transform = '';
     }
   }, { passive: true });
-})();
+}
 
-// ─── GESTURE: ART SWIPE (left=next, right=prev) ───────────────────────────────
-(function setupArtSwipeGesture() {
+// ─── GESTURE: ART SWIPE — FIXED ──────────────────────────────────────────────
+function setupArtSwipeGesture() {
   const artWrap = document.getElementById('fp-art-wrap');
   if (!artWrap) return;
   let startX = 0, startY = 0, isDragging = false, moved = false, startTime = 0, rafId = null;
@@ -824,7 +865,7 @@ function tickViz() {
     if (!isDragging) return;
     const dx = e.touches[0].clientX - startX;
     const dy = Math.abs(e.touches[0].clientY - startY);
-    // FIX: Vertical motion hands off to fullscreen-close gesture
+    // Vertical → hand off to fullscreen close gesture
     if (!moved && dy > Math.abs(dx) + 8) { isDragging = false; artWrap.style.willChange = ''; return; }
     if (Math.abs(dx) > 8) {
       moved = true;
@@ -862,7 +903,7 @@ function tickViz() {
     isDragging = false; artWrap.style.willChange = '';
     _resetArtWrap();
   }, { passive: true });
-})();
+}
 
 function _resetArtWrap() {
   const artWrap = document.getElementById('fp-art-wrap');
@@ -882,7 +923,6 @@ function _animateArtSwipe(direction, callback) {
   artWrap.style.opacity    = '0';
 
   setTimeout(() => {
-    // FIX: Set transition:none BEFORE callback so setImgSrc doesn't flash
     artWrap.style.transition = 'none';
     artWrap.style.transform  = `translateX(${xIn}) rotate(${direction === 'left' ? 4 : -4}deg)`;
     artWrap.style.opacity    = '0';
@@ -895,18 +935,34 @@ function _animateArtSwipe(direction, callback) {
   }, 185);
 }
 
-// ─── PLAYER OPEN / CLOSE ──────────────────────────────────────────────────────
+// ─── TV: D-PAD NAVIGATION ─────────────────────────────────────────────────────
+function setupTVNavigation() {
+  document.addEventListener('keydown', e => {
+    switch(e.key) {
+      case 'ArrowRight':  nextTrack();  e.preventDefault(); break;
+      case 'ArrowLeft':   prevTrack();  e.preventDefault(); break;
+      case 'Enter':       togglePlay(); e.preventDefault(); break;
+      case 'ArrowUp':     setVolume(Math.min(1, audio.volume + 0.1)); e.preventDefault(); break;
+      case 'ArrowDown':   setVolume(Math.max(0, audio.volume - 0.1)); e.preventDefault(); break;
+      case 'Backspace':
+      case 'GoBack':      closeFullscreen(); e.preventDefault(); break;
+    }
+  });
+}
+
+// ─── PLAYER OPEN / CLOSE ─────────────────────────────────────────────────────
 function openFullscreen() {
   const fp = document.getElementById('fullscreen-player');
   const mp = document.getElementById('mini-player');
   fp.style.transform = '';
   fp.classList.add('open');
-  mp.style.transition  = 'opacity 0.2s ease, transform 0.2s ease';
-  mp.style.opacity     = '0';
-  mp.style.pointerEvents = 'none';
+  if (mp) {
+    mp.style.transition    = 'opacity 0.2s ease, transform 0.2s ease';
+    mp.style.opacity       = '0';
+    mp.style.pointerEvents = 'none';
+  }
   updateNextStrip();
-  // FIX: Start visualizer only when player is open
-  if (!vizRaf && !document.hidden) tickViz();
+  if (!vizRaf && !document.hidden && !isLowEnd) tickViz();
 }
 
 function closeFullscreen() {
@@ -915,16 +971,20 @@ function closeFullscreen() {
   fp.style.transform = '';
   fp.classList.remove('open');
   closeQueuePanel();
-  // FIX: Stop visualizer when player closes — saves battery
+  // Stop viz when player closes
   if (vizRaf) { cancelAnimationFrame(vizRaf); vizRaf = null; }
-  setTimeout(() => {
-    mp.style.transition  = '';
-    mp.style.opacity     = '';
-    mp.style.pointerEvents = '';
-  }, 220);
+  // Stop ambient orbs
+  document.getElementById('ambient-canvas')?.classList.remove('orbs-active');
+  if (mp) {
+    setTimeout(() => {
+      mp.style.transition    = '';
+      mp.style.opacity       = '';
+      mp.style.pointerEvents = '';
+    }, 220);
+  }
 }
 
-// ─── QUEUE PANEL ──────────────────────────────────────────────────────────────
+// ─── QUEUE PANEL ─────────────────────────────────────────────────────────────
 function toggleQueuePanel() { queuePanelOpen ? closeQueuePanel() : openQueuePanel(); }
 
 function openQueuePanel() {
@@ -975,7 +1035,7 @@ function makeQueueItem(song, qIdx, isCurrent) {
   const item = document.createElement('div');
   item.className = 'queue-item' + (isCurrent ? ' current' : '');
   item.dataset.trackId = song.trackId;
-  const artUrl = (song.artworkUrl100 || '').replace('100x100', '300x300');
+  const artUrl = getArtUrl(song, '300x300');
   const dur    = song.trackTimeMillis ? formatMs(song.trackTimeMillis) : '';
   item.dataset.dur = dur;
   const img = document.createElement('img'); img.alt = ''; img.loading = 'lazy';
@@ -994,7 +1054,7 @@ function makeQueueItem(song, qIdx, isCurrent) {
   return item;
 }
 
-// ─── RECOMMENDATIONS ──────────────────────────────────────────────────────────
+// ─── RECOMMENDATIONS ─────────────────────────────────────────────────────────
 async function fetchRecommendations(song) {
   if (!song) return;
   try {
@@ -1003,7 +1063,6 @@ async function fetchRecommendations(song) {
     const d = await r.json();
     const recs = (d.results || []).filter(s => s.previewUrl && String(s.trackId) !== String(song.trackId));
     if (recs.length) {
-      // FIX: Normalise trackId to string for reliable dedup comparison
       const existingIds = new Set(currentQueue.map(s => String(s.trackId)));
       const newRecs     = recs.filter(s => !existingIds.has(String(s.trackId))).slice(0, 8);
       currentQueue      = [...currentQueue, ...newRecs];
@@ -1012,7 +1071,7 @@ async function fetchRecommendations(song) {
   } catch(e) {}
 }
 
-// ─── RECENTLY PLAYED ──────────────────────────────────────────────────────────
+// ─── RECENTLY PLAYED ─────────────────────────────────────────────────────────
 function addToRecentlyPlayed(song) {
   recentlyPlayed = recentlyPlayed.filter(s => String(s.trackId) !== String(song.trackId));
   recentlyPlayed.unshift(song);
@@ -1070,7 +1129,6 @@ async function loadHomeSection(sec) {
       clearTimeout(to);
       const d = await r.json();
       let songs = (d.results || []).filter(s => s.previewUrl);
-      // Shuffle for variety
       for (let i = songs.length - 1; i > 0; i--) { const j = Math.floor(Math.random()*(i+1)); [songs[i],songs[j]]=[songs[j],songs[i]]; }
       return songs;
     } catch(fe) {
@@ -1119,8 +1177,6 @@ async function buildHomeSections(genre = 'all') {
   }
 
   sections.forEach(sec => {
-    // FIX: Always render recent wrapper in DOM — but hide it if empty
-    // This lets renderQuickResume() find and show it later
     const wrap = document.createElement('div'); wrap.className = 'section'; wrap.id = 'sec-wrap-' + sec.id;
     if (sec.id === 'recent' && !recentlyPlayed.length) wrap.style.display = 'none';
     const type      = sec.type === 'featured' ? 'cards' : sec.type;
@@ -1169,7 +1225,6 @@ function renderQuickResume() {
   const el   = document.getElementById('sec-recent');
   if (!el) return;
   if (!recentlyPlayed.length) { if (wrap) wrap.style.display = 'none'; return; }
-  // FIX: Show wrapper (it's always in DOM now)
   if (wrap) wrap.style.display = '';
   el.innerHTML = '';
   const row = document.createElement('div'); row.className = 'h-scroll-row'; row.style.paddingRight = '20px';
@@ -1177,16 +1232,17 @@ function renderQuickResume() {
   el.appendChild(row);
 }
 
-// ─── CARD MAKERS ──────────────────────────────────────────────────────────────
+// ─── CARD MAKERS ─────────────────────────────────────────────────────────────
 function makeQuickCard(s, i, queue) {
   const div = document.createElement('div'); div.className = 'quick-card anim-in';
   div.style.animationDelay = (i * 0.05) + 's';
   const img = document.createElement('img'); img.alt = esc(s.trackName); img.loading = 'lazy';
-  setImgSrc(img, (s.artworkUrl100 || '').replace('100x100', '400x400'));
+  setImgSrc(img, getArtUrl(s, '400x400'));
   div.appendChild(img);
   const info = document.createElement('div'); info.className = 'quick-card-info';
   info.innerHTML = `<div class="quick-card-title">${esc(s.trackName)}</div><div class="quick-card-artist">${esc(s.artistName)}</div>`;
   div.appendChild(info);
+  if (isTV) div.tabIndex = 0;
   div.onclick = () => playSongs(queue, i); return div;
 }
 
@@ -1195,13 +1251,14 @@ function makeWideCard(s, i, queue) {
   div.style.animationDelay = (i * 0.05) + 's';
   const cover = document.createElement('div'); cover.className = 'wide-card-cover';
   const img   = document.createElement('img'); img.alt = esc(s.trackName); img.loading = 'lazy';
-  setImgSrc(img, (s.artworkUrl100 || '').replace('100x100', '400x400'));
+  setImgSrc(img, getArtUrl(s, '400x400'));
   const play = document.createElement('div'); play.className = 'wide-card-play';
   play.innerHTML = '<svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3" fill="white"/></svg>';
   cover.appendChild(img); cover.appendChild(play);
   const info = document.createElement('div'); info.className = 'wide-card-info';
   info.innerHTML = `<div class="wide-card-title">${esc(s.trackName)}</div><div class="wide-card-sub">${esc(s.artistName)}</div>`;
   div.appendChild(cover); div.appendChild(info);
+  if (isTV) div.tabIndex = 0;
   div.onclick = () => playSongs(queue, i); return div;
 }
 
@@ -1211,7 +1268,7 @@ function makeBwCard(s, i, queue, meta) {
   div.style.animationDelay = (i * 0.05) + 's';
   const cover = document.createElement('div'); cover.className = 'bw-card-cover';
   const img   = document.createElement('img'); img.alt = esc(s.trackName); img.loading = 'lazy';
-  setImgSrc(img, (s.artworkUrl100 || '').replace('100x100', '400x400'));
+  setImgSrc(img, getArtUrl(s, '400x400'));
   cover.appendChild(img);
   const overlay = document.createElement('div'); overlay.className = 'bw-card-overlay';
   overlay.innerHTML = `<div class="bw-card-genre" style="color:${meta.color}">${meta.genre}</div><div class="bw-card-title">${esc(s.trackName)}</div><div class="bw-card-sub">${esc(s.artistName)}</div>`;
@@ -1219,6 +1276,7 @@ function makeBwCard(s, i, queue, meta) {
   const info = document.createElement('div'); info.className = 'bw-card-info';
   info.innerHTML = `<div class="bw-card-name">${esc(s.trackName)}</div><div class="bw-card-artist">${esc(s.artistName)}</div>`;
   div.appendChild(cover); div.appendChild(info);
+  if (isTV) div.tabIndex = 0;
   div.onclick = () => playSongs(queue, i); return div;
 }
 
@@ -1230,7 +1288,7 @@ function makeSongRow(s, i, queue) {
   row.dataset.dur = dur;
 
   const img = document.createElement('img'); img.alt = ''; img.loading = 'lazy';
-  setImgSrc(img, (s.artworkUrl100 || '').replace('100x100', '300x300'));
+  setImgSrc(img, getArtUrl(s, '300x300'));
   row.appendChild(img);
 
   const info = document.createElement('div'); info.className = 'song-row-info';
@@ -1254,20 +1312,23 @@ function makeSongRow(s, i, queue) {
 
   right.appendChild(heartBtn); right.appendChild(durSpan); right.appendChild(moreBtn);
   row.appendChild(right);
+  if (isTV) row.tabIndex = 0;
   row.onclick = () => { playSongs(queue, i); haptic(8); };
   row._song = s;
 
-  // Long press → modal
-  let pt;
-  row.addEventListener('pointerdown', () => {
-    pt = setTimeout(() => { row.classList.add('long-press-active'); haptic([20,40,20]); openSongModal(s); setTimeout(() => row.classList.remove('long-press-active'), 300); }, 480);
-  });
-  row.addEventListener('pointerup',     () => clearTimeout(pt));
-  row.addEventListener('pointercancel', () => clearTimeout(pt));
+  // Long press — skip on TV
+  if (!isTV) {
+    let pt;
+    row.addEventListener('pointerdown', () => {
+      pt = setTimeout(() => { row.classList.add('long-press-active'); haptic([20,40,20]); openSongModal(s); setTimeout(() => row.classList.remove('long-press-active'), 300); }, 480);
+    });
+    row.addEventListener('pointerup',     () => clearTimeout(pt));
+    row.addEventListener('pointercancel', () => clearTimeout(pt));
+  }
   return row;
 }
 
-// ─── GENRE FILTER ─────────────────────────────────────────────────────────────
+// ─── GENRE FILTER ────────────────────────────────────────────────────────────
 function filterHome(genre, chip) {
   document.querySelectorAll('#home-chips .chip').forEach(c => c.classList.remove('active'));
   chip.classList.add('active', 'popping');
@@ -1275,7 +1336,7 @@ function filterHome(genre, chip) {
   haptic(8); buildHomeSections(genre);
 }
 
-// ─── SEARCH ───────────────────────────────────────────────────────────────────
+// ─── SEARCH ──────────────────────────────────────────────────────────────────
 const browseCategories = [
   { label:'Pop',        sub:'Charts & hits',         cls:'bc-pop',        genre:'pop' },
   { label:'Hip-Hop',    sub:'Trap & rap',             cls:'bc-hiphop',     genre:'hiphop' },
@@ -1304,6 +1365,10 @@ function clearSearch() {
   clearTimeout(_searchTimeout); renderSearchIdle();
 }
 
+function _saveSearchToStorage(searches) {
+  localStorage.setItem('aurum_recent', JSON.stringify(searches));
+}
+
 function renderSearchIdle() {
   let html = '';
   if (recentSearches.length) {
@@ -1315,7 +1380,7 @@ function renderSearchIdle() {
   }
   html += `<div class="browse-section"><div class="browse-label">Browse</div><div class="browse-grid">`;
   browseCategories.forEach(c => {
-    html += `<div class="browse-card ${c.cls}" onclick="browseGenre('${c.genre}')"><div class="browse-card-label">${c.label}</div><div class="browse-card-sub">${c.sub}</div></div>`;
+    html += `<div class="browse-card ${c.cls}" onclick="browseGenre('${c.genre}')"${isTV ? ' tabindex="0"' : ''}><div class="browse-card-label">${c.label}</div><div class="browse-card-sub">${c.sub}</div></div>`;
   });
   html += `</div></div>`;
   document.getElementById('search-body').innerHTML = html;
@@ -1328,9 +1393,14 @@ function browseGenre(genre) {
   saveRecentSearch(q); doSearch(q);
 }
 function tapRecentSearch(q) { document.getElementById('search-input').value = q; document.getElementById('search-clear').style.display = 'flex'; doSearch(q); }
-function saveRecentSearch(q) { recentSearches = recentSearches.filter(r => r.toLowerCase() !== q.toLowerCase()); recentSearches.unshift(q); if (recentSearches.length > 6) recentSearches = recentSearches.slice(0, 6); localStorage.setItem('aurum_recent', JSON.stringify(recentSearches)); }
-function removeRecent(e, i) { e.stopPropagation(); recentSearches.splice(i, 1); localStorage.setItem('aurum_recent', JSON.stringify(recentSearches)); renderSearchIdle(); }
-function clearAllRecent() { recentSearches = []; localStorage.setItem('aurum_recent', '[]'); renderSearchIdle(); }
+function saveRecentSearch(q) {
+  recentSearches = recentSearches.filter(r => r.toLowerCase() !== q.toLowerCase());
+  recentSearches.unshift(q);
+  if (recentSearches.length > 6) recentSearches = recentSearches.slice(0, 6);
+  _saveSearchToStorage(recentSearches);
+}
+function removeRecent(e, i) { e.stopPropagation(); recentSearches.splice(i, 1); _saveSearchToStorage(recentSearches); renderSearchIdle(); }
+function clearAllRecent() { recentSearches = []; _saveSearchToStorage(recentSearches); renderSearchIdle(); }
 
 function showSearchSkeleton() {
   let html = '<div style="padding:4px 0">';
@@ -1362,7 +1432,7 @@ function renderSearchResults(songs, q) {
   songs.forEach((s, i) => list.appendChild(makeSongRow(s, i, songs)));
 }
 
-// ─── NAVIGATION ───────────────────────────────────────────────────────────────
+// ─── NAVIGATION ──────────────────────────────────────────────────────────────
 function goPage(name, btn) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
@@ -1372,7 +1442,7 @@ function goPage(name, btn) {
   if (name === 'search')  renderSearchIdle();
 }
 
-// ─── SAVE / LIBRARY ───────────────────────────────────────────────────────────
+// ─── SAVE / LIBRARY ──────────────────────────────────────────────────────────
 function isSaved(song) { return savedSongs.some(s => String(s.trackId) === String(song.trackId)); }
 function toggleSaveCurrentTrack() { if (!currentTrack) return; toggleSave(currentTrack); updateSaveBtn(); }
 function toggleSave(song) {
@@ -1410,6 +1480,7 @@ function renderPlaylists() {
   if (!playlists.length) return;
   playlists.forEach((pl, i) => {
     const card  = document.createElement('div'); card.className = 'playlist-card';
+    if (isTV) card.tabIndex = 0;
     card.onclick = () => openPlaylistDetail(i);
     const songs = pl.songs || [];
     const coverWrap = document.createElement('div'); coverWrap.className = 'playlist-card-cover';
@@ -1417,12 +1488,12 @@ function renderPlaylists() {
       const grid4 = document.createElement('div'); grid4.className = 'playlist-card-grid';
       songs.slice(0, 4).forEach(s => {
         const img = document.createElement('img'); img.alt = ''; img.loading = 'lazy';
-        setImgSrc(img, (s.artworkUrl100 || '').replace('100x100', '300x300')); grid4.appendChild(img);
+        setImgSrc(img, getArtUrl(s, '300x300')); grid4.appendChild(img);
       });
       coverWrap.appendChild(grid4);
     } else if (songs.length > 0) {
       const img = document.createElement('img'); img.alt = ''; img.loading = 'lazy';
-      setImgSrc(img, (songs[0].artworkUrl100 || '').replace('100x100', '300x300'));
+      setImgSrc(img, getArtUrl(songs[0], '300x300'));
       img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:12px;';
       coverWrap.appendChild(img);
     } else {
@@ -1449,18 +1520,22 @@ function renderSavedSongs() {
   savedSongs.forEach((s, i) => list.appendChild(makeSongRow(s, i, savedSongs)));
 }
 
-// ─── DOWNLOADS (IndexedDB) ────────────────────────────────────────────────────
+// ─── DOWNLOADS (IndexedDB) ───────────────────────────────────────────────────
 const DL_DB_NAME = 'aurum_downloads'; const DL_DB_VER = 1; let _dlDb = null;
 
 function openDlDb() {
   if (_dlDb) return Promise.resolve(_dlDb);
   return new Promise((res, rej) => {
     const req = indexedDB.open(DL_DB_NAME, DL_DB_VER);
-    req.onupgradeneeded = e => { const db = e.target.result; if (!db.objectStoreNames.contains('songs')) db.createObjectStore('songs', { keyPath:'trackId' }); };
+    req.onupgradeneeded = e => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('songs')) db.createObjectStore('songs', { keyPath:'trackId' });
+    };
     req.onsuccess = e => { _dlDb = e.target.result; res(_dlDb); };
     req.onerror   = () => rej(req.error);
   });
 }
+
 async function saveToDb(song, blob) {
   const db = await openDlDb();
   return new Promise((res, rej) => {
@@ -1469,6 +1544,7 @@ async function saveToDb(song, blob) {
     tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error);
   });
 }
+
 async function deleteFromDb(trackId) {
   const db = await openDlDb();
   return new Promise((res, rej) => {
@@ -1476,6 +1552,15 @@ async function deleteFromDb(trackId) {
     tx.objectStore('songs').delete(trackId);
     tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error);
   });
+}
+
+// ─── PERSISTENT STORAGE REQUEST ──────────────────────────────────────────────
+async function requestPersistentStorage() {
+  if (!navigator.storage?.persist) return;
+  const already = await navigator.storage.persisted();
+  if (already) return;
+  const granted = await navigator.storage.persist();
+  if (!granted) showToast('Tip: Add to Home Screen for permanent downloads');
 }
 
 async function downloadSongOffline(song, customUrl, customQuality) {
@@ -1496,14 +1581,12 @@ async function downloadSongOffline(song, customUrl, customQuality) {
 async function playDownloadedSong(trackId) {
   try {
     const db  = await openDlDb();
-    // FIX: Normalise trackId type for reliable IDB get
     const key = isNaN(Number(trackId)) ? trackId : Number(trackId);
     const tx  = db.transaction('songs', 'readonly');
     const req = tx.objectStore('songs').get(key);
     req.onsuccess = () => {
       const rec = req.result;
       if (!rec || !rec._blob) { showToast('File missing — re-download'); return; }
-      // FIX: Revoke previous Object URL to prevent memory leak
       if (_lastObjectUrl) { URL.revokeObjectURL(_lastObjectUrl); _lastObjectUrl = null; }
       const url = URL.createObjectURL(rec._blob);
       _lastObjectUrl = url;
@@ -1537,8 +1620,9 @@ function renderDownloadedSongs() {
   list.appendChild(hdr);
   songs.forEach(s => {
     const row = document.createElement('div'); row.className = 'song-row anim-in'; row.dataset.trackId = s.trackId;
+    if (isTV) row.tabIndex = 0;
     const img = document.createElement('img'); img.alt=''; img.loading='lazy';
-    setImgSrc(img, (s.artworkUrl100||'').replace('100x100','300x300')); row.appendChild(img);
+    setImgSrc(img, getArtUrl(s, '300x300')); row.appendChild(img);
     const info = document.createElement('div'); info.className = 'song-row-info';
     const qLabel = s._quality && s._quality.includes('320') ? '320K' : s._quality && s._quality.includes('160') ? '160K' : 'OFFLINE';
     info.innerHTML = `<div class="song-row-title">${esc(s.trackName)}</div><div class="song-row-artist"><span style="color:var(--gold);font-size:8px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;margin-right:5px;">${qLabel}</span>${esc(s.artistName)}</div>`;
@@ -1562,7 +1646,7 @@ function confirmClearDownloads() {
   });
 }
 
-// ─── PLAYLIST DETAIL ──────────────────────────────────────────────────────────
+// ─── PLAYLIST DETAIL ─────────────────────────────────────────────────────────
 function openPlaylistDetail(i) {
   currentPlaylistIndex = i; const pl = playlists[i];
   document.getElementById('pl-detail-name').textContent  = pl.name;
@@ -1576,13 +1660,13 @@ function openPlaylistDetail(i) {
     coverEl.replaceWith(emptyDiv);
   } else if (songs.length < 4) {
     const img = document.createElement('img'); img.id = 'pl-big-cover'; img.className = 'pl-big-cover'; img.alt = '';
-    setImgSrc(img, (songs[0].artworkUrl100 || '').replace('100x100', '500x500'));
+    setImgSrc(img, getArtUrl(songs[0], '500x500'));
     coverEl.replaceWith(img);
   } else {
     const g = document.createElement('div'); g.id = 'pl-big-cover'; g.className = 'pl-big-cover-grid';
     songs.slice(0, 4).forEach(s => {
       const img = document.createElement('img'); img.alt = ''; img.loading = 'lazy';
-      setImgSrc(img, (s.artworkUrl100 || '').replace('100x100', '300x300')); g.appendChild(img);
+      setImgSrc(img, getArtUrl(s, '300x300')); g.appendChild(img);
     });
     coverEl.replaceWith(g);
   }
@@ -1608,13 +1692,12 @@ function shufflePlaylist() {
   closePlaylistDetail(); openFullscreen();
 }
 
-// ─── PLAYLIST OPTIONS ─────────────────────────────────────────────────────────
+// ─── PLAYLIST OPTIONS ────────────────────────────────────────────────────────
 function openPlaylistOpts(e, i) {
   e.stopPropagation(); optsPlaylistIndex = i;
   document.getElementById('pl-opts-title').textContent = playlists[i]?.name || 'Playlist';
   document.getElementById('playlist-opts-modal').classList.add('open');
 }
-// FIX: Use closest() for reliable backdrop detection
 function closePlaylistOpts(e) {
   if (e && !e.target.closest) return;
   if (e && e.target.closest('.modal-sheet')) return;
@@ -1644,7 +1727,7 @@ function confirmDeletePlaylist() {
   optsPlaylistIndex = null; renderPlaylists(); showToast(`"${name}" deleted`);
 }
 
-// ─── CREATE PLAYLIST ──────────────────────────────────────────────────────────
+// ─── CREATE PLAYLIST ─────────────────────────────────────────────────────────
 function openCreatePlaylist() {
   document.getElementById('create-playlist-modal').classList.add('open');
   setTimeout(() => document.getElementById('playlist-name-input').focus(), 360);
@@ -1661,17 +1744,16 @@ function createPlaylist() {
   closeCreatePlaylist(); renderPlaylists(); showToast('"' + name + '" created');
 }
 
-// ─── SONG MODAL ───────────────────────────────────────────────────────────────
+// ─── SONG MODAL ──────────────────────────────────────────────────────────────
 function openSongModal(song) {
   if (!song) return; modalTrack = song;
   const art = document.getElementById('modal-song-art');
-  if (art) setImgSrc(art, (song.artworkUrl100 || '').replace('100x100', '300x300'));
+  if (art) setImgSrc(art, getArtUrl(song, '300x300'));
   document.getElementById('modal-song-title').textContent  = song.trackName  || 'Unknown';
   document.getElementById('modal-song-artist').textContent = song.artistName || 'Unknown';
   document.getElementById('modal-save-label').textContent  = isSaved(song) ? 'Remove from Library' : 'Save to Library';
   document.getElementById('song-modal').classList.add('open');
 }
-// FIX: Use closest() — child element taps no longer block close
 function closeSongModal(e) {
   if (e && e.target.closest?.('.modal-sheet')) return;
   document.getElementById('song-modal').classList.remove('open'); modalTrack = null;
@@ -1693,17 +1775,14 @@ function modalDownload() {
   if (!modalTrack) return;
   const s = modalTrack;
   document.getElementById('song-modal').classList.remove('open');
-  // FIX: Save modalTrack BEFORE clearing it
   _downloadSong = s; modalTrack = null;
   openDownloadModal();
 }
 
-// ─── ADD TO PLAYLIST ──────────────────────────────────────────────────────────
+// ─── ADD TO PLAYLIST ─────────────────────────────────────────────────────────
 function openAddToPlaylistModal() {
-  // FIX: Snapshot modalTrack into local var before clearing it
   const songToAdd = modalTrack;
   document.getElementById('song-modal').classList.remove('open');
-  // Do NOT null modalTrack here — we need it in addToPlaylist()
   const opts = document.getElementById('add-playlist-options'); opts.innerHTML = '';
   if (!playlists.length) {
     opts.innerHTML = `<div style="padding:12px 0;text-align:center;color:var(--text3);font-size:12px;">No playlists yet.</div>`;
@@ -1716,12 +1795,10 @@ function openAddToPlaylistModal() {
   }
   document.getElementById('add-playlist-modal').classList.add('open');
 }
-// FIX: Use closest() for backdrop
 function closeAddToPlaylistModal(e) {
   if (e && e.target.closest?.('.modal-sheet')) return;
   document.getElementById('add-playlist-modal').classList.remove('open');
 }
-// FIX: Accept song as parameter — no longer depends on modalTrack global
 function addToPlaylist(i, song) {
   const s = song || modalTrack; if (!s) return;
   const pl = playlists[i];
@@ -1736,7 +1813,7 @@ function addToPlaylist(i, song) {
   modalTrack = null;
 }
 
-// ─── QUALITY MODAL ────────────────────────────────────────────────────────────
+// ─── QUALITY MODAL ───────────────────────────────────────────────────────────
 function openQualitySheet() {
   if (!currentTrack) { showToast('Play a song first'); return; }
   const sub = document.getElementById('qs-track-name');
@@ -1753,7 +1830,7 @@ function selectQuality(q) {
   else { if (_fullSongAbort) { _fullSongAbort.abort(); _fullSongAbort = null; } _autoFetchFullSong(currentTrack); document.getElementById('quality-modal').classList.remove('open'); }
 }
 
-// ─── DOWNLOAD ─────────────────────────────────────────────────────────────────
+// ─── DOWNLOAD ────────────────────────────────────────────────────────────────
 function openDownloadModal() {
   const song = _downloadSong || currentTrack;
   if (!song) { showToast('Play a song first'); return; }
@@ -1817,7 +1894,7 @@ async function triggerDownload(quality) {
   }
 }
 
-// ─── TOAST ────────────────────────────────────────────────────────────────────
+// ─── TOAST ───────────────────────────────────────────────────────────────────
 let _toastTimer = null;
 function showToast(msg) {
   const t = document.getElementById('toast');
@@ -1827,14 +1904,20 @@ function showToast(msg) {
   _toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
 }
 
-// ─── UTILS ────────────────────────────────────────────────────────────────────
+// ─── UTILS ───────────────────────────────────────────────────────────────────
 function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function formatMs(ms)  { const s = Math.floor((ms||0)/1000); return `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`; }
 function formatSec(s)  { s = Math.floor(s||0); return `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`; }
-function haptic(pat)   { try { if (navigator.vibrate) navigator.vibrate(pat); } catch(e) {} }
-document.addEventListener('keydown', e => { if (e.code === 'Space' && e.target.tagName !== 'INPUT') { e.preventDefault(); togglePlay(); } });
+function haptic(pat)   { try { if (navigator.vibrate && (typeof appSettings === 'undefined' || appSettings.hapticFeedback !== false)) navigator.vibrate(pat); } catch(e) {} }
 
-// ─── INIT ─────────────────────────────────────────────────────────────────────
+// Keyboard shortcut — skip on TV (D-pad handles it)
+if (!isTV) {
+  document.addEventListener('keydown', e => {
+    if (e.code === 'Space' && e.target.tagName !== 'INPUT') { e.preventDefault(); togglePlay(); }
+  });
+}
+
+// ─── INIT ────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
   // Theme color sync
   const mq = window.matchMedia('(prefers-color-scheme: light)');
@@ -1845,20 +1928,26 @@ window.addEventListener('DOMContentLoaded', () => {
   mq.addEventListener('change', e => syncThemeColor(e.matches));
   syncThemeColor(mq.matches);
 
-  // Low-end device detection
-  const isLowEnd = (navigator.hardwareConcurrency || 8) <= 4 ||
-    (typeof navigator.deviceMemory !== 'undefined' && navigator.deviceMemory <= 2);
-  if (isLowEnd) {
-    document.documentElement.classList.add('low-end');
-    if (vizRaf) { cancelAnimationFrame(vizRaf); vizRaf = null; }
+  // Low-end class
+  if (isLowEnd) document.documentElement.classList.add('low-end');
+
+  // TV class — for CSS targeting
+  if (isTV) document.documentElement.classList.add('is-tv');
+
+  // Persistent storage
+  requestPersistentStorage();
+
+  // Gestures — only on touch devices
+  if (!isTV) {
+    setupMiniGesture();
+    setupFullPlayerGesture();
+    setupArtSwipeGesture();
   }
 
-  // Request persistent storage for IndexedDB downloads
-  if (navigator.storage && navigator.storage.persist) {
-    navigator.storage.persisted().then(already => { if (!already) navigator.storage.persist(); });
-  }
+  // D-pad on TV
+  if (isTV) setupTVNavigation();
 
-  // FIX: Init viz but don't tick yet — only tick when fullscreen opens
+  // Viz init — skips internally if low-end
   initViz();
 
   buildHomeSections('all');
@@ -1868,15 +1957,58 @@ window.addEventListener('DOMContentLoaded', () => {
   const vs = document.getElementById('fp-vol-slider');
   if (vs) vs.style.setProperty('--vol', '100%');
 
-  // Start orbs on first touch
-  document.addEventListener('touchstart', () => {
-    document.getElementById('ambient-canvas')?.classList.add('orbs-active');
-  }, { once: true, passive: true });
+  // Orbs on first touch (non-TV only)
+  if (!isTV && !isLowEnd) {
+    document.addEventListener('touchstart', () => {
+      document.getElementById('ambient-canvas')?.classList.add('orbs-active');
+    }, { once: true, passive: true });
+  }
+
+  // TV pe auto open fullscreen when song plays
+  if (isTV) {
+    const _origLoadTrack = loadTrack;
+    window._tvLoadTrackHooked = true;
+    // Monkey-patch: open fullscreen automatically on TV
+    const origPlaySongs = playSongs;
+    window.playSongs = function(queue, index) {
+      origPlaySongs(queue, index);
+      setTimeout(() => openFullscreen(), 100);
+    };
+  }
 });
 
-// ─── SERVICE WORKER ───────────────────────────────────────────────────────────
+// ─── SERVICE WORKER ──────────────────────────────────────────────────────────
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   });
 }
+
+// ─── SETTINGS BRIDGE — safe, no prototype override ───────────────────────────
+window._getAurumAudio = () => audio;
+// Settings.js ko directly window._getAurumAudio() use karna chahiye
+// querySelector override REMOVED — was dangerous
+
+// Volume normalization stub
+function _applyVolumeNormalization() {
+  if (typeof appSettings === 'undefined') return;
+  if (appSettings.volumeNormalize) audio.volume = Math.min(audio.volume, 0.85);
+}
+
+// Gapless playback
+let _gaplessBuffer = null;
+audio.addEventListener('timeupdate', () => {
+  if (typeof appSettings === 'undefined' || !appSettings.gaplessPlayback) return;
+  if (!currentQueue.length || currentIndex >= currentQueue.length - 1) return;
+  const timeLeft = isFinite(audio.duration) ? audio.duration - audio.currentTime : 999;
+  if (timeLeft < 8 && !_gaplessBuffer) {
+    const next = currentQueue[currentIndex + 1];
+    if (next?.previewUrl) {
+      _gaplessBuffer = new Audio();
+      _gaplessBuffer.preload = 'auto';
+      _gaplessBuffer.src = next.previewUrl;
+      _gaplessBuffer.load();
+    }
+  }
+});
+audio.addEventListener('ended', () => { _gaplessBuffer = null; });
