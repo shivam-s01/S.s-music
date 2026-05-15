@@ -8,21 +8,33 @@ const isTV = navigator.userAgent.includes('TV') ||
 
 const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent) && !isTV;
 
-const isLowEnd = isTV || // TV always treated as low-end for rendering
+const isLowEnd = isTV ||
   (navigator.hardwareConcurrency || 8) <= 4 ||
   (typeof navigator.deviceMemory !== 'undefined' && navigator.deviceMemory <= 2);
 
-// ─── FPS CAP (30fps) ──────────────────────────────────────────────────────────
+// ─── DYNAMIC VIEWPORT (Blank Fix) ────────────────────────────────────────────
+// Sets --vh so calc(var(--vh, 1vh) * 100) always fills the real visible viewport,
+// eliminating bottom gaps during swipe / browser-chrome hide/show.
+function setVh() {
+  document.documentElement.style.setProperty('--vh', (window.innerHeight * 0.01) + 'px');
+}
+window.addEventListener('resize',            setVh, { passive: true });
+window.addEventListener('orientationchange', () => setTimeout(setVh, 300), { passive: true });
+setVh(); // run immediately — before any layout
+
+// ─── FPS CAP (30fps) — for GESTURE moves ─────────────────────────────────────
 const TARGET_FPS   = 30;
-const FRAME_BUDGET = 1000 / TARGET_FPS; // 33.3ms
+const FRAME_BUDGET = 1000 / TARGET_FPS; // 33.3 ms
 let   _lastRafTime = 0;
 
+// Used ONLY for gesture touchmove batching (not viz — viz has its own loop below)
 function cappedRaf(cb) {
-  return requestAnimationFrame(ts => {
+  const id = requestAnimationFrame(ts => {
     if (ts - _lastRafTime < FRAME_BUDGET) { cappedRaf(cb); return; }
     _lastRafTime = ts;
     cb(ts);
   });
+  return id;
 }
 
 // ─── IMAGE SYSTEM ─────────────────────────────────────────────────────────────
@@ -32,7 +44,6 @@ const _sharedCanvas = document.createElement('canvas');
 _sharedCanvas.width = 16; _sharedCanvas.height = 16;
 const _sharedCtx = _sharedCanvas.getContext('2d', { willReadFrequently: true });
 
-// Lazy image observer — skip on TV (everything visible)
 const imgObserver = (!isTV && typeof IntersectionObserver !== 'undefined')
   ? new IntersectionObserver((entries) => {
       entries.forEach(entry => {
@@ -75,7 +86,6 @@ function setImgSrc(img, src) {
   }
 }
 
-// Art URL helper — lower res on TV/low-end
 function getArtUrl(song, size) {
   const target = isLowEnd ? '300x300' : (size || '600x600');
   return (song?.artworkUrl100 || '').replace('100x100', target);
@@ -115,8 +125,8 @@ let sectionCache         = {};
 let queuePanelOpen       = false;
 let _miniPlayerDismissed = false;
 let _lastObjectUrl       = null;
-let _lastTuTime          = 0;        // throttle timeupdate
-let _uiHidden            = false;    // screen-off flag
+let _lastTuTime          = 0;
+let _uiHidden            = false;
 
 // ─── AUDIO ENGINE ─────────────────────────────────────────────────────────────
 const audio = new Audio();
@@ -403,13 +413,13 @@ audio.addEventListener('pause', () => {
   updateMediaSession();
 });
 
-// ─── TIMEUPDATE — 250ms throttle, no RAF ────────────────────────────────────
+// ─── TIMEUPDATE — 250ms throttle, no RAF ─────────────────────────────────────
 audio.addEventListener('timeupdate', () => {
   const now = Date.now();
   if (now - _lastTuTime < 250) return;
   _lastTuTime = now;
 
-  if (_uiHidden) return; // screen off — skip DOM entirely
+  if (_uiHidden) return;
 
   const dur = isFinite(audio.duration) && audio.duration > 0
     ? audio.duration : (currentQuality === 'full' ? 0 : 30);
@@ -452,38 +462,32 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     _uiHidden = true;
 
-    // Stop viz immediately
-    if (vizRaf) { cancelAnimationFrame(vizRaf); vizRaf = null; }
+    // Stop viz immediately — Heat Fix: no GPU work while screen is off
+    _stopViz();
 
-    // Stop orbs
     document.getElementById('ambient-canvas')?.classList.remove('orbs-active');
 
-    // Hide heavy DOM — GPU layers freed
     const fp = document.getElementById('fullscreen-player');
     const ac = document.getElementById('ambient-canvas');
     if (fp) fp.style.setProperty('visibility', 'hidden', 'important');
     if (ac) ac.style.setProperty('display',    'none',   'important');
 
-    // Clear non-critical section cache
     const keep = new Set(['recent', 'featured']);
     Object.keys(sectionCache).forEach(k => { if (!keep.has(k)) delete sectionCache[k]; });
 
   } else {
     _uiHidden = false;
 
-    // Restore DOM
     const fp = document.getElementById('fullscreen-player');
     const ac = document.getElementById('ambient-canvas');
     if (fp) fp.style.removeProperty('visibility');
     if (ac) ac.style.removeProperty('display');
 
-    // Restart viz only if fullscreen was open
-    if (fp?.classList.contains('open') && !vizRaf && !isLowEnd) tickViz();
+    // Only restart viz if fullscreen player is actually open
+    if (fp?.classList.contains('open') && !isLowEnd) _startViz();
 
-    // Restart orbs
     if (!isLowEnd) document.getElementById('ambient-canvas')?.classList.add('orbs-active');
 
-    // Sync player state
     if (currentTrack) {
       _syncPlayIcons();
       _syncPlayingClass();
@@ -578,7 +582,7 @@ function updateSaveBtn() {
 
 function showMiniPlayer() {
   if (_miniPlayerDismissed) return;
-  if (isTV) return; // TV pe mini player nahi — seedha fullscreen
+  if (isTV) return;
   document.getElementById('mini-player').classList.add('show');
 }
 
@@ -624,7 +628,7 @@ function updateQualityLabel() {
   const fb = document.getElementById('q-badge-full');
   const pb = document.getElementById('q-badge-preview');
   if (fb) {
-    const q     = (_currentSaavnQuality || '').toLowerCase();
+    const q      = (_currentSaavnQuality || '').toLowerCase();
     const kLabel = q.includes('320') ? '320 kbps' : q.includes('160') ? '160 kbps' : 'HQ Stream';
     fb.textContent = currentQuality === 'full' ? `● ${kLabel}` : '▶ Stream';
     fb.className   = 'quality-badge' + (currentQuality === 'full' ? ' active' : ' ext');
@@ -638,7 +642,7 @@ function updateQualityLabel() {
 // ─── AMBIENT PLAYER BG ───────────────────────────────────────────────────────
 let _lastAmbientSrc = '';
 function updateAmbientPlayer(artUrl) {
-  if (isLowEnd) return; // skip on TV/low-end — saves GPU
+  if (isLowEnd) return;
   if (!artUrl || artUrl === _lastAmbientSrc) return;
   _lastAmbientSrc = artUrl;
   const bgArt = document.getElementById('fp-bg-art');
@@ -677,38 +681,61 @@ function extractDominantColor(imgEl, callback) {
   } catch(e) { callback(184, 150, 64); }
 }
 
-// ─── VISUALIZER — 30fps capped, stops when not visible ───────────────────────
-const VIZ_COUNT = isLowEnd ? 0 : 44; // TV/low-end pe viz off
-let vizBars = []; let vizRaf = null; let vizPhase = 0; let vizTarget = [];
+// ─── VISUALIZER — Zero-Heat Loop ─────────────────────────────────────────────
+// HEAT FIX: Uses its own RAF loop that checks for the 'open' class on every tick.
+// If the player is not open, or the screen is hidden, it stops IMMEDIATELY.
+// Uses a separate _lastVizTime timer (not shared with cappedRaf) to avoid starvation.
+const VIZ_COUNT = isLowEnd ? 0 : 44;
+let vizBars       = [];
+let vizRaf        = null;
+let vizPhase      = 0;
+let vizTarget     = [];
+let _lastVizTime  = 0; // separate from _lastRafTime — no conflict with gesture RAF
 const vizRandOffsets = Array.from({ length: VIZ_COUNT }, () => Math.random() * 6.28);
 
 function initViz() {
-  if (isLowEnd) return; // TV pe skip
+  if (isLowEnd) return;
   const c = document.getElementById('fp-visualizer'); if (!c) return;
   c.innerHTML = ''; vizBars = []; vizTarget = [];
   for (let i = 0; i < VIZ_COUNT; i++) {
     const b = document.createElement('div'); b.className = 'fp-viz-bar';
     c.appendChild(b); vizBars.push(b); vizTarget.push(0.05);
   }
-  if (vizRaf) cancelAnimationFrame(vizRaf);
-  if (document.getElementById('fullscreen-player')?.classList.contains('open')) tickViz();
+  // Do NOT auto-start here — wait until player opens
 }
 
-function tickViz() {
-  // Hard stops — saves battery aggressively
-  if (document.hidden ||
-      !document.getElementById('fullscreen-player')?.classList.contains('open') ||
-      isLowEnd) {
-    vizRaf = null; return;
+function _startViz() {
+  if (isLowEnd || vizRaf !== null) return;
+  vizRaf = requestAnimationFrame(_vizLoop);
+}
+
+function _stopViz() {
+  if (vizRaf) { cancelAnimationFrame(vizRaf); vizRaf = null; }
+}
+
+function _vizLoop(ts) {
+  // ── HARD STOP CONDITIONS — checked at the top of EVERY frame ──
+  const fp = document.getElementById('fullscreen-player');
+  if (document.hidden || !fp?.classList.contains('open') || isLowEnd) {
+    vizRaf = null; // Stop the loop completely — zero battery drain
+    return;
   }
 
+  // 30fps cap — own timer so gestures' cappedRaf doesn't interfere
+  if (ts - _lastVizTime < FRAME_BUDGET) {
+    vizRaf = requestAnimationFrame(_vizLoop);
+    return;
+  }
+  _lastVizTime = ts;
+
+  // ── ANIMATION FRAME ──
   vizPhase += 0.034 + Math.sin(vizPhase * 0.1) * 0.004;
   vizBars.forEach((b, i) => {
     if (!isPlaying) {
       vizTarget[i] = vizTarget[i] * 0.88 + 0.05 * 0.12;
       b.style.transform = `scaleY(${vizTarget[i].toFixed(3)})`; return;
     }
-    const norm = i / VIZ_COUNT;
+    const norm      = i / VIZ_COUNT;
     const freqCurve = norm < 0.12 ? (norm / 0.12) : norm < 0.44 ? 1 - (norm - 0.12) * 0.55 : Math.max(0.1, 0.8 - (norm - 0.44) * 1.35);
     const rOff = vizRandOffsets[i];
     const o1 = Math.sin(vizPhase * 2.0 + i * 0.36 + rOff) * 0.38 + 0.38;
@@ -719,34 +746,71 @@ function tickViz() {
     b.style.transform = `scaleY(${vizTarget[i].toFixed(3)})`;
   });
 
-  // 30fps cap
-  vizRaf = cappedRaf(() => tickViz());
+  // Schedule next frame — the loop is self-cancelling via the top guards
+  vizRaf = requestAnimationFrame(_vizLoop);
 }
 
-// ─── GESTURE: MINI PLAYER — FIXED ────────────────────────────────────────────
+// Legacy alias so existing call-sites still work
+function tickViz() { _startViz(); }
+
+// ─── SMART BLUR HELPERS (Performance Fix) ────────────────────────────────────
+// Disabling backdrop-filter during drag is the #1 thermal win on mobile GPUs.
+// Re-enabled on touchend once the element is at rest.
+function _pauseBlur() {
+  const els = [
+    document.getElementById('fullscreen-player'),
+    document.getElementById('mini-player'),
+    document.getElementById('queue-panel'),
+  ];
+  els.forEach(el => {
+    if (!el) return;
+    el.style.backdropFilter       = 'none';
+    el.style.webkitBackdropFilter = 'none';
+  });
+}
+
+function _resumeBlur() {
+  const els = [
+    document.getElementById('fullscreen-player'),
+    document.getElementById('mini-player'),
+    document.getElementById('queue-panel'),
+  ];
+  els.forEach(el => {
+    if (!el) return;
+    el.style.backdropFilter       = '';
+    el.style.webkitBackdropFilter = '';
+  });
+}
+
+// ─── GESTURE: MINI PLAYER ────────────────────────────────────────────────────
 function setupMiniGesture() {
   const mp = document.getElementById('mini-player');
   let startY = 0, startX = 0, isDragging = false, startTime = 0, moved = false, rafId = null;
 
   mp.addEventListener('touchstart', e => {
-    e.stopPropagation(); // FIX: prevent fullscreen gesture conflict
+    e.stopPropagation();
     startY = e.touches[0].clientY; startX = e.touches[0].clientX;
     isDragging = true; startTime = Date.now(); moved = false;
-    mp.style.transition = 'none';
-    mp.style.willChange = 'transform';
+    mp.style.transition  = 'none';
+    // Hardware Promotion: GPU-composite the layer before drag starts
+    mp.style.willChange  = 'transform';
+    mp.style.transform   = mp.style.transform || 'translateZ(0)';
+    // Smart Blur: kill expensive blur during movement
+    _pauseBlur();
   }, { passive: true });
 
   mp.addEventListener('touchmove', e => {
     if (!isDragging) return;
     const dy = e.touches[0].clientY - startY;
     const dx = Math.abs(e.touches[0].clientX - startX);
-    if (!moved && dx > Math.abs(dy)) { isDragging = false; return; }
+    if (!moved && dx > Math.abs(dy)) { isDragging = false; _resumeBlur(); return; }
     if (Math.abs(dy) > 6) {
       moved = true;
       e.preventDefault();
       const clamped = dy < 0 ? Math.max(-70, dy * 0.3) : Math.min(80, dy * 0.45);
+      // cappedRaf: batch DOM writes to 30fps to keep device cool
       if (rafId) cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(() => { mp.style.transform = `translateY(${clamped}px)`; rafId = null; });
+      rafId = cappedRaf(() => { mp.style.transform = `translateY(${clamped}px)`; rafId = null; });
     }
   }, { passive: false });
 
@@ -758,13 +822,13 @@ function setupMiniGesture() {
     const vel = Math.abs(dy) / dt;
     mp.style.transition = '';
     mp.style.willChange = '';
+    // Smart Blur: restore blur now that element is at rest
+    _resumeBlur();
     if (!moved) return;
 
     if (dy < -30 || vel > 0.45) {
       mp.style.transform = ''; openFullscreen();
     } else if (dy > 60 || (vel > 0.55 && dy > 25)) {
-      // FIX: Lower threshold — fast swipe dismiss works correctly
-      // FIX: Flag set BEFORE hide — prevents audio event re-show
       _miniPlayerDismissed = true;
       mp.style.transform = '';
       mp.classList.remove('show');
@@ -775,31 +839,39 @@ function setupMiniGesture() {
   }, { passive: true });
 }
 
-// ─── GESTURE: FULLSCREEN PLAYER — FIXED ─────────────────────────────────────
+// ─── GESTURE: FULLSCREEN PLAYER ──────────────────────────────────────────────
 function setupFullPlayerGesture() {
   const fp = document.getElementById('fullscreen-player');
   const qp = document.getElementById('queue-panel');
   let startY = 0, startX = 0, isDragging = false, startTime = 0, gestureTarget = null, moved = false, rafId = null;
 
   function isGestureZone(el) {
-    return el.closest('#fp-drag-hint')    ||
-           el.closest('.fp-header')       ||
-           el.closest('.fp-info')         ||
-           el.closest('.queue-panel-handle') ||
+    return el.closest('#fp-drag-hint')          ||
+           el.closest('.fp-header')             ||
+           el.closest('.fp-info')               ||
+           el.closest('.queue-panel-handle')    ||
            el.closest('#queue-drag-handle');
   }
 
   fp.addEventListener('touchstart', e => {
-    const qpOpen      = qp.classList.contains('open');
+    const qpOpen        = qp.classList.contains('open');
     const onQueueHandle = e.target.closest('#queue-drag-handle');
     const onQueueBody   = qp.contains(e.target) && !onQueueHandle;
-    if (qpOpen && onQueueBody)             { isDragging = false; return; }
+    if (qpOpen && onQueueBody)              { isDragging = false; return; }
     if (!qpOpen && !isGestureZone(e.target)) { isDragging = false; return; }
     startY = e.touches[0].clientY; startX = e.touches[0].clientX;
     isDragging = true; startTime = Date.now(); moved = false;
     gestureTarget = qpOpen ? 'queue' : 'player';
+
+    // Hardware Promotion: elevate to GPU composite layer immediately
+    const target = gestureTarget === 'player' ? fp : qp;
+    target.style.willChange = 'transform';
+    target.style.transform  = target.style.transform || 'translateZ(0)';
+
     fp.classList.add('dragging'); qp.classList.add('dragging');
-    (gestureTarget === 'player' ? fp : qp).style.willChange = 'transform';
+
+    // Smart Blur: disable backdrop-filter for all drag participants
+    _pauseBlur();
   }, { passive: true });
 
   fp.addEventListener('touchmove', e => {
@@ -807,26 +879,29 @@ function setupFullPlayerGesture() {
     const dy = e.touches[0].clientY - startY;
     const dx = Math.abs(e.touches[0].clientX - startX);
     if (!moved && dx > Math.abs(dy) + 4) {
-      isDragging = false; fp.classList.remove('dragging'); qp.classList.remove('dragging'); return;
+      isDragging = false; fp.classList.remove('dragging'); qp.classList.remove('dragging');
+      _resumeBlur(); return;
     }
     if (Math.abs(dy) < 4 && !moved) return;
     moved = true;
     if (gestureTarget === 'player' && dy > 0) {
       e.preventDefault();
       const clamped = Math.max(0, dy * 0.5);
+      // cappedRaf: 30fps DOM write — prevents GPU thrashing
       if (rafId) cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(() => { fp.style.transform = `translateY(${clamped}px)`; rafId = null; });
+      rafId = cappedRaf(() => { fp.style.transform = `translateY(${clamped}px)`; rafId = null; });
     } else if (gestureTarget === 'queue' && dy > 0) {
       e.preventDefault();
       const clamped = Math.min(120, dy * 0.55);
       if (rafId) cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(() => { qp.style.transform = `translateY(${clamped}px)`; rafId = null; });
+      rafId = cappedRaf(() => { qp.style.transform = `translateY(${clamped}px)`; rafId = null; });
     } else if (gestureTarget === 'player' && dy < -60) {
       e.preventDefault();
       openQueuePanel();
       isDragging = false;
       fp.classList.remove('dragging'); qp.classList.remove('dragging');
       fp.style.transform = ''; qp.style.transform = '';
+      _resumeBlur();
     }
   }, { passive: false });
 
@@ -838,6 +913,8 @@ function setupFullPlayerGesture() {
     const dy  = e.changedTouches[0].clientY - startY;
     const dt  = Date.now() - startTime;
     const vel = Math.abs(dy) / dt;
+    // Smart Blur: restore blur — element is now at rest
+    _resumeBlur();
     if (gestureTarget === 'player') {
       if (dy > 90 || (vel > 0.55 && dy > 30)) { fp.style.transform = ''; closeFullscreen(); }
       else fp.style.transform = '';
@@ -848,7 +925,7 @@ function setupFullPlayerGesture() {
   }, { passive: true });
 }
 
-// ─── GESTURE: ART SWIPE — FIXED ──────────────────────────────────────────────
+// ─── GESTURE: ART SWIPE ──────────────────────────────────────────────────────
 function setupArtSwipeGesture() {
   const artWrap = document.getElementById('fp-art-wrap');
   if (!artWrap) return;
@@ -858,14 +935,15 @@ function setupArtSwipeGesture() {
     startX = e.touches[0].clientX; startY = e.touches[0].clientY;
     isDragging = true; moved = false; startTime = Date.now();
     artWrap.style.transition = 'none';
+    // Hardware Promotion: both transform and opacity will animate — promote both
     artWrap.style.willChange = 'transform,opacity';
+    artWrap.style.transform  = artWrap.style.transform || 'translateZ(0)';
   }, { passive: true });
 
   artWrap.addEventListener('touchmove', e => {
     if (!isDragging) return;
     const dx = e.touches[0].clientX - startX;
     const dy = Math.abs(e.touches[0].clientY - startY);
-    // Vertical → hand off to fullscreen close gesture
     if (!moved && dy > Math.abs(dx) + 8) { isDragging = false; artWrap.style.willChange = ''; return; }
     if (Math.abs(dx) > 8) {
       moved = true;
@@ -873,8 +951,9 @@ function setupArtSwipeGesture() {
       const clamped = dx * 0.72;
       const tilt    = clamped * 0.018;
       const fade    = Math.max(0.28, 1 - Math.abs(dx) / 280);
+      // cappedRaf: 30fps visual write
       if (rafId) cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(() => {
+      rafId = cappedRaf(() => {
         artWrap.style.transform = `translateX(${clamped}px) rotate(${tilt}deg)`;
         artWrap.style.opacity   = fade;
         rafId = null;
@@ -935,7 +1014,7 @@ function _animateArtSwipe(direction, callback) {
   }, 185);
 }
 
-// ─── TV: D-PAD NAVIGATION ─────────────────────────────────────────────────────
+// ─── TV: D-PAD NAVIGATION ────────────────────────────────────────────────────
 function setupTVNavigation() {
   document.addEventListener('keydown', e => {
     switch(e.key) {
@@ -962,7 +1041,9 @@ function openFullscreen() {
     mp.style.pointerEvents = 'none';
   }
   updateNextStrip();
-  if (!vizRaf && !document.hidden && !isLowEnd) tickViz();
+  // Start viz only now that the player is actually visible
+  if (!document.hidden && !isLowEnd) _startViz();
+  if (!isLowEnd) document.getElementById('ambient-canvas')?.classList.add('orbs-active');
 }
 
 function closeFullscreen() {
@@ -971,9 +1052,8 @@ function closeFullscreen() {
   fp.style.transform = '';
   fp.classList.remove('open');
   closeQueuePanel();
-  // Stop viz when player closes
-  if (vizRaf) { cancelAnimationFrame(vizRaf); vizRaf = null; }
-  // Stop ambient orbs
+  // Stop viz as soon as player is no longer open — zero background drain
+  _stopViz();
   document.getElementById('ambient-canvas')?.classList.remove('orbs-active');
   if (mp) {
     setTimeout(() => {
@@ -1316,7 +1396,6 @@ function makeSongRow(s, i, queue) {
   row.onclick = () => { playSongs(queue, i); haptic(8); };
   row._song = s;
 
-  // Long press — skip on TV
   if (!isTV) {
     let pt;
     row.addEventListener('pointerdown', () => {
@@ -1520,7 +1599,7 @@ function renderSavedSongs() {
   savedSongs.forEach((s, i) => list.appendChild(makeSongRow(s, i, savedSongs)));
 }
 
-// ─── DOWNLOADS (IndexedDB) ───────────────────────────────────────────────────
+// ─── DOWNLOADS (IndexedDB) ────────────────────────────────────────────────────
 const DL_DB_NAME = 'aurum_downloads'; const DL_DB_VER = 1; let _dlDb = null;
 
 function openDlDb() {
@@ -1692,7 +1771,7 @@ function shufflePlaylist() {
   closePlaylistDetail(); openFullscreen();
 }
 
-// ─── PLAYLIST OPTIONS ────────────────────────────────────────────────────────
+// ─── PLAYLIST OPTIONS ─────────────────────────────────────────────────────────
 function openPlaylistOpts(e, i) {
   e.stopPropagation(); optsPlaylistIndex = i;
   document.getElementById('pl-opts-title').textContent = playlists[i]?.name || 'Playlist';
@@ -1830,7 +1909,7 @@ function selectQuality(q) {
   else { if (_fullSongAbort) { _fullSongAbort.abort(); _fullSongAbort = null; } _autoFetchFullSong(currentTrack); document.getElementById('quality-modal').classList.remove('open'); }
 }
 
-// ─── DOWNLOAD ────────────────────────────────────────────────────────────────
+// ─── DOWNLOAD ─────────────────────────────────────────────────────────────────
 function openDownloadModal() {
   const song = _downloadSong || currentTrack;
   if (!song) { showToast('Play a song first'); return; }
@@ -1894,7 +1973,7 @@ async function triggerDownload(quality) {
   }
 }
 
-// ─── TOAST ───────────────────────────────────────────────────────────────────
+// ─── TOAST ────────────────────────────────────────────────────────────────────
 let _toastTimer = null;
 function showToast(msg) {
   const t = document.getElementById('toast');
@@ -1904,21 +1983,23 @@ function showToast(msg) {
   _toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
 }
 
-// ─── UTILS ───────────────────────────────────────────────────────────────────
+// ─── UTILS ────────────────────────────────────────────────────────────────────
 function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function formatMs(ms)  { const s = Math.floor((ms||0)/1000); return `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`; }
 function formatSec(s)  { s = Math.floor(s||0); return `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`; }
 function haptic(pat)   { try { if (navigator.vibrate && (typeof appSettings === 'undefined' || appSettings.hapticFeedback !== false)) navigator.vibrate(pat); } catch(e) {} }
 
-// Keyboard shortcut — skip on TV (D-pad handles it)
 if (!isTV) {
   document.addEventListener('keydown', e => {
     if (e.code === 'Space' && e.target.tagName !== 'INPUT') { e.preventDefault(); togglePlay(); }
   });
 }
 
-// ─── INIT ────────────────────────────────────────────────────────────────────
+// ─── INIT ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
+  // --vh: set once now, then on resize/rotation (Blank Fix)
+  setVh();
+
   // Theme color sync
   const mq = window.matchMedia('(prefers-color-scheme: light)');
   function syncThemeColor(isLight) {
@@ -1928,26 +2009,20 @@ window.addEventListener('DOMContentLoaded', () => {
   mq.addEventListener('change', e => syncThemeColor(e.matches));
   syncThemeColor(mq.matches);
 
-  // Low-end class
   if (isLowEnd) document.documentElement.classList.add('low-end');
+  if (isTV)     document.documentElement.classList.add('is-tv');
 
-  // TV class — for CSS targeting
-  if (isTV) document.documentElement.classList.add('is-tv');
-
-  // Persistent storage
   requestPersistentStorage();
 
-  // Gestures — only on touch devices
   if (!isTV) {
     setupMiniGesture();
     setupFullPlayerGesture();
     setupArtSwipeGesture();
   }
 
-  // D-pad on TV
   if (isTV) setupTVNavigation();
 
-  // Viz init — skips internally if low-end
+  // initViz just builds the bar DOM — does NOT start the loop
   initViz();
 
   buildHomeSections('all');
@@ -1957,18 +2032,15 @@ window.addEventListener('DOMContentLoaded', () => {
   const vs = document.getElementById('fp-vol-slider');
   if (vs) vs.style.setProperty('--vol', '100%');
 
-  // Orbs on first touch (non-TV only)
+  // Orbs: activate on first real touch (not on TV)
   if (!isTV && !isLowEnd) {
     document.addEventListener('touchstart', () => {
       document.getElementById('ambient-canvas')?.classList.add('orbs-active');
     }, { once: true, passive: true });
   }
 
-  // TV pe auto open fullscreen when song plays
+  // TV: monkey-patch playSongs to auto-open fullscreen
   if (isTV) {
-    const _origLoadTrack = loadTrack;
-    window._tvLoadTrackHooked = true;
-    // Monkey-patch: open fullscreen automatically on TV
     const origPlaySongs = playSongs;
     window.playSongs = function(queue, index) {
       origPlaySongs(queue, index);
@@ -1977,25 +2049,22 @@ window.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-// ─── SERVICE WORKER ──────────────────────────────────────────────────────────
+// ─── SERVICE WORKER ───────────────────────────────────────────────────────────
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   });
 }
 
-// ─── SETTINGS BRIDGE — safe, no prototype override ───────────────────────────
+// ─── SETTINGS BRIDGE ─────────────────────────────────────────────────────────
 window._getAurumAudio = () => audio;
-// Settings.js ko directly window._getAurumAudio() use karna chahiye
-// querySelector override REMOVED — was dangerous
 
-// Volume normalization stub
 function _applyVolumeNormalization() {
   if (typeof appSettings === 'undefined') return;
   if (appSettings.volumeNormalize) audio.volume = Math.min(audio.volume, 0.85);
 }
 
-// Gapless playback
+// ─── GAPLESS PLAYBACK ────────────────────────────────────────────────────────
 let _gaplessBuffer = null;
 audio.addEventListener('timeupdate', () => {
   if (typeof appSettings === 'undefined' || !appSettings.gaplessPlayback) return;
