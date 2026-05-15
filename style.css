@@ -23,7 +23,7 @@
   --t-player:.44s cubic-bezier(0.32,0.82,0.28,1);
   --noise-blend:overlay;--noise-opacity:0.38;
   /* FIX: reduced blur for less GPU heat */
-  --fp-bg-filter:blur(48px) saturate(1.7) brightness(0.16);
+  --fp-bg-filter:blur(36px) saturate(1.5) brightness(0.16);
   --fp-overlay:linear-gradient(to bottom,rgba(5,5,8,0.48) 0%,rgba(5,5,8,0.15) 20%,rgba(5,5,8,0.52) 58%,rgba(5,5,8,0.94) 78%,rgba(5,5,8,1) 100%);
   --nav-border:rgba(255,255,255,0.04);
   --mini-shadow:0 -1px 20px rgba(0,0,0,0.38),0 0 0 0.5px var(--border2),inset 0 0.5px 0 var(--glass2);
@@ -46,13 +46,13 @@
 /* ── LIGHT THEME ── */
 [data-theme="light"] {
   --bg:#faf7f2;--surface:#f3efe8;--surface2:#ece7dd;--surface3:#e3ddd2;--surface4:#d8d1c4;--surface5:#ccc4b5;
-  --text:#1a1610;--text2:#6a6058;--text3:#9e9080;
+  --text:#1a1610;--text2:#4e4640;--text3:#6e6258;
   --border:rgba(0,0,0,0.055);--border2:rgba(0,0,0,0.09);
   --glass:rgba(0,0,0,0.018);--glass2:rgba(0,0,0,0.034);
   --nav-bg:rgba(250,247,242,0.97);--mini-bg:rgba(243,239,232,0.98);
   --sheet-bg:#f5f1ea;--modal-overlay:rgba(0,0,0,0.32);
   --noise-blend:multiply;--noise-opacity:0.10;
-  --fp-bg-filter:blur(44px) saturate(1.3) brightness(0.96);
+  --fp-bg-filter:blur(32px) saturate(1.2) brightness(0.96);
   --fp-overlay:linear-gradient(to bottom,rgba(250,247,242,1) 0%,rgba(250,247,242,1) 100%);
   --nav-border:rgba(0,0,0,0.06);
   --mini-shadow:0 -1px 10px rgba(184,150,64,0.06),0 0 0 0.5px rgba(0,0,0,0.055),inset 0 0.5px 0 rgba(255,255,255,0.9);
@@ -77,13 +77,13 @@
 @media (prefers-color-scheme:light) {
   :root:not([data-theme]) {
     --bg:#faf7f2;--surface:#f3efe8;--surface2:#ece7dd;--surface3:#e3ddd2;--surface4:#d8d1c4;--surface5:#ccc4b5;
-    --text:#1a1610;--text2:#6a6058;--text3:#9e9080;
+    --text:#1a1610;--text2:#4e4640;--text3:#6e6258;
     --border:rgba(0,0,0,0.055);--border2:rgba(0,0,0,0.09);
     --glass:rgba(0,0,0,0.018);--glass2:rgba(0,0,0,0.034);
     --nav-bg:rgba(250,247,242,0.97);--mini-bg:rgba(243,239,232,0.98);
     --sheet-bg:#f5f1ea;--modal-overlay:rgba(0,0,0,0.32);
     --noise-blend:multiply;--noise-opacity:0.10;
-    --fp-bg-filter:blur(44px) saturate(1.3) brightness(0.96);
+    --fp-bg-filter:blur(32px) saturate(1.2) brightness(0.96);
     --fp-overlay:linear-gradient(to bottom,rgba(250,247,242,1) 0%,rgba(250,247,242,1) 100%);
     --nav-border:rgba(0,0,0,0.06);
     --mini-shadow:0 -1px 10px rgba(184,150,64,0.06),0 0 0 0.5px rgba(0,0,0,0.055),inset 0 0.5px 0 rgba(255,255,255,0.9);
@@ -149,13 +149,89 @@ img.img-error{opacity:1;}
 [data-theme="light"] .orb-3{background:radial-gradient(circle,rgba(184,150,64,0.020),transparent 68%);}
 @keyframes orb-drift{0%{transform:translate(0,0) scale(1);}33%{transform:translate(16px,-10px) scale(1.03);}66%{transform:translate(-8px,14px) scale(0.97);}100%{transform:translate(6px,4px) scale(1.02);}}
 
-/* Low-end device */
+/* ═══════════════════════════════════════════════════════════
+   LOW-END / BATTERY-SAVER — blur rakho, cost minimise karo
+   JS adds .low-end on <html> for weak device / battery le20%
+   ═══════════════════════════════════════════════════════════ */
+
+/* 1. Orbs, canvas, noise, visualizer — off */
 .low-end .orb,.low-end .ph-orb-a,.low-end .ph-orb-b{display:none!important;}
-.low-end #fp-bg-art{filter:blur(24px) saturate(1.4) brightness(0.2)!important;}
-[data-theme="light"] .low-end #fp-bg-art{filter:blur(24px) saturate(1.3) brightness(0.55)!important;}
-.low-end #app::after{display:none!important;}
-.low-end .fp-visualizer{display:none!important;}
 .low-end #ambient-canvas{display:none!important;}
+.low-end #app::after{display:none!important;}
+.low-end .ph-noise{display:none!important;}
+.low-end .fp-visualizer{display:none!important;}
+.low-end #fp-ambient-glow{display:none!important;}
+
+/* 2. fp-bg-art: blur rakho lekin saturate hata do */
+.low-end #fp-bg-art{filter:blur(20px) brightness(0.18)!important;}
+[data-theme="light"] .low-end #fp-bg-art{filter:blur(20px) brightness(0.56)!important;}
+
+/* 3. Backdrop-filter: blur(4px) only — frosted feel rahega, GPU cost minimal */
+.low-end #nav{
+  backdrop-filter:blur(4px)!important;
+  -webkit-backdrop-filter:blur(4px)!important;
+  background:rgba(4,4,7,0.97)!important;
+}
+[data-theme="light"] .low-end #nav{background:rgba(250,247,242,0.97)!important;}
+.low-end #mini-player{
+  backdrop-filter:blur(4px)!important;
+  -webkit-backdrop-filter:blur(4px)!important;
+}
+.low-end .modal-overlay,
+.low-end .input-modal,
+.low-end #quality-modal,
+.low-end #download-modal,
+.low-end #playlist-opts-modal,
+.low-end #rename-modal{
+  backdrop-filter:blur(4px)!important;
+  -webkit-backdrop-filter:blur(4px)!important;
+}
+.low-end .modal-sheet,
+.low-end .input-sheet,
+.low-end .quality-sheet,
+.low-end .dl-sheet,
+.low-end #playlist-opts-modal .modal-sheet{
+  backdrop-filter:blur(8px)!important;
+  -webkit-backdrop-filter:blur(8px)!important;
+}
+.low-end .ph-icon-btn,.low-end .ph-theme-btn{
+  backdrop-filter:blur(4px)!important;
+  -webkit-backdrop-filter:blur(4px)!important;
+}
+.low-end #toast{backdrop-filter:blur(6px)!important;-webkit-backdrop-filter:blur(6px)!important;}
+.low-end #offline-banner{backdrop-filter:blur(6px)!important;}
+
+/* 4. Infinite animations — freeze, state visually correct rahega */
+.low-end .now-playing-bar span,
+.low-end .queue-now-playing span{animation:none!important;transform:scaleY(0.55)!important;}
+.low-end #mini-player.playing-glow{animation:none!important;}
+.low-end #fullscreen-player.playing .fp-art{animation:none!important;}
+.low-end .song-row-heart.saved{animation:none!important;}
+.low-end .chip.popping{animation:none!important;}
+
+/* 5. Skeleton shimmer — pause, shape rahega */
+.low-end .bw-sk-cover::after,.low-end .bw-sk-line::after,
+.low-end .sk-art::after,.low-end .sk-line::after,
+.low-end .wide-sk-cover::after,.low-end .wide-sk-line::after,
+.low-end .quick-sk-cover::after{animation:none!important;opacity:0!important;}
+
+/* 6. drop-shadow filters — compositor layer expensive */
+.low-end .ph-logo-mark svg{filter:none!important;}
+.low-end .nav-btn.active svg{filter:none!important;}
+
+/* 7. Heavy multi-layer box-shadows -> single pass */
+.low-end .fp-art{box-shadow:0 8px 24px rgba(0,0,0,0.38)!important;}
+[data-theme="light"] .low-end .fp-art{box-shadow:0 3px 12px rgba(0,0,0,0.07)!important;}
+.low-end #fullscreen-player.playing .fp-art{box-shadow:0 6px 18px rgba(var(--fp-dom-rgb),0.18)!important;}
+.low-end .pl-big-cover,.low-end .pl-big-cover-grid{box-shadow:0 4px 14px rgba(0,0,0,0.22)!important;}
+[data-theme="light"] .low-end .pl-big-cover,[data-theme="light"] .low-end .pl-big-cover-grid{box-shadow:none!important;}
+.low-end .quick-card,.low-end .wide-card-cover,
+.low-end .bw-card-cover,.low-end .playlist-card{box-shadow:none!important;}
+
+/* Android TV / slow-refresh device */
+@media (update:slow){
+  *{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;}
+}
 
 /* ── PAGES ── */
 /* FIX: no will-change on pages — prevents compositing layer bloat */
@@ -181,7 +257,7 @@ img.img-error{opacity:1;}
   height:calc(var(--nav) + var(--safe-bottom));
   background:var(--nav-bg);
   /* FIX: blur reduced 32→16px — frosted look, lighter GPU */
-  backdrop-filter:blur(16px) saturate(1.2);-webkit-backdrop-filter:blur(16px) saturate(1.2);
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
   display:flex;align-items:flex-start;justify-content:space-around;
   padding:0 0 var(--safe-bottom);
   z-index:100;
@@ -210,7 +286,7 @@ img.img-error{opacity:1;}
   left:12px;right:12px;
   background:var(--mini-bg);
   /* FIX: blur 36→18px */
-  backdrop-filter:blur(18px) saturate(1.3);-webkit-backdrop-filter:blur(18px) saturate(1.3);
+  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
   border-radius:20px;padding:9px 9px 12px;
   display:flex;align-items:center;gap:10px;z-index:99;
   box-shadow:var(--mini-shadow);
@@ -469,7 +545,7 @@ img.img-error{opacity:1;}
 /* Offline banner */
 #offline-banner{
   position:absolute;top:0;left:0;right:0;z-index:950;
-  background:rgba(160,50,30,0.94);backdrop-filter:blur(16px);
+  background:rgba(160,50,30,0.94);backdrop-filter:blur(12px);
   display:flex;align-items:center;justify-content:center;gap:7px;
   padding:calc(env(safe-area-inset-top,0px) + 8px) 16px 9px;
   font-size:11px;font-weight:600;color:rgba(255,255,255,0.92);
@@ -563,7 +639,7 @@ img.img-error{opacity:1;}
   width:34px;height:34px;border-radius:50%;border:none;cursor:pointer;
   background:var(--ph-icon-bg);
   /* FIX: blur 12→8px on small buttons */
-  backdrop-filter:blur(8px) saturate(1.1);-webkit-backdrop-filter:blur(8px) saturate(1.1);
+  backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);
   display:flex;align-items:center;justify-content:center;
   transition:background var(--t-smooth),transform var(--t-spring);
 }
@@ -893,10 +969,11 @@ img.img-error{opacity:1;}
 
 /* ── MODALS ── */
 /* FIX: modal blur 10→8px */
-.modal-overlay{position:absolute;inset:0;background:var(--modal-overlay);backdrop-filter:blur(8px) saturate(1.1);z-index:300;opacity:0;pointer-events:none;transition:opacity .18s ease;}
+.modal-overlay{position:absolute;inset:0;background:var(--modal-overlay);backdrop-filter:blur(7px);z-index:300;opacity:0;pointer-events:none;transition:opacity .18s ease;}
 .modal-overlay.open{opacity:1;pointer-events:all;}
 /* FIX: sheet blur 44→22px */
-.modal-sheet{position:absolute;bottom:0;left:0;right:0;background:var(--sheet-bg);backdrop-filter:blur(22px) saturate(1.2);-webkit-backdrop-filter:blur(22px) saturate(1.2);border-radius:26px 26px 0 0;padding:16px 20px calc(40px + var(--safe-bottom));transform:translateY(100%);transition:transform var(--t-sheet);box-shadow:inset 0 0.5px 0 var(--glass2);}
+.modal-sheet{position:absolute;bottom:0;left:0;right:0;background:var(--sheet-bg);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border-radius:26px 26px 0 0;padding:16px 20px calc(40px + var(--safe-bottom));transform:translateY(100%);transition:transform var(--t-sheet);box-shadow:inset 0 0.5px 0 var(--glass2);}
+[data-theme="light"] .modal-sheet{background:#f0ece4;box-shadow:0 -1px 0 rgba(0,0,0,0.07),inset 0 0.5px 0 rgba(255,255,255,0.9);}
 .modal-overlay.open .modal-sheet{transform:translateY(0);}
 .modal-handle{width:36px;height:3px;background:rgba(255,255,255,0.08);border-radius:3px;margin:0 auto 17px;}
 [data-theme="light"] .modal-handle{background:rgba(0,0,0,0.08);}
@@ -905,11 +982,14 @@ img.img-error{opacity:1;}
 .modal-option:active{opacity:0.48;}
 .modal-option svg{width:18px;height:18px;stroke:var(--text2);fill:none;stroke-width:1.6;stroke-linecap:round;flex-shrink:0;}
 .modal-option span{font-size:13px;font-weight:500;}
+[data-theme="light"] .modal-option svg{stroke:var(--text);}
+[data-theme="light"] .modal-option span{color:var(--text);}
 .modal-option.danger span{color:#d84444;}
 .modal-option.danger svg{stroke:#d84444;}
-.input-modal{position:absolute;inset:0;background:rgba(0,0,0,0.46);backdrop-filter:blur(10px) saturate(1.1);z-index:400;display:flex;align-items:flex-end;opacity:0;pointer-events:none;transition:opacity .18s ease;}
+.input-modal{position:absolute;inset:0;background:rgba(0,0,0,0.46);backdrop-filter:blur(8px);z-index:400;display:flex;align-items:flex-end;opacity:0;pointer-events:none;transition:opacity .18s ease;}
 .input-modal.open{opacity:1;pointer-events:all;}
-.input-sheet{width:100%;background:var(--sheet-bg);backdrop-filter:blur(22px) saturate(1.2);border-radius:26px 26px 0 0;padding:20px 20px calc(40px + var(--safe-bottom));transform:translateY(100%);transition:transform var(--t-sheet);}
+.input-sheet{width:100%;background:var(--sheet-bg);backdrop-filter:blur(18px);border-radius:26px 26px 0 0;padding:20px 20px calc(40px + var(--safe-bottom));transform:translateY(100%);transition:transform var(--t-sheet);}
+[data-theme="light"] .input-sheet{background:#f0ece4;box-shadow:0 -1px 0 rgba(0,0,0,0.07);}
 .input-modal.open .input-sheet{transform:translateY(0);}
 .input-modal-handle{width:36px;height:3px;background:rgba(255,255,255,0.08);border-radius:3px;margin:0 auto 20px;}
 [data-theme="light"] .input-modal-handle{background:rgba(0,0,0,0.08);}
@@ -925,9 +1005,10 @@ img.img-error{opacity:1;}
 .btn-create{background:linear-gradient(138deg,var(--gold-xl),var(--gold));color:var(--bg);}
 
 /* Quality modal */
-#quality-modal{position:absolute;inset:0;background:rgba(0,0,0,0.46);backdrop-filter:blur(10px) saturate(1.1);z-index:500;display:flex;align-items:flex-end;opacity:0;pointer-events:none;transition:opacity .18s ease;}
+#quality-modal{position:absolute;inset:0;background:rgba(0,0,0,0.46);backdrop-filter:blur(8px);z-index:500;display:flex;align-items:flex-end;opacity:0;pointer-events:none;transition:opacity .18s ease;}
 #quality-modal.open{opacity:1;pointer-events:all;}
-.quality-sheet{width:100%;background:var(--sheet-bg);backdrop-filter:blur(22px) saturate(1.2);border-radius:26px 26px 0 0;padding:20px 20px calc(44px + var(--safe-bottom));transform:translateY(100%);transition:transform var(--t-sheet);}
+.quality-sheet{width:100%;background:var(--sheet-bg);backdrop-filter:blur(18px);border-radius:26px 26px 0 0;padding:20px 20px calc(44px + var(--safe-bottom));transform:translateY(100%);transition:transform var(--t-sheet);}
+[data-theme="light"] .quality-sheet{background:#f0ece4;box-shadow:0 -1px 0 rgba(0,0,0,0.07);}
 #quality-modal.open .quality-sheet{transform:translateY(0);}
 .quality-sheet-handle{width:36px;height:3px;background:rgba(255,255,255,0.08);border-radius:3px;margin:0 auto 18px;}
 [data-theme="light"] .quality-sheet-handle{background:rgba(0,0,0,0.08);}
@@ -945,9 +1026,10 @@ img.img-error{opacity:1;}
 [data-theme="light"] .quality-badge.ext{background:rgba(0,0,0,0.040);}
 
 /* Download modal */
-#download-modal{position:absolute;inset:0;background:rgba(0,0,0,0.46);backdrop-filter:blur(10px) saturate(1.1);z-index:600;display:flex;align-items:flex-end;opacity:0;pointer-events:none;transition:opacity .18s ease;}
+#download-modal{position:absolute;inset:0;background:rgba(0,0,0,0.46);backdrop-filter:blur(8px);z-index:600;display:flex;align-items:flex-end;opacity:0;pointer-events:none;transition:opacity .18s ease;}
 #download-modal.open{opacity:1;pointer-events:all;}
-.dl-sheet{width:100%;background:var(--sheet-bg);backdrop-filter:blur(22px) saturate(1.2);border-radius:26px 26px 0 0;padding:20px 20px calc(44px + var(--safe-bottom));transform:translateY(100%);transition:transform var(--t-sheet);}
+.dl-sheet{width:100%;background:var(--sheet-bg);backdrop-filter:blur(18px);border-radius:26px 26px 0 0;padding:20px 20px calc(44px + var(--safe-bottom));transform:translateY(100%);transition:transform var(--t-sheet);}
+[data-theme="light"] .dl-sheet{background:#f0ece4;box-shadow:0 -1px 0 rgba(0,0,0,0.07);}
 #download-modal.open .dl-sheet{transform:translateY(0);}
 .dl-sheet-handle{width:36px;height:3px;background:rgba(255,255,255,0.08);border-radius:3px;margin:0 auto 18px;}
 [data-theme="light"] .dl-sheet-handle{background:rgba(0,0,0,0.08);}
@@ -978,11 +1060,12 @@ img.img-error{opacity:1;}
 .dl-kbps-badge.bgift{background:linear-gradient(90deg,rgba(184,150,64,0.22),rgba(219,191,130,0.18));color:var(--gold-2xl);}
 
 /* Playlist opts */
-#playlist-opts-modal{position:absolute;inset:0;background:rgba(0,0,0,0.42);backdrop-filter:blur(8px) saturate(1.1);z-index:350;opacity:0;pointer-events:none;transition:opacity .18s ease;}
+#playlist-opts-modal{position:absolute;inset:0;background:rgba(0,0,0,0.42);backdrop-filter:blur(7px);z-index:350;opacity:0;pointer-events:none;transition:opacity .18s ease;}
 #playlist-opts-modal.open{opacity:1;pointer-events:all;}
-#playlist-opts-modal .modal-sheet{position:absolute;bottom:0;left:0;right:0;background:var(--sheet-bg);backdrop-filter:blur(22px) saturate(1.2);border-radius:26px 26px 0 0;padding:16px 20px calc(40px + var(--safe-bottom));transform:translateY(100%);transition:transform var(--t-sheet);}
+#playlist-opts-modal .modal-sheet{position:absolute;bottom:0;left:0;right:0;background:var(--sheet-bg);backdrop-filter:blur(18px);border-radius:26px 26px 0 0;padding:16px 20px calc(40px + var(--safe-bottom));transform:translateY(100%);transition:transform var(--t-sheet);}
+[data-theme="light"] #playlist-opts-modal .modal-sheet{background:#f0ece4;box-shadow:0 -1px 0 rgba(0,0,0,0.07);}
 #playlist-opts-modal.open .modal-sheet{transform:translateY(0);}
-#rename-modal{position:absolute;inset:0;background:rgba(0,0,0,0.46);backdrop-filter:blur(10px) saturate(1.1);z-index:450;display:flex;align-items:flex-end;opacity:0;pointer-events:none;transition:opacity .18s ease;}
+#rename-modal{position:absolute;inset:0;background:rgba(0,0,0,0.46);backdrop-filter:blur(8px);z-index:450;display:flex;align-items:flex-end;opacity:0;pointer-events:none;transition:opacity .18s ease;}
 #rename-modal.open{opacity:1;pointer-events:all;}
 #rename-modal .input-sheet{transform:translateY(100%);transition:transform var(--t-sheet);}
 #rename-modal.open .input-sheet{transform:translateY(0);}
@@ -993,7 +1076,7 @@ img.img-error{opacity:1;}
   bottom:calc(var(--nav) + var(--safe-bottom) + 88px);
   left:50%;transform:translateX(-50%) translateY(16px);
   background:rgba(18,18,24,0.96);
-  backdrop-filter:blur(14px) saturate(1.2);
+  backdrop-filter:blur(12px);
   box-shadow:0 0 0 0.5px rgba(255,255,255,0.048),0 4px 18px rgba(0,0,0,0.32);
   color:var(--text);font-size:11.5px;font-weight:600;padding:8px 16px;
   border-radius:100px;white-space:nowrap;opacity:0;pointer-events:none;
@@ -1088,7 +1171,30 @@ miniPlayer.addEventListener('transitionend', () => {
   miniPlayer.style.willChange = '';
 });
 
-// ── 5. DOMINANT COLOR extraction ──
+// ── 5. LOW-END AUTO-DETECTION — paste in your init JS ──
+(async () => {
+  const mem = navigator.deviceMemory;     // GB — Chrome/Android only
+  const cores = navigator.hardwareConcurrency || 4;
+  const isWeakDevice = (mem && mem <= 2) || cores <= 2;
+
+  const applyLowEnd = () => document.documentElement.classList.add('low-end');
+  const removeLowEnd = () => document.documentElement.classList.remove('low-end');
+
+  if (isWeakDevice) { applyLowEnd(); return; }
+
+  if (navigator.getBattery) {
+    const b = await navigator.getBattery();
+    if (b.level <= 0.20 && !b.charging) applyLowEnd();
+    b.addEventListener('levelchange', () => {
+      b.level <= 0.20 && !b.charging ? applyLowEnd() : removeLowEnd();
+    });
+    b.addEventListener('chargingchange', () => {
+      b.charging ? removeLowEnd() : (b.level <= 0.20 && applyLowEnd());
+    });
+  }
+})();
+
+// ── 6. DOMINANT COLOR extraction ──
 function extractDominantColor(imgEl) {
   try {
     const canvas = document.createElement('canvas');
