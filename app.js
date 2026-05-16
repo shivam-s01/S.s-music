@@ -2265,4 +2265,11 @@ audio.addEventListener('timeupdate', () => {
     }
   }
 });
-audio.addEventListener('ended'
+audio.addEventListener('ended', () => {
+  if (repeatOn) {
+    audio.currentTime = 0;
+    audio.play().catch(() => {});
+  } else {
+    nextTrack();
+  }
+});                       
