@@ -1014,6 +1014,70 @@ function _animateArtSwipe(direction, callback) {
   }, 185);
 }
 
+// ─── GESTURE: SHAKE TO SHUFFLE ───────────────────────────────────────────────
+// Phone shake karo → next shuffled track + haptic + toast
+// HEAT SAFE: sirf ek passive event listener, koi RAF/animation nahi
+function setupShakeGesture() {
+  if (!window.DeviceMotionEvent) return;
+
+  const THRESHOLD = 18;   // acceleration delta — zyada karo toh harder shake chahiye
+  const COOLDOWN  = 1500; // ms — accidental double-trigger se bachao
+  let lastShake   = 0;
+  let lastX = 0, lastY = 0, lastZ = 0;
+  let initialized = false;
+
+  function onMotion(e) {
+    const acc = e.accelerationIncludingGravity;
+    if (!acc) return;
+
+    // First event — baseline set karo, trigger mat karo
+    if (!initialized) {
+      lastX = acc.x || 0; lastY = acc.y || 0; lastZ = acc.z || 0;
+      initialized = true; return;
+    }
+
+    const dx = Math.abs((acc.x || 0) - lastX);
+    const dy = Math.abs((acc.y || 0) - lastY);
+    const dz = Math.abs((acc.z || 0) - lastZ);
+    lastX = acc.x || 0; lastY = acc.y || 0; lastZ = acc.z || 0;
+
+    if (dx + dy + dz > THRESHOLD) {
+      const now = Date.now();
+      if (now - lastShake < COOLDOWN) return;
+      lastShake = now;
+
+      if (currentQueue.length > 1) {
+        haptic([20, 50, 20]);
+        shuffleOn = true;
+        const shuffleBtn = document.getElementById('shuffle-btn');
+        if (shuffleBtn) shuffleBtn.querySelector('svg').style.stroke = 'var(--gold-l)';
+        showToast('🔀 Shuffled!');
+        nextTrack();
+      } else if (currentTrack) {
+        // Queue mein ek hi song hai — replay karo
+        haptic([10, 30]);
+        audio.currentTime = 0;
+        showToast('🔀 Replaying');
+      }
+    }
+  }
+
+  // iOS 13+ needs explicit permission — first user touch pe maango
+  if (typeof DeviceMotionEvent.requestPermission === 'function') {
+    document.addEventListener('touchend', function askPerm() {
+      DeviceMotionEvent.requestPermission()
+        .then(r => {
+          if (r === 'granted') window.addEventListener('devicemotion', onMotion, { passive: true });
+        })
+        .catch(() => {});
+      document.removeEventListener('touchend', askPerm);
+    }, { once: true });
+  } else {
+    // Android — seedha attach karo, koi permission nahi chahiye
+    window.addEventListener('devicemotion', onMotion, { passive: true });
+  }
+}
+
 // ─── TV: D-PAD NAVIGATION ────────────────────────────────────────────────────
 function setupTVNavigation() {
   document.addEventListener('keydown', e => {
@@ -2018,6 +2082,7 @@ window.addEventListener('DOMContentLoaded', () => {
     setupMiniGesture();
     setupFullPlayerGesture();
     setupArtSwipeGesture();
+    setupShakeGesture();
   }
 
   if (isTV) setupTVNavigation();
