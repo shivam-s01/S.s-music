@@ -13,21 +13,18 @@ const isLowEnd = isTV ||
   (typeof navigator.deviceMemory !== 'undefined' && navigator.deviceMemory <= 2);
 
 // ─── DYNAMIC VIEWPORT (Blank Fix) ────────────────────────────────────────────
-// Sets --vh so calc(var(--vh, 1vh) * 100) always fills the real visible viewport,
-// eliminating bottom gaps during swipe / browser-chrome hide/show.
 function setVh() {
   document.documentElement.style.setProperty('--vh', (window.innerHeight * 0.01) + 'px');
 }
 window.addEventListener('resize',            setVh, { passive: true });
 window.addEventListener('orientationchange', () => setTimeout(setVh, 300), { passive: true });
-setVh(); // run immediately — before any layout
+setVh();
 
 // ─── FPS CAP (30fps) — for GESTURE moves ─────────────────────────────────────
 const TARGET_FPS   = 30;
-const FRAME_BUDGET = 1000 / TARGET_FPS; // 33.3 ms
+const FRAME_BUDGET = 1000 / TARGET_FPS;
 let   _lastRafTime = 0;
 
-// Used ONLY for gesture touchmove batching (not viz — viz has its own loop below)
 function cappedRaf(cb) {
   const id = requestAnimationFrame(ts => {
     if (ts - _lastRafTime < FRAME_BUDGET) { cappedRaf(cb); return; }
@@ -413,7 +410,7 @@ audio.addEventListener('pause', () => {
   updateMediaSession();
 });
 
-// ─── TIMEUPDATE — 250ms throttle, no RAF ─────────────────────────────────────
+// ─── TIMEUPDATE — 250ms throttle ─────────────────────────────────────────────
 audio.addEventListener('timeupdate', () => {
   const now = Date.now();
   if (now - _lastTuTime < 250) return;
@@ -457,37 +454,26 @@ window.addEventListener('online',  _handleConnectivity, { passive: true });
 window.addEventListener('offline', _handleConnectivity, { passive: true });
 _handleConnectivity();
 
-// ─── SCREEN OFF / ON — complete UI freeze ────────────────────────────────────
+// ─── SCREEN OFF / ON ─────────────────────────────────────────────────────────
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     _uiHidden = true;
-
-    // Stop viz immediately — Heat Fix: no GPU work while screen is off
     _stopViz();
-
     document.getElementById('ambient-canvas')?.classList.remove('orbs-active');
-
     const fp = document.getElementById('fullscreen-player');
     const ac = document.getElementById('ambient-canvas');
     if (fp) fp.style.setProperty('visibility', 'hidden', 'important');
     if (ac) ac.style.setProperty('display',    'none',   'important');
-
     const keep = new Set(['recent', 'featured']);
     Object.keys(sectionCache).forEach(k => { if (!keep.has(k)) delete sectionCache[k]; });
-
   } else {
     _uiHidden = false;
-
     const fp = document.getElementById('fullscreen-player');
     const ac = document.getElementById('ambient-canvas');
     if (fp) fp.style.removeProperty('visibility');
     if (ac) ac.style.removeProperty('display');
-
-    // Only restart viz if fullscreen player is actually open
     if (fp?.classList.contains('open') && !isLowEnd) _startViz();
-
     if (!isLowEnd) document.getElementById('ambient-canvas')?.classList.add('orbs-active');
-
     if (currentTrack) {
       _syncPlayIcons();
       _syncPlayingClass();
@@ -681,16 +667,13 @@ function extractDominantColor(imgEl, callback) {
   } catch(e) { callback(184, 150, 64); }
 }
 
-// ─── VISUALIZER — Zero-Heat Loop ─────────────────────────────────────────────
-// HEAT FIX: Uses its own RAF loop that checks for the 'open' class on every tick.
-// If the player is not open, or the screen is hidden, it stops IMMEDIATELY.
-// Uses a separate _lastVizTime timer (not shared with cappedRaf) to avoid starvation.
+// ─── VISUALIZER ───────────────────────────────────────────────────────────────
 const VIZ_COUNT = isLowEnd ? 0 : 44;
 let vizBars       = [];
 let vizRaf        = null;
 let vizPhase      = 0;
 let vizTarget     = [];
-let _lastVizTime  = 0; // separate from _lastRafTime — no conflict with gesture RAF
+let _lastVizTime  = 0;
 const vizRandOffsets = Array.from({ length: VIZ_COUNT }, () => Math.random() * 6.28);
 
 function initViz() {
@@ -701,7 +684,6 @@ function initViz() {
     const b = document.createElement('div'); b.className = 'fp-viz-bar';
     c.appendChild(b); vizBars.push(b); vizTarget.push(0.05);
   }
-  // Do NOT auto-start here — wait until player opens
 }
 
 function _startViz() {
@@ -714,21 +696,16 @@ function _stopViz() {
 }
 
 function _vizLoop(ts) {
-  // ── HARD STOP CONDITIONS — checked at the top of EVERY frame ──
   const fp = document.getElementById('fullscreen-player');
   if (document.hidden || !fp?.classList.contains('open') || isLowEnd) {
-    vizRaf = null; // Stop the loop completely — zero battery drain
+    vizRaf = null;
     return;
   }
-
-  // 30fps cap — own timer so gestures' cappedRaf doesn't interfere
   if (ts - _lastVizTime < FRAME_BUDGET) {
     vizRaf = requestAnimationFrame(_vizLoop);
     return;
   }
   _lastVizTime = ts;
-
-  // ── ANIMATION FRAME ──
   vizPhase += 0.034 + Math.sin(vizPhase * 0.1) * 0.004;
   vizBars.forEach((b, i) => {
     if (!isPlaying) {
@@ -745,17 +722,12 @@ function _vizLoop(ts) {
     vizTarget[i] = vizTarget[i] * 0.74 + target * 0.26;
     b.style.transform = `scaleY(${vizTarget[i].toFixed(3)})`;
   });
-
-  // Schedule next frame — the loop is self-cancelling via the top guards
   vizRaf = requestAnimationFrame(_vizLoop);
 }
 
-// Legacy alias so existing call-sites still work
 function tickViz() { _startViz(); }
 
-// ─── SMART BLUR HELPERS (Performance Fix) ────────────────────────────────────
-// Disabling backdrop-filter during drag is the #1 thermal win on mobile GPUs.
-// Re-enabled on touchend once the element is at rest.
+// ─── SMART BLUR HELPERS ───────────────────────────────────────────────────────
 function _pauseBlur() {
   const els = [
     document.getElementById('fullscreen-player'),
@@ -782,20 +754,39 @@ function _resumeBlur() {
   });
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── GESTURE SYSTEM v2 — GODMODE FIX ─────────────────────────────────────────
+// Root causes fixed:
+// 1. velocity was Math.abs(dy)/dt — direction-blind → fast DOWN swipe triggered openFullscreen
+// 2. clamped max (80px) vs dismiss threshold (60px) — 20px gap caused mid-air freeze
+// 3. Art swipe missing on Brave — artWrap setup deferred to after fullscreen open
+// 4. No snap-back on cancelled/short gestures — element stayed frozen
+// All gestures now: direction-aware velocity, generous thresholds, guaranteed snap-back
+// ═══════════════════════════════════════════════════════════════════════════════
+
 // ─── GESTURE: MINI PLAYER ────────────────────────────────────────────────────
 function setupMiniGesture() {
   const mp = document.getElementById('mini-player');
   let startY = 0, startX = 0, isDragging = false, startTime = 0, moved = false, rafId = null;
 
+  function snapBack() {
+    mp.style.transition = 'transform 0.3s cubic-bezier(0.34,1.56,0.64,1)';
+    mp.style.transform  = '';
+    mp.style.willChange = '';
+    setTimeout(() => { mp.style.transition = ''; }, 320);
+    _resumeBlur();
+  }
+
   mp.addEventListener('touchstart', e => {
     e.stopPropagation();
-    startY = e.touches[0].clientY; startX = e.touches[0].clientX;
-    isDragging = true; startTime = Date.now(); moved = false;
+    startY = e.touches[0].clientY;
+    startX = e.touches[0].clientX;
+    isDragging = true;
+    startTime  = Date.now();
+    moved      = false;
     mp.style.transition  = 'none';
-    // Hardware Promotion: GPU-composite the layer before drag starts
     mp.style.willChange  = 'transform';
     mp.style.transform   = mp.style.transform || 'translateZ(0)';
-    // Smart Blur: kill expensive blur during movement
     _pauseBlur();
   }, { passive: true });
 
@@ -803,39 +794,79 @@ function setupMiniGesture() {
     if (!isDragging) return;
     const dy = e.touches[0].clientY - startY;
     const dx = Math.abs(e.touches[0].clientX - startX);
-    if (!moved && dx > Math.abs(dy)) { isDragging = false; _resumeBlur(); return; }
+
+    // Horizontal scroll wins — bail out
+    if (!moved && dx > Math.abs(dy) + 6) {
+      isDragging = false;
+      snapBack();
+      return;
+    }
+
     if (Math.abs(dy) > 6) {
       moved = true;
       e.preventDefault();
-      const clamped = dy < 0 ? Math.max(-70, dy * 0.3) : Math.min(80, dy * 0.45);
-      // cappedRaf: batch DOM writes to 30fps to keep device cool
+      // Rubber-band: resist both directions
+      const clamped = dy < 0
+        ? Math.max(-80, dy * 0.3)   // upward: slight resistance
+        : Math.min(160, dy * 0.55); // downward: more room to drag
       if (rafId) cancelAnimationFrame(rafId);
-      rafId = cappedRaf(() => { mp.style.transform = `translateY(${clamped}px)`; rafId = null; });
+      rafId = cappedRaf(() => {
+        mp.style.transform = `translateY(${clamped}px)`;
+        rafId = null;
+      });
     }
   }, { passive: false });
 
   mp.addEventListener('touchend', e => {
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-    if (!isDragging) return; isDragging = false;
-    const dy  = e.changedTouches[0].clientY - startY;
-    const dt  = Date.now() - startTime;
-    const vel = Math.abs(dy) / dt;
-    mp.style.transition = '';
-    mp.style.willChange = '';
-    // Smart Blur: restore blur now that element is at rest
-    _resumeBlur();
-    if (!moved) return;
+    if (!isDragging) return;
+    isDragging = false;
 
-    if (dy < -30 || vel > 0.45) {
-      mp.style.transform = ''; openFullscreen();
-    } else if (dy > 60 || (vel > 0.55 && dy > 25)) {
-      _miniPlayerDismissed = true;
+    const dy  = e.changedTouches[0].clientY - startY;
+    const dt  = Math.max(1, Date.now() - startTime);
+    // FIX: signed velocity — positive = downward, negative = upward
+    const vel = dy / dt;
+
+    mp.style.willChange = '';
+    _resumeBlur();
+
+    // No real movement → snap back, do nothing
+    if (!moved) { snapBack(); return; }
+
+    // Upward swipe → open fullscreen
+    // FIX: vel check now uses signed value (vel < -threshold = fast upward only)
+    if (dy < -30 || vel < -0.45) {
       mp.style.transform = '';
-      mp.classList.remove('show');
-      if (isPlaying) { audio.pause(); isPlaying = false; _syncPlayIcons(); _syncPlayingClass(); }
-    } else {
-      mp.style.transform = '';
+      mp.style.transition = '';
+      openFullscreen();
+      return;
     }
+
+    // Downward swipe → dismiss + pause
+    // FIX: generous threshold (100px) + signed velocity check
+    if (dy > 100 || (vel > 0.55 && dy > 30)) {
+      _miniPlayerDismissed = true;
+      mp.style.transition = 'transform 0.25s ease, opacity 0.2s ease';
+      mp.style.transform  = `translateY(120px)`;
+      mp.style.opacity    = '0';
+      setTimeout(() => {
+        mp.classList.remove('show');
+        mp.style.transform  = '';
+        mp.style.opacity    = '';
+        mp.style.transition = '';
+      }, 250);
+      if (isPlaying) { audio.pause(); isPlaying = false; _syncPlayIcons(); _syncPlayingClass(); }
+      return;
+    }
+
+    // Didn't cross any threshold → snap back cleanly
+    snapBack();
+  }, { passive: true });
+
+  mp.addEventListener('touchcancel', () => {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    isDragging = false;
+    snapBack();
   }, { passive: true });
 }
 
@@ -843,7 +874,24 @@ function setupMiniGesture() {
 function setupFullPlayerGesture() {
   const fp = document.getElementById('fullscreen-player');
   const qp = document.getElementById('queue-panel');
-  let startY = 0, startX = 0, isDragging = false, startTime = 0, gestureTarget = null, moved = false, rafId = null;
+  let startY = 0, startX = 0, isDragging = false, startTime = 0;
+  let gestureTarget = null, moved = false, rafId = null;
+
+  function snapBackFp() {
+    fp.style.transition = 'transform 0.3s cubic-bezier(0.34,1.56,0.64,1)';
+    fp.style.transform  = '';
+    fp.style.willChange = '';
+    setTimeout(() => { fp.style.transition = ''; }, 320);
+    _resumeBlur();
+  }
+
+  function snapBackQp() {
+    qp.style.transition = 'transform 0.3s cubic-bezier(0.34,1.56,0.64,1)';
+    qp.style.transform  = '';
+    qp.style.willChange = '';
+    setTimeout(() => { qp.style.transition = ''; }, 320);
+    _resumeBlur();
+  }
 
   function isGestureZone(el) {
     return el.closest('#fp-drag-hint')          ||
@@ -857,20 +905,22 @@ function setupFullPlayerGesture() {
     const qpOpen        = qp.classList.contains('open');
     const onQueueHandle = e.target.closest('#queue-drag-handle');
     const onQueueBody   = qp.contains(e.target) && !onQueueHandle;
-    if (qpOpen && onQueueBody)              { isDragging = false; return; }
+    if (qpOpen && onQueueBody)               { isDragging = false; return; }
     if (!qpOpen && !isGestureZone(e.target)) { isDragging = false; return; }
-    startY = e.touches[0].clientY; startX = e.touches[0].clientX;
-    isDragging = true; startTime = Date.now(); moved = false;
+
+    startY = e.touches[0].clientY;
+    startX = e.touches[0].clientX;
+    isDragging    = true;
+    startTime     = Date.now();
+    moved         = false;
     gestureTarget = qpOpen ? 'queue' : 'player';
 
-    // Hardware Promotion: elevate to GPU composite layer immediately
     const target = gestureTarget === 'player' ? fp : qp;
     target.style.willChange = 'transform';
     target.style.transform  = target.style.transform || 'translateZ(0)';
 
-    fp.classList.add('dragging'); qp.classList.add('dragging');
-
-    // Smart Blur: disable backdrop-filter for all drag participants
+    fp.classList.add('dragging');
+    qp.classList.add('dragging');
     _pauseBlur();
   }, { passive: true });
 
@@ -878,64 +928,123 @@ function setupFullPlayerGesture() {
     if (!isDragging) return;
     const dy = e.touches[0].clientY - startY;
     const dx = Math.abs(e.touches[0].clientX - startX);
+
+    // Horizontal wins → bail
     if (!moved && dx > Math.abs(dy) + 4) {
-      isDragging = false; fp.classList.remove('dragging'); qp.classList.remove('dragging');
-      _resumeBlur(); return;
+      isDragging = false;
+      fp.classList.remove('dragging');
+      qp.classList.remove('dragging');
+      gestureTarget === 'player' ? snapBackFp() : snapBackQp();
+      return;
     }
+
     if (Math.abs(dy) < 4 && !moved) return;
     moved = true;
+
     if (gestureTarget === 'player' && dy > 0) {
+      // Dragging player downward to close
       e.preventDefault();
-      const clamped = Math.max(0, dy * 0.5);
-      // cappedRaf: 30fps DOM write — prevents GPU thrashing
+      const clamped = Math.max(0, dy * 0.55);
       if (rafId) cancelAnimationFrame(rafId);
       rafId = cappedRaf(() => { fp.style.transform = `translateY(${clamped}px)`; rafId = null; });
+
     } else if (gestureTarget === 'queue' && dy > 0) {
+      // Dragging queue panel down to close
       e.preventDefault();
-      const clamped = Math.min(120, dy * 0.55);
+      const clamped = Math.min(160, dy * 0.55);
       if (rafId) cancelAnimationFrame(rafId);
       rafId = cappedRaf(() => { qp.style.transform = `translateY(${clamped}px)`; rafId = null; });
+
     } else if (gestureTarget === 'player' && dy < -60) {
+      // Fast upward swipe in player → open queue
       e.preventDefault();
       openQueuePanel();
       isDragging = false;
-      fp.classList.remove('dragging'); qp.classList.remove('dragging');
-      fp.style.transform = ''; qp.style.transform = '';
+      fp.classList.remove('dragging');
+      qp.classList.remove('dragging');
+      fp.style.transform  = '';
+      fp.style.willChange = '';
+      qp.style.transform  = '';
       _resumeBlur();
     }
   }, { passive: false });
 
   fp.addEventListener('touchend', e => {
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-    if (!isDragging) return; isDragging = false;
-    fp.classList.remove('dragging'); qp.classList.remove('dragging');
-    fp.style.willChange = ''; qp.style.willChange = '';
+    if (!isDragging) return;
+    isDragging = false;
+    fp.classList.remove('dragging');
+    qp.classList.remove('dragging');
+    fp.style.willChange = '';
+    qp.style.willChange = '';
+
     const dy  = e.changedTouches[0].clientY - startY;
-    const dt  = Date.now() - startTime;
-    const vel = Math.abs(dy) / dt;
-    // Smart Blur: restore blur — element is now at rest
+    const dt  = Math.max(1, Date.now() - startTime);
+    // FIX: signed velocity
+    const vel = dy / dt;
+
     _resumeBlur();
-    if (gestureTarget === 'player') {
-      if (dy > 90 || (vel > 0.55 && dy > 30)) { fp.style.transform = ''; closeFullscreen(); }
-      else fp.style.transform = '';
-    } else if (gestureTarget === 'queue') {
-      if (dy > 70 || (vel > 0.5 && dy > 20)) { qp.style.transform = ''; closeQueuePanel(); }
-      else qp.style.transform = '';
+
+    if (!moved) {
+      gestureTarget === 'player' ? snapBackFp() : snapBackQp();
+      return;
     }
+
+    if (gestureTarget === 'player') {
+      // FIX: generous threshold, direction-aware vel
+      if (dy > 100 || (vel > 0.5 && dy > 40)) {
+        fp.style.transform = '';
+        closeFullscreen();
+      } else {
+        snapBackFp();
+      }
+    } else if (gestureTarget === 'queue') {
+      if (dy > 90 || (vel > 0.5 && dy > 25)) {
+        qp.style.transform = '';
+        closeQueuePanel();
+      } else {
+        snapBackQp();
+      }
+    }
+  }, { passive: true });
+
+  fp.addEventListener('touchcancel', () => {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    isDragging = false;
+    fp.classList.remove('dragging');
+    qp.classList.remove('dragging');
+    fp.style.willChange = '';
+    qp.style.willChange = '';
+    snapBackFp();
+    snapBackQp();
+    _resumeBlur();
   }, { passive: true });
 }
 
-// ─── GESTURE: ART SWIPE ──────────────────────────────────────────────────────
-function setupArtSwipeGesture() {
+// ─── GESTURE: ART SWIPE (Brave-safe) ─────────────────────────────────────────
+// FIX: artWrap lookup deferred to after fullscreen opens — Brave renders late
+function _attachArtSwipe() {
   const artWrap = document.getElementById('fp-art-wrap');
-  if (!artWrap) return;
+  if (!artWrap || artWrap._swipeAttached) return;
+  artWrap._swipeAttached = true;
+
   let startX = 0, startY = 0, isDragging = false, moved = false, startTime = 0, rafId = null;
 
+  function resetArt() {
+    artWrap.style.transition = 'transform 0.32s cubic-bezier(0.34,1.56,0.64,1), opacity 0.22s ease';
+    artWrap.style.transform  = '';
+    artWrap.style.opacity    = '';
+    artWrap.style.willChange = '';
+    setTimeout(() => { artWrap.style.transition = ''; }, 350);
+  }
+
   artWrap.addEventListener('touchstart', e => {
-    startX = e.touches[0].clientX; startY = e.touches[0].clientY;
-    isDragging = true; moved = false; startTime = Date.now();
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    isDragging = true;
+    moved      = false;
+    startTime  = Date.now();
     artWrap.style.transition = 'none';
-    // Hardware Promotion: both transform and opacity will animate — promote both
     artWrap.style.willChange = 'transform,opacity';
     artWrap.style.transform  = artWrap.style.transform || 'translateZ(0)';
   }, { passive: true });
@@ -944,14 +1053,21 @@ function setupArtSwipeGesture() {
     if (!isDragging) return;
     const dx = e.touches[0].clientX - startX;
     const dy = Math.abs(e.touches[0].clientY - startY);
-    if (!moved && dy > Math.abs(dx) + 8) { isDragging = false; artWrap.style.willChange = ''; return; }
+
+    // Vertical scroll wins → bail
+    if (!moved && dy > Math.abs(dx) + 8) {
+      isDragging = false;
+      artWrap.style.willChange = '';
+      resetArt();
+      return;
+    }
+
     if (Math.abs(dx) > 8) {
       moved = true;
-      e.preventDefault();
+      e.preventDefault(); // Must preventDefault to stop Brave scroll hijack
       const clamped = dx * 0.72;
       const tilt    = clamped * 0.018;
       const fade    = Math.max(0.28, 1 - Math.abs(dx) / 280);
-      // cappedRaf: 30fps visual write
       if (rafId) cancelAnimationFrame(rafId);
       rafId = cappedRaf(() => {
         artWrap.style.transform = `translateX(${clamped}px) rotate(${tilt}deg)`;
@@ -959,36 +1075,55 @@ function setupArtSwipeGesture() {
         rafId = null;
       });
     }
-  }, { passive: false });
+  }, { passive: false }); // passive:false REQUIRED for Brave to allow preventDefault
 
   artWrap.addEventListener('touchend', e => {
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-    if (!isDragging) return; isDragging = false;
+    if (!isDragging) return;
+    isDragging = false;
     artWrap.style.willChange = '';
+
     const dx  = e.changedTouches[0].clientX - startX;
-    const dt  = Date.now() - startTime;
-    const vel = Math.abs(dx) / dt;
-    if (!moved) { _resetArtWrap(); return; }
-    if      (dx < -55 || (vel > 0.38 && dx < -18)) { _animateArtSwipe('left',  nextTrack); }
-    else if (dx >  55 || (vel > 0.38 && dx >  18)) { _animateArtSwipe('right', prevTrack); }
-    else {
-      artWrap.style.transition = 'transform .32s cubic-bezier(0.34,1.56,0.64,1), opacity .22s ease';
-      _resetArtWrap();
+    const dt  = Math.max(1, Date.now() - startTime);
+    // FIX: signed velocity for direction detection
+    const vel = dx / dt;
+
+    if (!moved) { resetArt(); return; }
+
+    if (dx < -55 || (vel < -0.38)) {
+      _animateArtSwipe('left', nextTrack);
+    } else if (dx > 55 || (vel > 0.38)) {
+      _animateArtSwipe('right', prevTrack);
+    } else {
+      resetArt();
     }
   }, { passive: true });
 
   artWrap.addEventListener('touchcancel', () => {
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-    isDragging = false; artWrap.style.willChange = '';
-    _resetArtWrap();
+    isDragging = false;
+    artWrap.style.willChange = '';
+    resetArt();
   }, { passive: true });
+}
+
+function setupArtSwipeGesture() {
+  // Try immediately (Chrome/Firefox mount fast)
+  _attachArtSwipe();
+  // Also attach after fullscreen opens (Brave defers render)
+  const fp = document.getElementById('fullscreen-player');
+  if (fp) {
+    fp.addEventListener('transitionend', () => _attachArtSwipe(), { passive: true });
+  }
 }
 
 function _resetArtWrap() {
   const artWrap = document.getElementById('fp-art-wrap');
   if (!artWrap) return;
-  artWrap.style.transform = '';
-  artWrap.style.opacity   = '';
+  artWrap.style.transition = 'transform 0.32s cubic-bezier(0.34,1.56,0.64,1), opacity 0.22s ease';
+  artWrap.style.transform  = '';
+  artWrap.style.opacity    = '';
+  setTimeout(() => { if (artWrap) artWrap.style.transition = ''; }, 350);
 }
 
 function _animateArtSwipe(direction, callback) {
@@ -1015,13 +1150,11 @@ function _animateArtSwipe(direction, callback) {
 }
 
 // ─── GESTURE: SHAKE TO SHUFFLE ───────────────────────────────────────────────
-// Phone shake karo → next shuffled track + haptic + toast
-// HEAT SAFE: sirf ek passive event listener, koi RAF/animation nahi
 function setupShakeGesture() {
   if (!window.DeviceMotionEvent) return;
 
-  const THRESHOLD = 18;   // acceleration delta — zyada karo toh harder shake chahiye
-  const COOLDOWN  = 1500; // ms — accidental double-trigger se bachao
+  const THRESHOLD = 18;
+  const COOLDOWN  = 1500;
   let lastShake   = 0;
   let lastX = 0, lastY = 0, lastZ = 0;
   let initialized = false;
@@ -1029,23 +1162,18 @@ function setupShakeGesture() {
   function onMotion(e) {
     const acc = e.accelerationIncludingGravity;
     if (!acc) return;
-
-    // First event — baseline set karo, trigger mat karo
     if (!initialized) {
       lastX = acc.x || 0; lastY = acc.y || 0; lastZ = acc.z || 0;
       initialized = true; return;
     }
-
     const dx = Math.abs((acc.x || 0) - lastX);
     const dy = Math.abs((acc.y || 0) - lastY);
     const dz = Math.abs((acc.z || 0) - lastZ);
     lastX = acc.x || 0; lastY = acc.y || 0; lastZ = acc.z || 0;
-
     if (dx + dy + dz > THRESHOLD) {
       const now = Date.now();
       if (now - lastShake < COOLDOWN) return;
       lastShake = now;
-
       if (currentQueue.length > 1) {
         haptic([20, 50, 20]);
         shuffleOn = true;
@@ -1054,7 +1182,6 @@ function setupShakeGesture() {
         showToast('🔀 Shuffled!');
         nextTrack();
       } else if (currentTrack) {
-        // Queue mein ek hi song hai — replay karo
         haptic([10, 30]);
         audio.currentTime = 0;
         showToast('🔀 Replaying');
@@ -1062,7 +1189,6 @@ function setupShakeGesture() {
     }
   }
 
-  // iOS 13+ needs explicit permission — first user touch pe maango
   if (typeof DeviceMotionEvent.requestPermission === 'function') {
     document.addEventListener('touchend', function askPerm() {
       DeviceMotionEvent.requestPermission()
@@ -1073,7 +1199,6 @@ function setupShakeGesture() {
       document.removeEventListener('touchend', askPerm);
     }, { once: true });
   } else {
-    // Android — seedha attach karo, koi permission nahi chahiye
     window.addEventListener('devicemotion', onMotion, { passive: true });
   }
 }
@@ -1105,7 +1230,8 @@ function openFullscreen() {
     mp.style.pointerEvents = 'none';
   }
   updateNextStrip();
-  // Start viz only now that the player is actually visible
+  // Try attaching art swipe now that fullscreen is open (Brave fix)
+  setTimeout(() => _attachArtSwipe(), 100);
   if (!document.hidden && !isLowEnd) _startViz();
   if (!isLowEnd) document.getElementById('ambient-canvas')?.classList.add('orbs-active');
 }
@@ -1116,7 +1242,6 @@ function closeFullscreen() {
   fp.style.transform = '';
   fp.classList.remove('open');
   closeQueuePanel();
-  // Stop viz as soon as player is no longer open — zero background drain
   _stopViz();
   document.getElementById('ambient-canvas')?.classList.remove('orbs-active');
   if (mp) {
@@ -2061,10 +2186,8 @@ if (!isTV) {
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', () => {
-  // --vh: set once now, then on resize/rotation (Blank Fix)
   setVh();
 
-  // Theme color sync
   const mq = window.matchMedia('(prefers-color-scheme: light)');
   function syncThemeColor(isLight) {
     const meta = document.querySelector('meta[name="theme-color"]');
@@ -2087,7 +2210,6 @@ window.addEventListener('DOMContentLoaded', () => {
 
   if (isTV) setupTVNavigation();
 
-  // initViz just builds the bar DOM — does NOT start the loop
   initViz();
 
   buildHomeSections('all');
@@ -2097,14 +2219,12 @@ window.addEventListener('DOMContentLoaded', () => {
   const vs = document.getElementById('fp-vol-slider');
   if (vs) vs.style.setProperty('--vol', '100%');
 
-  // Orbs: activate on first real touch (not on TV)
   if (!isTV && !isLowEnd) {
     document.addEventListener('touchstart', () => {
       document.getElementById('ambient-canvas')?.classList.add('orbs-active');
     }, { once: true, passive: true });
   }
 
-  // TV: monkey-patch playSongs to auto-open fullscreen
   if (isTV) {
     const origPlaySongs = playSongs;
     window.playSongs = function(queue, index) {
@@ -2145,4 +2265,4 @@ audio.addEventListener('timeupdate', () => {
     }
   }
 });
-audio.addEventListener('ended', () => { _gaplessBuffer = null; });
+audio.addEventListener('ended'
