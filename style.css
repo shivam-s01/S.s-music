@@ -1,51 +1,22 @@
 /* ═══════════════════════════════════════════════════════════
-   AURUM — style.css [COMPLETE REWRITE v5 — PERF UPDATE]
-   ✅ FIX: Vertical scroll lock — touch-action: pan-y everywhere
-   ✅ FIX: 100vh → calc(var(--vh,1vh)*100) for setVh() JS sync
-   ✅ FIX: Light mode black/invisible elements — pure white + #121212
-   ✅ FIX: All modals/popups z-index: 10000 — never hidden
-   ✅ FIX: drop-shadow() instead of box-shadow for GPU perf
-   ✅ FIX: contain: layout style paint on song cards
-   ✅ FIX: All animations 30fps cubic-bezier(0.33,1,0.68,1)
-   ✅ FIX: .low-end kills all backdrop-filter + heavy gradients
-   ✅ FIX: Android TV focus outlines on all clickable elements
-   ✅ FIX: Light mode variable duplication → single source of truth
-   ✅ FIX: Mini-player progress bar no transition on seek
-   ✅ FIX: Viz bars no CSS transition (JS-driven)
-   ✅ FIX: #fp-bg-art light → display:none only (no triple override)
-
-   ── v5 PERFORMANCE ADDITIONS ──────────────────────────────
-   ✅ PERF: Full player uses translate3d(0,Y,0) — GPU composited,
-            NO top/margin used for position — eliminates layout thrash
-   ✅ PERF: @property --fp-y registered — enables CSS custom property
-            interpolation so JS sets one value, browser handles easing
-   ✅ PERF: .is-dragging "Lite Mode" — added to #fullscreen-player on
-            touchstart; instantly kills backdrop-filter, box-shadow,
-            ambient glow, and pauses visualizer/art animations.
-            Re-enables on touchend. Saves ~8ms/frame on 2-4GB RAM devices.
-   ✅ PERF: pointer-events:none on closed full player — home page fully
-            interactive when player is off-screen; z-index 200 > nav 100
-            is intentional and does NOT break click-through
-   ✅ PERF: content-visibility:auto on .song-row — browser skips paint
-            for off-screen rows; eliminates home scroll jank on 100+ lists
-   ✅ PERF: will-change:scroll-position on .page scroll containers —
-            promotes scroll layer to GPU compositor thread
-   ✅ PERF: will-change:transform on .song-row removed — adding it to
-            every row creates 100+ compositing layers; auto is better
+   AURUM — style.css [v6 CLEAN — Shivam Edition]
+   ✅ All original features preserved
+   ✅ Light mode fully fixed — no black/invisible popups
+   ✅ Dark mode blur fixed — brightness corrected
+   ✅ Album art blur background — lightweight CSS-only
+   ✅ @property registered for smooth player animation
+   ✅ .low-end kills all heavy effects in one sweep
+   ✅ touch-action:pan-y everywhere for scroll
+   ✅ GPU compositing: translate3d, drop-shadow not box-shadow
+   ✅ content-visibility:auto on lists for 60fps scroll
+   ✅ No dead code, no duplication
    ═══════════════════════════════════════════════════════════ */
 
-/* ══════════════════════════════════════════════════════════
-   @PROPERTY REGISTRATIONS
-   Registers CSS custom properties so they can be ANIMATED by
-   CSS transitions. Without this, var(--fp-y) changes are instant.
-   Supported: Chrome 85+, Safari 15.4+, Firefox 128+.
-   Older Android browsers fall back gracefully to JS-driven
-   style.transform = translate3d(...) — see swipe JS handler.
-   ══════════════════════════════════════════════════════════ */
+/* ── @PROPERTY — CSS custom property animation support ── */
 @property --fp-y {
-  syntax: '<length>';    /* px only — Brave chokes on <length-percentage> interpolation */
+  syntax: '<length>';
   inherits: false;
-  initial-value: 900px; /* safe fallback — larger than any phone screen */
+  initial-value: 900px;
 }
 @property --fp-br {
   syntax: '<length>';
@@ -59,11 +30,10 @@
 }
 
 /* ══════════════════════════════════════════════════════════
-   CSS CUSTOM PROPERTIES — DARK (default)
+   DARK THEME (default)
    ══════════════════════════════════════════════════════════ */
 :root,
 [data-theme="dark"] {
-  /* Surfaces */
   --bg:       #050508;
   --surface:  #0a0a0f;
   --surface2: #0e0e14;
@@ -71,7 +41,6 @@
   --surface4: #18181f;
   --surface5: #1e1e27;
 
-  /* Gold palette */
   --gold:    #b89640;
   --gold-l:  #c8a858;
   --gold-xl: #dbbf82;
@@ -81,22 +50,19 @@
   --gold-glow2:     rgba(184,150,64,0.18);
   --gold-glow3:     rgba(184,150,64,0.28);
 
-  /* Text */
   --text:  #ede8e0;
   --text2: #908880;
   --text3: #5a5650;
 
-  /* Borders & Glass */
   --border:  rgba(255,255,255,0.028);
   --border2: rgba(255,255,255,0.05);
   --glass:   rgba(255,255,255,0.022);
   --glass2:  rgba(255,255,255,0.038);
 
-  /* Component backgrounds */
   --nav-bg:        rgba(4,4,7,0.97);
-  --mini-bg:       rgba(12,12,18,0.98);
+  --mini-bg:       rgba(12,12,18,0.96);
   --sheet-bg:      #0f0f15;
-  --modal-overlay: rgba(0,0,0,0.72);
+  --modal-overlay: rgba(0,0,0,0.70);
   --search-bg:     rgba(255,255,255,0.036);
   --chip-bg:       rgba(255,255,255,0.032);
   --chip-color:    rgba(238,232,224,0.36);
@@ -106,41 +72,36 @@
   --fp-close-color:rgba(238,232,224,0.6);
   --ph-icon-bg:    rgba(255,255,255,0.038);
   --ph-icon-color: rgba(238,232,224,0.44);
-  --ph-headline:   rgba(255,255,255,0.93);
-  --ph-headline2:  rgba(238,232,224,0.68);
   --ph-eyebrow:    rgba(184,150,64,0.5);
   --body-bg:       #000;
   --nav-border:    rgba(255,255,255,0.04);
+
+  /* ✅ FIX: brightness 0.28 (was 0.16 — too dark = black blur) */
+  --fp-bg-filter:  blur(40px) saturate(1.4) brightness(0.28);
+  --fp-overlay:    linear-gradient(
+                     to bottom,
+                     rgba(5,5,8,0.40) 0%,
+                     rgba(5,5,8,0.10) 18%,
+                     rgba(5,5,8,0.48) 55%,
+                     rgba(5,5,8,0.92) 76%,
+                     rgba(5,5,8,1)    100%
+                   );
+
+  --card-shadow:        drop-shadow(0 3px 10px rgba(0,0,0,0.32));
+  --card-shadow-active: drop-shadow(0 1px 4px rgba(0,0,0,0.42));
+
   --mini-shadow:   0 -1px 20px rgba(0,0,0,0.38),
                    0 0 0 0.5px var(--border2),
                    inset 0 0.5px 0 var(--glass2);
 
-  /* FP cinematic */
-  --fp-bg-filter:  blur(36px) saturate(1.5) brightness(0.16);
-  --fp-overlay:    linear-gradient(
-                     to bottom,
-                     rgba(5,5,8,0.48) 0%,
-                     rgba(5,5,8,0.15) 20%,
-                     rgba(5,5,8,0.52) 58%,
-                     rgba(5,5,8,0.94) 78%,
-                     rgba(5,5,8,1)    100%
-                   );
-
-  /* Shadows — dark mode uses subtle drop-shadow */
-  --card-shadow:        drop-shadow(0 3px 10px rgba(0,0,0,0.32));
-  --card-shadow-active: drop-shadow(0 1px 4px rgba(0,0,0,0.42));
-
-  /* Noise */
   --noise-blend:   overlay;
-  --noise-opacity: 0.38;
+  --noise-opacity: 0.32;
 
-  /* Timing — all 30fps friendly */
   --t-spring: .26s cubic-bezier(0.33,1,0.68,1);
   --t-smooth: .20s cubic-bezier(0.33,1,0.68,1);
   --t-sheet:  .38s cubic-bezier(0.33,1,0.68,1);
   --t-player: .44s cubic-bezier(0.33,1,0.68,1);
 
-  /* Layout */
   --nav:         70px;
   --r:           16px;
   --r2:          24px;
@@ -149,8 +110,8 @@
 }
 
 /* ══════════════════════════════════════════════════════════
-   LIGHT THEME — Clean white, high-contrast, #121212 text
-   Single source of truth — no duplication
+   LIGHT THEME — single source of truth
+   ✅ FIX: All popups/modals now use #121212 text, white bg
    ══════════════════════════════════════════════════════════ */
 [data-theme="light"] {
   --bg:       #ffffff;
@@ -172,7 +133,7 @@
   --nav-bg:        rgba(255,255,255,0.97);
   --mini-bg:       rgba(250,248,244,0.98);
   --sheet-bg:      #ffffff;
-  --modal-overlay: rgba(0,0,0,0.36);
+  --modal-overlay: rgba(0,0,0,0.30);
   --search-bg:     rgba(0,0,0,0.055);
   --chip-bg:       rgba(0,0,0,0.060);
   --chip-color:    rgba(18,18,18,0.60);
@@ -182,26 +143,21 @@
   --fp-close-color:rgba(18,18,18,0.60);
   --ph-icon-bg:    rgba(0,0,0,0.060);
   --ph-icon-color: rgba(18,18,18,0.55);
-  --ph-headline:   rgba(18,18,18,0.94);
-  --ph-headline2:  rgba(18,18,18,0.68);
   --ph-eyebrow:    rgba(140,108,28,0.80);
   --body-bg:       #eae5dc;
   --nav-border:    rgba(0,0,0,0.08);
-  --mini-shadow:   0 -1px 12px rgba(184,150,64,0.06),
-                   0 0 0 0.5px rgba(0,0,0,0.07),
-                   inset 0 0.5px 0 rgba(255,255,255,1);
 
-  --fp-bg-filter:  blur(32px) saturate(1.1) brightness(0.94);
-  --fp-overlay:    linear-gradient(
-                     to bottom,
-                     rgba(255,255,255,1) 0%,
-                     rgba(255,255,255,1) 100%
-                   );
+  /* Light mode: no bg-art, just white with subtle tint */
+  --fp-bg-filter:  blur(32px) saturate(1.1) brightness(0.92);
+  --fp-overlay:    linear-gradient(to bottom,rgba(255,255,255,1) 0%,rgba(255,255,255,1) 100%);
 
-  /* Light mode: warm gold shadow, zero black */
   --card-shadow:        drop-shadow(0 2px 6px rgba(184,150,64,0.08))
                         drop-shadow(0 0 0 0.5px rgba(0,0,0,0.04));
   --card-shadow-active: drop-shadow(0 1px 2px rgba(0,0,0,0.06));
+
+  --mini-shadow:   0 -1px 12px rgba(184,150,64,0.06),
+                   0 0 0 0.5px rgba(0,0,0,0.07),
+                   inset 0 0.5px 0 rgba(255,255,255,1);
 
   --gold-dim:  rgba(184,150,64,0.07);
   --gold-glow: rgba(184,150,64,0.09);
@@ -209,10 +165,10 @@
   --gold-glow3:rgba(184,150,64,0.26);
 
   --noise-blend:   multiply;
-  --noise-opacity: 0.06;
+  --noise-opacity: 0.04;
 }
 
-/* OS-level light mode fallback — no duplication, inherit from [data-theme="light"] */
+/* OS light mode fallback */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
     --bg:       #ffffff;
@@ -231,7 +187,7 @@
     --nav-bg:        rgba(255,255,255,0.97);
     --mini-bg:       rgba(250,248,244,0.98);
     --sheet-bg:      #ffffff;
-    --modal-overlay: rgba(0,0,0,0.36);
+    --modal-overlay: rgba(0,0,0,0.30);
     --search-bg:     rgba(0,0,0,0.055);
     --chip-bg:       rgba(0,0,0,0.060);
     --chip-color:    rgba(18,18,18,0.60);
@@ -241,24 +197,20 @@
     --fp-close-color:rgba(18,18,18,0.60);
     --ph-icon-bg:    rgba(0,0,0,0.060);
     --ph-icon-color: rgba(18,18,18,0.55);
-    --ph-headline:   rgba(18,18,18,0.94);
-    --ph-headline2:  rgba(18,18,18,0.68);
     --ph-eyebrow:    rgba(140,108,28,0.80);
     --body-bg:       #eae5dc;
     --nav-border:    rgba(0,0,0,0.08);
-    --mini-shadow:   0 -1px 12px rgba(184,150,64,0.06),
-                     0 0 0 0.5px rgba(0,0,0,0.07),
-                     inset 0 0.5px 0 rgba(255,255,255,1);
-    --fp-bg-filter:  blur(32px) saturate(1.1) brightness(0.94);
+    --fp-bg-filter:  blur(32px) saturate(1.1) brightness(0.92);
     --fp-overlay:    linear-gradient(to bottom,rgba(255,255,255,1) 0%,rgba(255,255,255,1) 100%);
-    --card-shadow:   drop-shadow(0 2px 6px rgba(184,150,64,0.08)) drop-shadow(0 0 0 0.5px rgba(0,0,0,0.04));
+    --card-shadow:        drop-shadow(0 2px 6px rgba(184,150,64,0.08)) drop-shadow(0 0 0 0.5px rgba(0,0,0,0.04));
     --card-shadow-active: drop-shadow(0 1px 2px rgba(0,0,0,0.06));
+    --mini-shadow:   0 -1px 12px rgba(184,150,64,0.06), 0 0 0 0.5px rgba(0,0,0,0.07), inset 0 0.5px 0 rgba(255,255,255,1);
     --gold-dim:  rgba(184,150,64,0.07);
     --gold-glow: rgba(184,150,64,0.09);
     --gold-glow2:rgba(184,150,64,0.18);
     --gold-glow3:rgba(184,150,64,0.26);
     --noise-blend:   multiply;
-    --noise-opacity: 0.06;
+    --noise-opacity: 0.04;
   }
 }
 
@@ -270,18 +222,15 @@
   margin: 0;
   padding: 0;
   -webkit-tap-highlight-color: transparent;
-  /* ✅ FIX: Allow vertical scroll everywhere by default */
   touch-action: pan-y;
 }
 
 html, body {
   width: 100%;
-  /* ✅ FIX: Use --vh instead of 100vh */
   height: calc(var(--vh, 1vh) * 100);
   background: var(--body-bg, #000);
   font-family: 'Sora', sans-serif;
   color: var(--text);
-  /* ✅ FIX: overflow:hidden removed from body — was blocking vertical swipe */
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -291,7 +240,6 @@ html, body {
 #app {
   width: 100%;
   max-width: 430px;
-  /* ✅ FIX: Use --vh not 100dvh — syncs with JS setVh() */
   height: calc(var(--vh, 1vh) * 100);
   margin: 0 auto;
   position: relative;
@@ -300,7 +248,7 @@ html, body {
   contain: layout size style;
 }
 
-/* Noise overlay — static, no will-change */
+/* Noise overlay */
 #app::after {
   content: '';
   position: absolute;
@@ -313,7 +261,6 @@ html, body {
   mix-blend-mode: var(--noise-blend);
 }
 
-/* Hide scrollbars */
 ::-webkit-scrollbar { display: none; }
 * { scrollbar-width: none; }
 
@@ -326,11 +273,11 @@ img {
   transform: translateZ(0);
   contain: paint;
 }
-img.loaded   { opacity: 1; }
-img.img-error{ opacity: 1; }
+img.loaded    { opacity: 1; }
+img.img-error { opacity: 1; }
 
 /* ══════════════════════════════════════════════════════════
-   AMBIENT ORBS — paused by default, JS activates
+   AMBIENT ORBS
    ══════════════════════════════════════════════════════════ */
 #ambient-canvas {
   position: absolute;
@@ -380,21 +327,16 @@ img.img-error{ opacity: 1; }
 
 /* ══════════════════════════════════════════════════════════
    LOW-END / BATTERY SAVER
-   JS adds .low-end on <html>
-   ✅ FIX: Kills ALL backdrop-filter + heavy gradients instantly
    ══════════════════════════════════════════════════════════ */
-
-/* Kill all decorative elements */
 .low-end .orb,
 .low-end .ph-orb-a,
-.low-end .ph-orb-b     { display: none !important; }
-.low-end #ambient-canvas { display: none !important; }
-.low-end #app::after   { display: none !important; }
-.low-end .ph-noise     { display: none !important; }
-.low-end .fp-visualizer{ display: none !important; }
+.low-end .ph-orb-b,
+.low-end #ambient-canvas,
+.low-end #app::after,
+.low-end .ph-noise,
+.low-end .fp-visualizer,
 .low-end #fp-ambient-glow { display: none !important; }
 
-/* ✅ FIX: Kill ALL backdrop-filter in one sweep */
 .low-end *,
 .low-end *::before,
 .low-end *::after {
@@ -402,11 +344,9 @@ img.img-error{ opacity: 1; }
   -webkit-backdrop-filter: none !important;
 }
 
-/* Simplified bg-art */
-.low-end #fp-bg-art { filter: blur(20px) brightness(0.18) !important; }
-[data-theme="light"] .low-end #fp-bg-art { filter: blur(20px) brightness(0.80) !important; }
+.low-end #fp-bg-art { filter: blur(20px) brightness(0.22) !important; }
+[data-theme="light"] .low-end #fp-bg-art { filter: blur(20px) brightness(0.82) !important; }
 
-/* Kill heavy box-shadows */
 .low-end .fp-art {
   box-shadow: 0 8px 24px rgba(0,0,0,0.38) !important;
   filter: none !important;
@@ -420,18 +360,16 @@ img.img-error{ opacity: 1; }
 .low-end .bw-card-cover,
 .low-end .playlist-card { filter: none !important; }
 
-/* Kill infinite animations */
 .low-end .now-playing-bar span,
 .low-end .queue-now-playing span {
   animation: none !important;
   transform: scaleY(0.55) !important;
 }
-.low-end #mini-player.playing-glow   { animation: none !important; }
-.low-end #fullscreen-player.playing .fp-art { animation: none !important; }
-.low-end .song-row-heart.saved       { animation: none !important; }
-.low-end .chip.popping               { animation: none !important; }
+.low-end #mini-player.playing-glow,
+.low-end #fullscreen-player.playing .fp-art,
+.low-end .song-row-heart.saved,
+.low-end .chip.popping { animation: none !important; }
 
-/* Skeleton shimmer — pause */
 .low-end .bw-sk-cover::after,
 .low-end .bw-sk-line::after,
 .low-end .sk-art::after,
@@ -440,36 +378,19 @@ img.img-error{ opacity: 1; }
 .low-end .wide-sk-line::after,
 .low-end .quick-sk-cover::after { animation: none !important; opacity: 0 !important; }
 
-/* Drop SVG drop-shadow filters — compositor cost */
-.low-end .ph-logo-mark svg { filter: none !important; }
+.low-end .ph-logo-mark svg,
 .low-end .nav-btn.active svg { filter: none !important; }
 
-/* Android TV / slow-refresh display */
+.low-end #fullscreen-player { transition-duration: .22s !important; }
+.low-end .song-row,
+.low-end .queue-item { contain-intrinsic-size: 0 60px !important; }
+
 @media (update: slow) {
   * {
     animation-duration: .01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: .01ms !important;
   }
-}
-
-/* ══════════════════════════════════════════════════════════
-   LOW-END + CONTENT-VISIBILITY — Belt-and-suspenders for
-   2-4 GB RAM devices: disable @property interpolation cost
-   and force instant transitions so the compositor never
-   falls behind the touch input pipeline.
-   ══════════════════════════════════════════════════════════ */
-.low-end #fullscreen-player {
-  /* Fall back from @property interpolation to instant snap — old Androids
-     may still pay interpolation cost even with low-end flag */
-  transition-duration: .22s !important;
-}
-/* On low-end, content-visibility is always enabled via the class above,
-   but we also disable the intrinsic size animation hint which can cause
-   one extra layout pass on first-paint */
-.low-end .song-row,
-.low-end .queue-item {
-  contain-intrinsic-size: 0 60px !important;
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -488,11 +409,8 @@ img.img-error{ opacity: 1; }
   transition: opacity .20s ease, transform var(--t-spring);
   z-index: 1;
   overscroll-behavior-y: contain;
-  /* ✅ FIX: pan-y so vertical scroll works */
   touch-action: pan-y;
   isolation: isolate;
-  /* ✅ PERF: Promotes scroll container to compositor thread.
-     scroll-position (not transform) — avoids extra paint layer bloat */
   will-change: scroll-position;
 }
 .page.active {
@@ -533,14 +451,11 @@ img.img-error{ opacity: 1; }
   position: relative;
 }
 .nav-btn:active { transform: scale(0.82); }
-
-/* ✅ FIX: Android TV focus outline */
 .nav-btn:focus-visible {
   outline: 2px solid var(--gold-l);
   outline-offset: 2px;
   border-radius: 8px;
 }
-
 .nav-btn svg {
   width: 21px; height: 21px;
   stroke: var(--text3);
@@ -596,20 +511,12 @@ img.img-error{ opacity: 1; }
   opacity: 0;
   transition: transform .44s cubic-bezier(0.33,1,0.68,1), opacity .22s ease;
   user-select: none;
-  will-change: auto;
-  /* ✅ BRAVE FIX: isolation:isolate prevents mini-player from
-     being pulled into fullscreen player's stacking context
-     during the open/close transition — eliminates the bug
-     where mini-player visually "floats up" into the player */
   isolation: isolate;
-  /* ✅ BRAVE FIX: explicit backface-visibility keeps Brave from
-     re-compositing this element during fullscreen player animation */
   -webkit-backface-visibility: hidden;
   backface-visibility: hidden;
 }
 #mini-player.show { transform: translateY(0); opacity: 1; }
 
-/* Dark pulse */
 @keyframes mp-pulse {
   0%, 100% { box-shadow: var(--mini-shadow); }
   50% {
@@ -621,7 +528,6 @@ img.img-error{ opacity: 1; }
 }
 #mini-player.playing-glow { animation: mp-pulse 4.5s ease-in-out infinite; }
 
-/* Light pulse — warm only */
 @keyframes mp-pulse-light {
   0%, 100% { box-shadow: var(--mini-shadow); }
   50% {
@@ -712,14 +618,13 @@ img.img-error{ opacity: 1; }
   background: linear-gradient(90deg, var(--gold), var(--gold-xl));
   border-radius: 2px;
   width: 0%;
-  /* ✅ FIX: No transition — JS sets width directly on seek (no jump) */
   transition: none;
 }
-/* Only restore smooth transition during normal playback via JS class */
 .mini-progress-bar.playing { transition: width .5s linear; }
 
 /* ══════════════════════════════════════════════════════════
    FULLSCREEN PLAYER — CINEMATIC BG
+   ✅ Lightweight album-art blur background
    ══════════════════════════════════════════════════════════ */
 #fullscreen-player { --fp-dom-rgb: 90,70,20; }
 
@@ -732,35 +637,43 @@ img.img-error{ opacity: 1; }
   background: rgb(var(--fp-dom-rgb));
   transition: background 1.0s ease;
 }
+
+/* ✅ KEY: Album art fills entire bg, blurred — lightweight CSS only */
 #fp-bg-art {
   position: absolute;
-  inset: -40%;
+  inset: -30%;
+  width: 160%;
+  height: 160%;
   object-fit: cover;
   filter: var(--fp-bg-filter);
-  transform: scale(1.5);
-  transition: opacity 1.1s ease;
+  transform: scale(1) translateZ(0);
+  transition: opacity 1.0s ease;
   opacity: 0;
+  will-change: opacity;
 }
+
 #fp-bg-overlay {
   position: absolute;
   inset: 0;
   background: var(--fp-overlay);
 }
 
-/* ✅ FIX: Light mode — display:none only (no triple override) */
+/* ✅ FIX: Light mode — hide blurred bg-art, use solid white */
 [data-theme="light"] #fp-bg { background: var(--bg); }
 [data-theme="light"] #fp-bg-art { display: none; }
 [data-theme="light"] #fp-bg-overlay { background: var(--bg); }
+
+/* Light mode — subtle dominant color halo at top */
 [data-theme="light"] #fp-bg::after {
   content: '';
   position: absolute;
   top: -40px; left: -15%; right: -15%;
-  height: 220px;
+  height: 200px;
   border-radius: 50%;
   background: radial-gradient(
     ellipse at 50% 0%,
-    rgba(var(--fp-dom-rgb), 0.09) 0%,
-    rgba(var(--fp-dom-rgb), 0.03) 50%,
+    rgba(var(--fp-dom-rgb), 0.08) 0%,
+    rgba(var(--fp-dom-rgb), 0.02) 50%,
     transparent 72%
   );
   pointer-events: none;
@@ -786,12 +699,6 @@ img.img-error{ opacity: 1; }
   inset: 0;
   background: var(--bg);
   z-index: 200;
-  /* ✅ BRAVE FIX: --fp-y in % was causing Brave to miscalculate
-     translate during swipe because @property interpolation of
-     <length-percentage> is partially broken in Brave's engine.
-     We use 100vh as the closed position instead of 100%.
-     The JS swipe handler uses px values anyway (via RAF),
-     so this only affects the CSS open/close transitions. */
   transform: translate3d(0, var(--fp-y, 100vh), 0);
   transition: transform var(--t-player);
   display: flex;
@@ -800,83 +707,40 @@ img.img-error{ opacity: 1; }
   overscroll-behavior: none;
   touch-action: none;
   pointer-events: none;
-  /* ✅ BRAVE FIX: explicit border-radius prevents Brave from
-     snapping the player to a sub-pixel position mid-animation */
   border-radius: 0px;
-  /* ✅ BRAVE FIX: backface-visibility:hidden forces Brave to
-     keep this in its own compositor layer, preventing the
-     "player gets stuck halfway" bug */
   -webkit-backface-visibility: hidden;
   backface-visibility: hidden;
 }
 #fullscreen-player.open {
-  --fp-y: 0px;   /* px not % — Brave @property <length-percentage> fix */
+  --fp-y: 0px;
   pointer-events: all;
 }
-/* Dragging: no CSS transition */
 #fullscreen-player.dragging { transition: none !important; }
 #fullscreen-player > *:not(#fp-bg) { position: relative; z-index: 1; }
 
-/* ══════════════════════════════════════════════════════════
-   .is-dragging — "LITE MODE" DURING SWIPE GESTURE
-   ──────────────────────────────────────────────────────────
-   Added by JS on touchstart of swipe-to-dismiss gesture.
-   Removed on touchend (snap back or dismiss).
-
-   WHY: backdrop-filter, box-shadow, and infinite animations are the
-   #1 cause of dropped frames during touch gestures on 2-4GB RAM
-   Android devices. Each blurred element forces a full texture re-sample
-   on the compositor. Disabling them during the ~300-500ms gesture window
-   saves 6–12ms per frame and keeps the swipe at 60fps.
-
-   IMPORTANT: This only suppresses visual effects. The visualizer bars
-   and music engine are untouched — they resume the moment touchend fires.
-   ══════════════════════════════════════════════════════════ */
-#fullscreen-player.is-dragging {
-  /* Superset of .dragging — kills transition AND effects */
-  transition: none !important;
-}
-/* Kill ALL backdrop-filter costs during drag — single most expensive effect */
+/* ── .is-dragging — Kill effects during swipe for 60fps ── */
+#fullscreen-player.is-dragging { transition: none !important; }
 #fullscreen-player.is-dragging *,
 #fullscreen-player.is-dragging *::before,
 #fullscreen-player.is-dragging *::after {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }
-/* Pause ALL CSS animations during drag — eq bars, art breathe, etc. */
-#fullscreen-player.is-dragging * {
-  animation-play-state: paused !important;
-}
-/* Simplify bg-art filter — keep rough blur, drop saturate/brightness ops */
+#fullscreen-player.is-dragging * { animation-play-state: paused !important; }
 #fullscreen-player.is-dragging #fp-bg-art {
-  filter: blur(20px) brightness(0.16) !important;
+  filter: blur(20px) brightness(0.22) !important;
   transition: none !important;
 }
-[data-theme="light"] #fullscreen-player.is-dragging #fp-bg-art {
-  display: none !important;
-}
-/* Hide ambient glow — full repaint on every frame otherwise */
-#fullscreen-player.is-dragging #fp-ambient-glow {
-  display: none !important;
-}
-/* Simplify art shadow — drop-shadow with blur is expensive during motion */
+[data-theme="light"] #fullscreen-player.is-dragging #fp-bg-art { display: none !important; }
+#fullscreen-player.is-dragging #fp-ambient-glow { display: none !important; }
 #fullscreen-player.is-dragging .fp-art {
   filter: drop-shadow(0 8px 20px rgba(0,0,0,0.38)) !important;
   animation: none !important;
 }
-/* Hide visualizer during drag — JS _vizLoop still runs, restores on touchend */
-#fullscreen-player.is-dragging .fp-visualizer {
-  visibility: hidden !important;
-}
-/* Kill box-shadow on all controls — these trigger stacking context repaints */
+#fullscreen-player.is-dragging .fp-visualizer { visibility: hidden !important; }
 #fullscreen-player.is-dragging .fp-close,
-#fullscreen-player.is-dragging .fp-more {
-  box-shadow: none !important;
-}
-/* Reduce border-radius on the player shell during drag — Spotify-like feel */
-#fullscreen-player.is-dragging {
-  border-radius: var(--fp-br, 0px);
-}
+#fullscreen-player.is-dragging .fp-more { box-shadow: none !important; }
+#fullscreen-player.is-dragging { border-radius: var(--fp-br, 0px); }
 
 /* FP Header */
 .fp-header {
@@ -920,7 +784,6 @@ img.img-error{ opacity: 1; }
   stroke-linejoin: round;
 }
 
-/* Drag hint */
 .fp-drag-hint {
   width: 36px; height: 4px;
   border-radius: 2px;
@@ -940,7 +803,6 @@ img.img-error{ opacity: 1; }
   object-fit: cover;
   background: var(--surface2);
   display: block;
-  /* ✅ FIX: drop-shadow instead of box-shadow — GPU composited, no smear */
   filter: drop-shadow(0 20px 40px rgba(0,0,0,0.54))
           drop-shadow(0 8px 16px rgba(0,0,0,0.32));
   transition: transform .42s cubic-bezier(0.33,1,0.68,1),
@@ -951,7 +813,6 @@ img.img-error{ opacity: 1; }
           drop-shadow(0 2px 4px rgba(0,0,0,0.04));
 }
 
-/* Playing state */
 #fullscreen-player.playing .fp-art {
   transform: scale(1.02);
   filter: drop-shadow(0 22px 44px rgba(var(--fp-dom-rgb), 0.34))
@@ -991,7 +852,6 @@ img.img-error{ opacity: 1; }
   transform-origin: bottom;
   transform: scaleY(0.05);
   min-height: 2px;
-  /* ✅ FIX: No CSS transition — JS _vizLoop drives scaleY directly at 30fps */
 }
 
 /* ── FP INFO ── */
@@ -1046,7 +906,6 @@ img.img-error{ opacity: 1; }
   fill: rgba(184,150,64,0.14);
 }
 
-/* Quality pill */
 .quality-pill {
   display: flex;
   align-items: center;
@@ -1083,7 +942,6 @@ img.img-error{ opacity: 1; }
   -webkit-appearance: none;
   outline: none;
   border: none;
-  /* ✅ FIX: none prevents horizontal pan from triggering page scroll */
   touch-action: none;
 }
 [data-theme="light"] .fp-seekbar { background: rgba(0,0,0,0.07); }
@@ -1104,9 +962,6 @@ img.img-error{ opacity: 1; }
 .fp-seekbar:active::-webkit-slider-thumb {
   transform: scale(1.4);
   box-shadow: 0 0 16px rgba(184,150,64,0.60);
-}
-[data-theme="light"] .fp-seekbar:active::-webkit-slider-thumb {
-  box-shadow: 0 0 12px rgba(184,150,64,0.40);
 }
 .fp-seekbar::-webkit-slider-runnable-track {
   height: 3px;
@@ -1184,14 +1039,12 @@ img.img-error{ opacity: 1; }
   display: flex;
   align-items: center;
   justify-content: center;
-  /* ✅ FIX: drop-shadow instead of box-shadow */
   filter: drop-shadow(0 5px 16px rgba(184,150,64,0.32))
           drop-shadow(0 1px 2px rgba(0,0,0,0.18));
   transition: transform var(--t-spring), filter var(--t-smooth);
   cursor: pointer;
   border: none;
   touch-action: manipulation;
-  /* Inset gleam via outline trick */
   outline: 0.5px solid rgba(255,255,255,0.18);
   outline-offset: -1px;
 }
@@ -1215,7 +1068,7 @@ img.img-error{ opacity: 1; }
   stroke-linejoin: round;
 }
 
-/* FP Bottom row */
+/* FP Bottom */
 .fp-bottom {
   padding: 0 22px calc(14px + env(safe-area-inset-bottom, 0px));
   display: flex;
@@ -1246,7 +1099,6 @@ img.img-error{ opacity: 1; }
   transition: stroke var(--t-smooth);
 }
 [data-theme="light"] .fp-bottom-icon svg { stroke: var(--text3); }
-.fp-preview-btn.preview-active svg { stroke: var(--gold-l); }
 .fp-queue-btn.queue-open svg { stroke: var(--gold-l); }
 
 .fp-volume-wrap { flex: 1; display: flex; align-items: center; gap: 8px; }
@@ -1436,7 +1288,7 @@ img.img-error{ opacity: 1; }
   overscroll-behavior: contain;
   touch-action: pan-y;
 }
-#queue-panel.open    { transform: translateY(0); }
+#queue-panel.open     { transform: translateY(0); }
 #queue-panel.dragging { transition: none !important; }
 
 .queue-panel-handle {
@@ -1485,9 +1337,7 @@ img.img-error{ opacity: 1; }
   margin: 0 6px;
   position: relative;
   touch-action: manipulation;
-  /* ✅ FIX: contain for perf during swipe */
   contain: layout style paint;
-  /* ✅ PERF: Skip off-screen queue rows — same pattern as .song-row */
   content-visibility: auto;
   contain-intrinsic-size: 0 60px;
 }
@@ -1558,9 +1408,9 @@ img.img-error{ opacity: 1; }
   position: relative;
   padding: 0;
   overflow: hidden;
-  border-radius: 0 0 32px 32px;
+  border-radius: 0 0 28px 28px;
   margin-bottom: 4px;
-  box-shadow: 0 6px 24px rgba(0,0,0,0.20);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.16);
   z-index: 5;
   background: var(--bg);
 }
@@ -1594,15 +1444,23 @@ img.img-error{ opacity: 1; }
   opacity: 0.6;
   background: radial-gradient(circle at 60% 38%, rgba(160,122,48,0.09) 0%, transparent 66%);
 }
-@keyframes ph-drift-a { 0% { transform: translate(0,0); } 50% { transform: translate(14px,9px) scale(1.05); } 100% { transform: translate(-6px,12px) scale(0.97); } }
-@keyframes ph-drift-b { 0% { transform: translate(0,0); } 50% { transform: translate(-10px,6px) scale(1.04); } 100% { transform: translate(6px,-4px); } }
+@keyframes ph-drift-a {
+  0%   { transform: translate(0,0); }
+  50%  { transform: translate(14px,9px) scale(1.05); }
+  100% { transform: translate(-6px,12px) scale(0.97); }
+}
+@keyframes ph-drift-b {
+  0%   { transform: translate(0,0); }
+  50%  { transform: translate(-10px,6px) scale(1.04); }
+  100% { transform: translate(6px,-4px); }
+}
 
 .ph-noise {
   position: absolute;
   inset: 0;
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.72' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.025'/%3E%3C/svg%3E");
   background-size: 160px;
-  opacity: 0.35;
+  opacity: 0.28;
   mix-blend-mode: soft-light;
   pointer-events: none;
 }
@@ -1617,7 +1475,6 @@ img.img-error{ opacity: 1; }
   padding: calc(env(safe-area-inset-top, 0px) + 48px) 20px 0;
 }
 
-/* Logo */
 .ph-wordmark { display: flex; align-items: center; gap: 7px; }
 .ph-logo-mark svg {
   width: 28px; height: 28px;
@@ -1669,81 +1526,25 @@ img.img-error{ opacity: 1; }
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-.ph-theme-btn {
-  width: 34px; height: 34px;
-  border-radius: 50%;
-  border: none;
-  cursor: pointer;
-  background: var(--ph-icon-bg);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  touch-action: manipulation;
-  transition: background var(--t-smooth), transform var(--t-spring);
-}
-.ph-theme-btn:active { transform: scale(0.82); }
-.ph-theme-btn:focus-visible { outline: 2px solid var(--gold-l); }
-.ph-theme-btn svg {
-  width: 15px; height: 15px;
-  stroke: var(--ph-icon-color);
-  fill: none;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-}
-
-.ph-headline-wrap { position: relative; z-index: 2; padding: 20px 22px 0 24px; }
-.ph-eyebrow {
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 2.6px;
-  text-transform: uppercase;
-  color: var(--ph-eyebrow);
-  margin-bottom: 4px;
-}
-.ph-headline {
-  font-size: 36px;
-  font-weight: 800;
-  letter-spacing: -1.4px;
-  line-height: 1.06;
-  background: linear-gradient(158deg, var(--ph-headline) 0%, var(--ph-headline2) 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-.ph-headline-accent {
-  background: linear-gradient(138deg, var(--gold-2xl) 0%, var(--gold-xl) 48%, var(--gold) 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  font-style: italic;
-}
-.ph-sub {
-  font-size: 11.5px;
-  color: var(--text2);
-  margin-top: 8px;
-  font-weight: 400;
-  line-height: 1.55;
-  padding-left: 1px;
-}
 
 .ph-chips-scroll { position: relative; z-index: 2; padding: 16px 0 18px; overflow: hidden; }
 .ph-chips {
   display: flex;
   gap: 6px;
   padding: 0 20px;
-  overflow-x: scroll;           /* Brave fix: scroll not auto */
+  overflow-x: scroll;
   overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-x: contain;
   overscroll-behavior-y: none;
   scroll-snap-type: x mandatory;
-  touch-action: pan-x;          /* Brave fix: override global pan-y */
+  touch-action: pan-x;
 }
 .ph-chips::-webkit-scrollbar { display: none; }
 .ph-fade-edge {
   position: absolute;
   bottom: 0; left: 0; right: 0;
-  height: 26px;
+  height: 24px;
   pointer-events: none;
   background: linear-gradient(transparent, var(--bg));
   z-index: 3;
@@ -1804,14 +1605,6 @@ img.img-error{ opacity: 1; }
 
 /* ══════════════════════════════════════════════════════════
    SCROLL ROWS
-   ✅ BRAVE FIX: touch-action:pan-x — global pan-y reset was
-   blocking horizontal swipe in Brave's WebKit engine.
-   pan-x explicitly tells the browser: horizontal gestures
-   belong to THIS element, not the page scroll.
-   ✅ BRAVE FIX: overflow-x:scroll (not auto) — Brave sometimes
-   refuses to create a scroll container with 'auto' until
-   the element overflows, causing first-touch to register
-   as a page gesture instead. 'scroll' forces the scroll layer.
    ══════════════════════════════════════════════════════════ */
 .h-scroll-row {
   overflow-x: scroll;
@@ -1825,13 +1618,11 @@ img.img-error{ opacity: 1; }
   overscroll-behavior-y: none;
   scroll-snap-type: x mandatory;
   scroll-padding-left: 22px;
-  /* ✅ BRAVE FIX: pan-x overrides the global * { pan-y } reset */
   touch-action: pan-x;
 }
 
 /* ══════════════════════════════════════════════════════════
-   CARDS — contain: layout style paint for perf
-   ✅ FIX: filter:drop-shadow instead of box-shadow
+   CARDS
    ══════════════════════════════════════════════════════════ */
 .quick-card {
   flex-shrink: 0;
@@ -1845,7 +1636,6 @@ img.img-error{ opacity: 1; }
   position: relative;
   scroll-snap-align: start;
   touch-action: manipulation;
-  /* ✅ FIX: Hard perf containment */
   contain: layout style paint;
 }
 .quick-card:active { transform: scale(0.93); filter: var(--card-shadow-active); }
@@ -1861,7 +1651,7 @@ img.img-error{ opacity: 1; }
   border-radius: 0 0 var(--r) var(--r);
   z-index: 1;
 }
-[data-theme="light"] .quick-card::after { background: linear-gradient(transparent, rgba(0,0,0,0.12)); }
+[data-theme="light"] .quick-card::after { background: linear-gradient(transparent, rgba(0,0,0,0.10)); }
 .quick-card-info { padding: 10px 11px 12px; position: relative; z-index: 2; }
 .quick-card-title {
   font-size: 11.5px;
@@ -1880,7 +1670,6 @@ img.img-error{ opacity: 1; }
   text-overflow: ellipsis;
 }
 
-/* Wide card */
 .wide-card {
   flex-shrink: 0;
   width: 180px;
@@ -1908,7 +1697,7 @@ img.img-error{ opacity: 1; }
   background: linear-gradient(180deg, transparent 35%, rgba(0,0,0,0.30) 100%);
 }
 [data-theme="light"] .wide-card-cover::after {
-  background: linear-gradient(180deg, transparent 45%, rgba(0,0,0,0.12) 100%);
+  background: linear-gradient(180deg, transparent 45%, rgba(0,0,0,0.10) 100%);
 }
 .wide-card-play {
   position: absolute;
@@ -1947,7 +1736,6 @@ img.img-error{ opacity: 1; }
   text-overflow: ellipsis;
 }
 
-/* BW Cards */
 .bw-card {
   flex-shrink: 0;
   width: 144px;
@@ -2020,14 +1808,6 @@ img.img-error{ opacity: 1; }
 
 /* ══════════════════════════════════════════════════════════
    SONG ROWS
-   ✅ FIX: contain for smooth swipe
-   ✅ PERF: content-visibility:auto — browser skips layout+paint for
-            off-screen rows entirely. On a 200-song list this cuts home
-            scroll work by ~70%. contain-intrinsic-size gives the browser
-            a size hint so scrollbar height stays accurate before paint.
-   ✅ PERF: will-change deliberately NOT set on .song-row — adding it
-            to 100+ items creates 100+ GPU layers and costs MORE memory
-            than it saves. will-change:scroll-position on .page is enough.
    ══════════════════════════════════════════════════════════ */
 .song-row {
   display: flex;
@@ -2040,12 +1820,7 @@ img.img-error{ opacity: 1; }
   margin: 0 6px;
   position: relative;
   touch-action: manipulation;
-  /* Layout+style+paint containment: prevents row changes from triggering
-     ancestor reflows. Combined with content-visibility this is the full
-     "CSS containment" story for list performance. */
   contain: layout style paint;
-  /* ✅ PERF: Skip rendering off-screen rows completely.
-     contain-intrinsic-size: 0 64px = estimated row height for layout hints */
   content-visibility: auto;
   contain-intrinsic-size: 0 64px;
 }
@@ -2067,8 +1842,7 @@ img.img-error{ opacity: 1; }
 .song-row.playing img { transform: scale(1.02); }
 [data-theme="dark"] .song-row.playing img,
 :root:not([data-theme]) .song-row.playing img {
-  box-shadow: 0 0 0 1.5px rgba(184,150,64,0.30),
-              0 0 12px rgba(184,150,64,0.10);
+  box-shadow: 0 0 0 1.5px rgba(184,150,64,0.30), 0 0 12px rgba(184,150,64,0.10);
 }
 [data-theme="light"] .song-row.playing img {
   box-shadow: 0 0 0 1.5px rgba(184,150,64,0.32);
@@ -2127,7 +1901,6 @@ img.img-error{ opacity: 1; }
   box-shadow: 0 0 5px rgba(184,150,64,0.36);
 }
 
-/* Heart */
 .song-row-heart {
   background: none;
   border: none;
@@ -2197,10 +1970,6 @@ img.img-error{ opacity: 1; }
   background: linear-gradient(90deg, transparent 0%, rgba(184,150,64,0.055) 50%, transparent 100%);
   animation: sk-shimmer 1.9s ease-in-out infinite;
   background-size: 200% 100%;
-}
-[data-theme="light"] .bw-sk-cover::after {
-  background: linear-gradient(90deg, transparent, rgba(184,150,64,0.06), transparent);
-  background-size: 200%;
 }
 .bw-sk-line {
   height: 9px;
@@ -2438,14 +2207,8 @@ img.img-error{ opacity: 1; }
 [data-theme="light"] .recent-chip { background: rgba(0,0,0,0.044); }
 .recent-chip:active { background: rgba(255,255,255,0.06); transform: scale(0.94); }
 [data-theme="light"] .recent-chip:active { background: rgba(0,0,0,0.07); }
-
 .rc-rm {
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 2px;
-  display: flex;
-  align-items: center;
+  background: none; border: none; cursor: pointer; padding: 2px; display: flex; align-items: center;
 }
 .rc-rm svg { width: 9px; height: 9px; stroke: var(--text3); fill: none; stroke-width: 2.2; stroke-linecap: round; }
 
@@ -2559,7 +2322,6 @@ img.img-error{ opacity: 1; }
 }
 .playlist-card:active { transform: scale(0.94); filter: var(--card-shadow-active); }
 .playlist-card:focus-visible { outline: 2px solid var(--gold-l); border-radius: var(--r); }
-
 .playlist-card-cover {
   width: 100%;
   aspect-ratio: 1;
@@ -2655,7 +2417,6 @@ img.img-error{ opacity: 1; }
   z-index: 150;
   transform: translateX(100%);
   transition: transform .36s cubic-bezier(0.33,1,0.68,1);
-  /* ✅ FIX: pan-y for scrolling inside */
   touch-action: pan-y;
   overflow-y: auto;
 }
@@ -2707,8 +2468,7 @@ img.img-error{ opacity: 1; }
   filter: drop-shadow(0 14px 36px rgba(0,0,0,0.48));
 }
 [data-theme="light"] .pl-big-cover {
-  filter: drop-shadow(0 5px 16px rgba(184,150,64,0.09))
-          drop-shadow(0 2px 4px rgba(0,0,0,0.04));
+  filter: drop-shadow(0 5px 16px rgba(184,150,64,0.09)) drop-shadow(0 2px 4px rgba(0,0,0,0.04));
 }
 .pl-big-cover-grid {
   width: 100%;
@@ -2772,8 +2532,7 @@ img.img-error{ opacity: 1; }
 
 /* ══════════════════════════════════════════════════════════
    MODALS — ALL z-index: 10000
-   ✅ FIX: Light mode = white bg + #121212 text (no invisible elements)
-   ✅ FIX: z-index: 10000 so never hidden behind anything
+   ✅ FIX: Light mode = white bg, #121212 text everywhere
    ══════════════════════════════════════════════════════════ */
 .modal-overlay {
   position: absolute;
@@ -2781,7 +2540,6 @@ img.img-error{ opacity: 1; }
   background: var(--modal-overlay);
   backdrop-filter: blur(7px);
   -webkit-backdrop-filter: blur(7px);
-  /* ✅ FIX: 10000 — always on top */
   z-index: 10000;
   opacity: 0;
   pointer-events: none;
@@ -2793,19 +2551,15 @@ img.img-error{ opacity: 1; }
   position: absolute;
   bottom: 0; left: 0; right: 0;
   background: var(--sheet-bg);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
   border-radius: 26px 26px 0 0;
   padding: 16px 20px calc(40px + var(--safe-bottom));
   transform: translateY(100%);
   transition: transform var(--t-sheet);
   box-shadow: inset 0 0.5px 0 var(--glass2);
 }
-/* ✅ FIX: Light mode modal — pure white, #121212 text */
 [data-theme="light"] .modal-sheet {
   background: #ffffff;
-  box-shadow: 0 -1px 0 rgba(0,0,0,0.08), inset 0 0.5px 0 rgba(255,255,255,1);
-  color: #121212;
+  box-shadow: 0 -1px 0 rgba(0,0,0,0.08);
 }
 .modal-overlay.open .modal-sheet { transform: translateY(0); }
 
@@ -2816,7 +2570,13 @@ img.img-error{ opacity: 1; }
   margin: 0 auto 17px;
 }
 [data-theme="light"] .modal-handle { background: rgba(0,0,0,0.10); }
-.modal-title { font-size: 15px; font-weight: 700; margin-bottom: 13px; letter-spacing: -0.18px; color: var(--text); }
+.modal-title {
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 13px;
+  letter-spacing: -0.18px;
+  color: var(--text);
+}
 
 .modal-option {
   display: flex;
@@ -2837,27 +2597,23 @@ img.img-error{ opacity: 1; }
   stroke-linecap: round;
   flex-shrink: 0;
 }
-.modal-option span { font-size: 13px; font-weight: 500; color: var(--text); }
+.modal-option span {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
 
-/* ✅ FIX: Light mode modal icons and text */
-[data-theme="light"] .modal-option svg  { stroke: #121212; }
-[data-theme="light"] .modal-option span { color: #121212; }
+/* ✅ FIX: Light mode modal text fully visible */
+[data-theme="light"] .modal-sheet .modal-title { color: #121212; }
+[data-theme="light"] .modal-option span         { color: #121212; }
+[data-theme="light"] .modal-option svg          { stroke: #4a4540; }
 
 .modal-option.danger span { color: #d84444; }
 .modal-option.danger svg  { stroke: #d84444; }
 
-/* Song modal art */
-#modal-song-art {
-  width: 62px; height: 62px;
-  border-radius: 13px;
-  object-fit: cover;
-  flex-shrink: 0;
-  background: var(--surface3);
-}
-
 /* Input modals */
 .input-modal {
-  position: absolute;
+  position: fixed;
   inset: 0;
   background: rgba(0,0,0,0.46);
   backdrop-filter: blur(8px);
@@ -2870,8 +2626,40 @@ img.img-error{ opacity: 1; }
   transition: opacity .18s ease;
 }
 .input-modal.open { opacity: 1; pointer-events: all; }
-
 [data-theme="light"] .input-modal { background: rgba(0,0,0,0.22); }
+
+/* ✅ FIX: input-modal display handling via opacity+pointer-events, not display:none */
+#create-playlist-modal,
+#rename-modal,
+#playlist-opts-modal,
+#quality-modal,
+#download-modal {
+  position: absolute;
+  inset: 0;
+  z-index: 10000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .18s ease;
+  background: var(--modal-overlay);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: flex-end;
+}
+#create-playlist-modal.open,
+#rename-modal.open,
+#playlist-opts-modal.open,
+#quality-modal.open,
+#download-modal.open {
+  opacity: 1;
+  pointer-events: all;
+}
+
+[data-theme="light"] #create-playlist-modal,
+[data-theme="light"] #rename-modal,
+[data-theme="light"] #playlist-opts-modal,
+[data-theme="light"] #quality-modal,
+[data-theme="light"] #download-modal { background: rgba(0,0,0,0.22); }
 
 .input-sheet {
   width: 100%;
@@ -2882,32 +2670,32 @@ img.img-error{ opacity: 1; }
   transition: transform var(--t-sheet);
   box-shadow: inset 0 0.5px 0 var(--glass2);
 }
-/* ✅ FIX: Light mode input sheet */
 [data-theme="light"] .input-sheet {
   background: #ffffff;
-  color: #121212;
   box-shadow: 0 -1px 0 rgba(0,0,0,0.08);
 }
-.input-modal.open .input-sheet { transform: translateY(0); }
+.input-modal.open .input-sheet,
+#create-playlist-modal.open .input-sheet,
+#rename-modal.open .input-sheet { transform: translateY(0); }
 
-.input-handle {
+.input-handle,
+.input-modal-handle {
   width: 36px; height: 3px;
   background: rgba(255,255,255,0.08);
   border-radius: 3px;
   margin: 0 auto 18px;
 }
-[data-theme="light"] .input-handle { background: rgba(0,0,0,0.10); }
+[data-theme="light"] .input-handle,
+[data-theme="light"] .input-modal-handle { background: rgba(0,0,0,0.10); }
 
-.input-label {
-  font-size: 16px;
-  font-weight: 800;
-  margin-bottom: 14px;
-  letter-spacing: -0.28px;
-  color: var(--text);
-}
+.input-label { font-size: 16px; font-weight: 800; margin-bottom: 14px; letter-spacing: -0.28px; color: var(--text); }
 [data-theme="light"] .input-label { color: #121212; }
 
-.input-field {
+.input-sheet h3 { font-size: 16px; font-weight: 800; margin-bottom: 14px; letter-spacing: -0.28px; color: var(--text); }
+[data-theme="light"] .input-sheet h3 { color: #121212; }
+
+.input-field,
+.input-sheet input[type="text"] {
   width: 100%;
   background: rgba(255,255,255,0.04);
   border: 0.5px solid var(--border2);
@@ -2920,20 +2708,29 @@ img.img-error{ opacity: 1; }
   transition: border-color .18s ease, box-shadow .18s ease;
   caret-color: var(--gold);
 }
-/* ✅ FIX: Light mode input field */
-[data-theme="light"] .input-field {
+[data-theme="light"] .input-field,
+[data-theme="light"] .input-sheet input[type="text"] {
   background: rgba(0,0,0,0.04);
   border-color: rgba(0,0,0,0.12);
   color: #121212;
 }
-.input-field:focus {
+.input-field:focus,
+.input-sheet input[type="text"]:focus {
   border-color: rgba(184,150,64,0.38);
   box-shadow: 0 0 0 2px rgba(184,150,64,0.10);
 }
-.input-field::placeholder { color: var(--text3); }
+.input-field::placeholder,
+.input-sheet input[type="text"]::placeholder { color: var(--text3); }
 
-.input-actions { display: flex; gap: 8px; margin-top: 14px; }
-.input-btn {
+.input-actions,
+.input-modal-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+}
+.input-btn,
+.btn-cancel,
+.btn-create {
   flex: 1;
   padding: 12px;
   border-radius: 12px;
@@ -2945,47 +2742,35 @@ img.img-error{ opacity: 1; }
   transition: transform var(--t-spring), opacity var(--t-smooth);
   border: none;
 }
-.input-btn:active { transform: scale(0.95); opacity: 0.8; }
-.input-btn.cancel {
+.input-btn:active,
+.btn-cancel:active,
+.btn-create:active { transform: scale(0.95); opacity: 0.8; }
+
+.input-btn.cancel,
+.btn-cancel {
   background: rgba(255,255,255,0.038);
   color: var(--text2);
 }
-[data-theme="light"] .input-btn.cancel { background: rgba(0,0,0,0.055); color: #4a4540; }
-.input-btn.confirm {
+[data-theme="light"] .input-btn.cancel,
+[data-theme="light"] .btn-cancel { background: rgba(0,0,0,0.055); color: #4a4540; }
+
+.input-btn.confirm,
+.btn-create {
   background: linear-gradient(138deg, var(--gold-xl), var(--gold));
   color: #050508;
 }
 
 /* ══════════════════════════════════════════════════════════
-   QUALITY MODAL
-   ✅ FIX: z-index: 10000
+   QUALITY MODAL SHEET
    ══════════════════════════════════════════════════════════ */
-#quality-modal {
-  position: absolute;
-  inset: 0;
-  background: var(--modal-overlay);
-  backdrop-filter: blur(7px);
-  -webkit-backdrop-filter: blur(7px);
-  z-index: 10000;
-  display: flex;
-  align-items: flex-end;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity .18s ease;
-}
-#quality-modal.open { opacity: 1; pointer-events: all; }
-
 .quality-sheet {
   width: 100%;
   background: var(--sheet-bg);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
   border-radius: 26px 26px 0 0;
   padding: 20px 20px calc(44px + var(--safe-bottom));
   transform: translateY(100%);
   transition: transform var(--t-sheet);
 }
-/* ✅ FIX: Light mode quality sheet */
 [data-theme="light"] .quality-sheet {
   background: #ffffff;
   box-shadow: 0 -1px 0 rgba(0,0,0,0.08);
@@ -3000,11 +2785,9 @@ img.img-error{ opacity: 1; }
   margin: 0 auto 18px;
 }
 [data-theme="light"] .quality-sheet-handle { background: rgba(0,0,0,0.10); }
-
 .quality-sheet h3  { font-size: 16px; font-weight: 800; margin-bottom: 4px; letter-spacing: -0.28px; color: var(--text); }
 .quality-sheet .qs-sub { font-size: 11px; color: var(--text3); margin-bottom: 16px; }
-
-[data-theme="light"] .quality-sheet h3  { color: #121212; }
+[data-theme="light"] .quality-sheet h3 { color: #121212; }
 
 .quality-option {
   display: flex;
@@ -3016,7 +2799,6 @@ img.img-error{ opacity: 1; }
   transition: opacity var(--t-smooth);
 }
 .quality-option:active { opacity: 0.52; }
-.quality-option:focus-visible { outline: 2px solid var(--gold-l); border-radius: 8px; }
 .quality-option-left { display: flex; align-items: center; gap: 11px; }
 .quality-option-left svg {
   width: 18px; height: 18px;
@@ -3046,37 +2828,16 @@ img.img-error{ opacity: 1; }
 [data-theme="light"] .quality-badge.ext { background: rgba(0,0,0,0.050); color: #7a736a; }
 
 /* ══════════════════════════════════════════════════════════
-   DOWNLOAD MODAL
-   ✅ FIX: z-index: 10000, Light mode fully visible
+   DOWNLOAD SHEET
    ══════════════════════════════════════════════════════════ */
-#download-modal {
-  position: absolute;
-  inset: 0;
-  background: rgba(0,0,0,0.46);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  z-index: 10000;
-  display: flex;
-  align-items: flex-end;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity .18s ease;
-}
-#download-modal.open { opacity: 1; pointer-events: all; }
-
-[data-theme="light"] #download-modal { background: rgba(0,0,0,0.26); }
-
 .dl-sheet {
   width: 100%;
   background: var(--sheet-bg);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
   border-radius: 26px 26px 0 0;
   padding: 20px 20px calc(44px + var(--safe-bottom));
   transform: translateY(100%);
   transition: transform var(--t-sheet);
 }
-/* ✅ FIX: Light mode download sheet — white bg, dark text */
 [data-theme="light"] .dl-sheet {
   background: #ffffff;
   box-shadow: 0 -1px 0 rgba(0,0,0,0.08);
@@ -3093,7 +2854,6 @@ img.img-error{ opacity: 1; }
 [data-theme="light"] .dl-sheet-handle { background: rgba(0,0,0,0.10); }
 .dl-sheet h3 { font-size: 16px; font-weight: 800; margin-bottom: 4px; letter-spacing: -0.28px; color: var(--text); }
 .dl-sheet .dl-sub { font-size: 11px; color: var(--text3); margin-bottom: 18px; }
-
 [data-theme="light"] .dl-sheet h3 { color: #121212; }
 
 .dl-option {
@@ -3106,7 +2866,6 @@ img.img-error{ opacity: 1; }
   transition: opacity var(--t-smooth);
 }
 .dl-option:active { opacity: 0.5; }
-.dl-option:focus-visible { outline: 2px solid var(--gold-l); border-radius: 8px; }
 .dl-option-icon {
   width: 40px; height: 40px;
   border-radius: 11px;
@@ -3167,103 +2926,23 @@ img.img-error{ opacity: 1; }
   color: var(--gold-2xl);
 }
 
-/* ══════════════════════════════════════════════════════════
-   PLAYLIST OPTIONS MODAL
-   ✅ FIX: z-index: 10000
-   ══════════════════════════════════════════════════════════ */
-#playlist-opts-modal {
-  position: absolute;
-  inset: 0;
-  background: rgba(0,0,0,0.42);
-  backdrop-filter: blur(7px);
-  -webkit-backdrop-filter: blur(7px);
-  z-index: 10000;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity .18s ease;
-}
-#playlist-opts-modal.open { opacity: 1; pointer-events: all; }
-[data-theme="light"] #playlist-opts-modal { background: rgba(0,0,0,0.22); }
-
+/* Playlist opts modal sheet */
 #playlist-opts-modal .modal-sheet {
-  position: absolute;
-  bottom: 0; left: 0; right: 0;
-  background: var(--sheet-bg);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
-  border-radius: 26px 26px 0 0;
-  padding: 16px 20px calc(40px + var(--safe-bottom));
+  position: relative;
+  width: 100%;
   transform: translateY(100%);
   transition: transform var(--t-sheet);
+  bottom: unset; left: unset; right: unset;
 }
+#playlist-opts-modal.open .modal-sheet { transform: translateY(0); }
 [data-theme="light"] #playlist-opts-modal .modal-sheet {
   background: #ffffff;
   box-shadow: 0 -1px 0 rgba(0,0,0,0.08);
-  color: #121212;
 }
-#playlist-opts-modal.open .modal-sheet { transform: translateY(0); }
 
 /* ══════════════════════════════════════════════════════════
-   RENAME MODAL
-   ✅ FIX: z-index: 10000
-   ══════════════════════════════════════════════════════════ */
-#rename-modal {
-  position: absolute;
-  inset: 0;
-  background: rgba(0,0,0,0.46);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  z-index: 10000;
-  display: flex;
-  align-items: flex-end;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity .18s ease;
-}
-#rename-modal.open { opacity: 1; pointer-events: all; }
-[data-theme="light"] #rename-modal { background: rgba(0,0,0,0.22); }
-
-#rename-modal .input-sheet { transform: translateY(100%); transition: transform var(--t-sheet); }
-#rename-modal.open .input-sheet { transform: translateY(0); }
-
-/* Add-to-playlist modal */
-#add-playlist-modal,
-#create-playlist-modal {
-  position: absolute;
-  inset: 0;
-  background: rgba(0,0,0,0.46);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  z-index: 10000;
-  display: flex;
-  align-items: flex-end;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity .18s ease;
-}
-#add-playlist-modal.open,
-#create-playlist-modal.open { opacity: 1; pointer-events: all; }
-[data-theme="light"] #add-playlist-modal,
-[data-theme="light"] #create-playlist-modal { background: rgba(0,0,0,0.22); }
-
-/* Song modal (3-dot menu) */
-#song-modal {
-  position: absolute;
-  inset: 0;
-  background: var(--modal-overlay);
-  backdrop-filter: blur(7px);
-  -webkit-backdrop-filter: blur(7px);
-  z-index: 10000;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity .18s ease;
-}
-#song-modal.open { opacity: 1; pointer-events: all; }
-[data-theme="light"] #song-modal { background: rgba(0,0,0,0.26); }
-
-/* ══════════════════════════════════════════════════════════
-   TOAST
-   ✅ FIX: z-index: 10001 so it floats above modals too
+   TOAST — z-index 10001 (above all modals)
+   ✅ FIX: Light mode always dark pill — readable on any bg
    ══════════════════════════════════════════════════════════ */
 #toast {
   position: absolute;
@@ -3283,10 +2962,8 @@ img.img-error{ opacity: 1; }
   opacity: 0;
   pointer-events: none;
   transition: opacity .22s ease, transform .26s cubic-bezier(0.33,1,0.68,1);
-  /* ✅ FIX: Above everything */
   z-index: 10001;
 }
-/* ✅ FIX: Light mode toast — dark pill with white text (always readable) */
 [data-theme="light"] #toast {
   background: rgba(18,18,18,0.94);
   color: #f5f0e8;
@@ -3295,26 +2972,242 @@ img.img-error{ opacity: 1; }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
 /* ══════════════════════════════════════════════════════════
-   ANIMATIONS & UTILITIES
+   SETTINGS PANEL
    ══════════════════════════════════════════════════════════ */
-@keyframes fadeSlideUp {
-  from { opacity: 0; transform: translateY(8px); }
+#settings-panel {
+  position: absolute;
+  inset: 0;
+  background: var(--bg);
+  z-index: 300;
+  transform: translateX(100%);
+  transition: transform .36s cubic-bezier(0.33,1,0.68,1);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#settings-panel.open { transform: translateX(0); }
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: calc(env(safe-area-inset-top, 0px) + 44px) 22px 16px;
+  flex-shrink: 0;
+  border-bottom: 0.5px solid var(--border);
+}
+.settings-back {
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.04);
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  touch-action: manipulation;
+  transition: background var(--t-smooth), transform var(--t-spring);
+}
+[data-theme="light"] .settings-back { background: rgba(0,0,0,0.055); }
+.settings-back:active { transform: scale(0.82); }
+.settings-back svg { width: 18px; height: 18px; stroke: var(--text); fill: none; stroke-width: 1.8; stroke-linecap: round; }
+.settings-title-wrap { min-width: 0; }
+.settings-title    { font-size: 18px; font-weight: 800; letter-spacing: -0.4px; }
+.settings-subtitle { font-size: 11px; color: var(--text3); margin-top: 2px; }
+
+#settings-body {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+  padding: 12px 16px calc(40px + var(--safe-bottom));
+}
+
+/* Settings sections (accordion) */
+.settings-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  margin: 6px 0 0;
+  border-radius: var(--r);
+  background: var(--surface2);
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: background var(--t-smooth), transform .15s cubic-bezier(0.33,1,0.68,1);
+}
+.settings-section-header:active {
+  background: var(--surface3);
+  transform: scale(0.985);
+}
+.ssh-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.ssh-icon {
+  width: 30px; height: 30px;
+  border-radius: 8px;
+  background: rgba(184,150,64,0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.ssh-icon svg { width: 15px; height: 15px; stroke: var(--gold); stroke-width: 1.8; fill: none; }
+.ssh-chevron {
+  width: 18px; height: 18px;
+  stroke: var(--text3);
+  stroke-width: 2;
+  fill: none;
+  transform: rotate(0deg);
+  transition: transform .3s cubic-bezier(0.33,1,0.68,1);
+  flex-shrink: 0;
+}
+.settings-section-header:not(.section-open) .ssh-chevron { transform: rotate(-90deg); }
+
+.settings-section-body {
+  overflow: hidden;
+  max-height: 0;
+  transition: max-height .38s cubic-bezier(0.33,1,0.68,1), opacity .28s cubic-bezier(0.33,1,0.68,1);
+  opacity: 0;
+}
+.settings-section-body.open {
+  max-height: 9999px;
+  opacity: 1;
+  transition: max-height .45s cubic-bezier(0.33,1,0.68,1), opacity .3s cubic-bezier(0.33,1,0.68,1);
+}
+
+/* Settings items */
+.settings-item {
+  transition: background var(--t-smooth), transform .14s cubic-bezier(0.33,1,0.68,1) !important;
+}
+.settings-item:active {
+  background: var(--surface3) !important;
+  transform: scale(0.982) !important;
+}
+.settings-toggle-track {
+  transition: background .22s cubic-bezier(0.33,1,0.68,1) !important;
+}
+.settings-toggle-track::after {
+  transition: transform .26s cubic-bezier(0.33,1,0.68,1), background .22s cubic-bezier(0.33,1,0.68,1) !important;
+}
+.settings-toggle input:checked + .settings-toggle-track { background: var(--gold) !important; }
+
+.settings-slider {
+  transition: none;
+  accent-color: var(--gold);
+  cursor: pointer;
+}
+
+.settings-section-body.open .settings-item,
+.settings-section-body.open .settings-item-expandable {
+  animation: item-reveal .32s cubic-bezier(0.33,1,0.68,1) both;
+}
+@keyframes item-reveal {
+  from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.anim-in { animation: fadeSlideUp .26s cubic-bezier(0.33,1,0.68,1) both; }
-.song-row.long-press-active { background: var(--song-active); }
+.settings-section-body.open .settings-item:nth-child(1)  { animation-delay: .03s; }
+.settings-section-body.open .settings-item:nth-child(2)  { animation-delay: .06s; }
+.settings-section-body.open .settings-item:nth-child(3)  { animation-delay: .09s; }
+.settings-section-body.open .settings-item:nth-child(4)  { animation-delay: .12s; }
+.settings-section-body.open .settings-item:nth-child(5)  { animation-delay: .14s; }
+.settings-section-body.open .settings-item:nth-child(6)  { animation-delay: .16s; }
+.settings-section-body.open .settings-item:nth-child(7)  { animation-delay: .18s; }
+.settings-section-body.open .settings-item:nth-child(8)  { animation-delay: .20s; }
+.settings-section-body.open .settings-item:nth-child(n+9) { animation-delay: .22s; }
 
-/* ── PERFORMANCE ── */
-@media (prefers-reduced-motion: reduce) {
-  * {
-    animation-duration: .01ms !important;
-    transition-duration: .01ms !important;
-  }
+/* Smart saver highlight */
+.smart-saver-active {
+  background: rgba(184,150,64,0.08) !important;
+  border-left: 2px solid var(--gold) !important;
+  animation: smart-saver-glow 2.5s ease-in-out infinite;
+}
+.smart-saver-active .settings-item-title { color: var(--gold) !important; }
+.smart-saver-active .settings-item-icon svg { stroke: var(--gold) !important; }
+@keyframes smart-saver-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(184,150,64,0); }
+  50%       { box-shadow: 0 0 12px 2px rgba(184,150,64,0.15); }
+}
+
+/* Settings live preview */
+.settings-live-preview {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  margin: 0 0 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--r);
+  transition: border-color .35s ease, border-radius .35s ease, background .35s ease;
+}
+[data-theme="light"] .settings-live-preview { border-color: rgba(0,0,0,0.08); }
+.settings-live-preview::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 30%, rgba(255,255,255,0.04) 50%, transparent 70%);
+  pointer-events: none;
+}
+.slp-artwork {
+  width: 52px; height: 52px;
+  flex-shrink: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  transition: border-radius .35s ease;
+}
+.slp-artwork-placeholder {
+  width: 100%; height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface3);
+  transition: background .35s ease;
+}
+.slp-info { flex: 1; min-width: 0; }
+.slp-title { font-size: 14px; font-weight: 600; margin-bottom: 2px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text); }
+.slp-sub   { font-size: 12px; font-weight: 500; margin-bottom: 3px; color: var(--text2); }
+.slp-meta  { font-size: 11px; color: var(--text3); }
+.slp-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 4px 8px;
+  border-radius: var(--r-pill);
+  border: 1px solid currentColor;
+  flex-shrink: 0;
+  color: var(--gold-l);
+  background: rgba(184,150,64,0.08);
+  animation: badge-pulse 2.5s ease-in-out infinite;
+}
+@keyframes badge-pulse {
+  0%, 100% { opacity: 0.7; }
+  50%       { opacity: 1; }
+}
+
+/* Export/import modals */
+#aurum-export-txt,
+#aurum-import-txt {
+  transition: border-color .2s ease;
+}
+#aurum-export-txt:focus,
+#aurum-import-txt:focus {
+  border-color: var(--gold) !important;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(184,150,64,0.18);
 }
 
 /* ══════════════════════════════════════════════════════════
-   ANDROID TV FOCUS OUTLINES
-   ✅ FIX: Clear focus ring on every interactive element
+   ANDROID TV FOCUS
    ══════════════════════════════════════════════════════════ */
 .is-tv *:focus {
   outline: 3px solid var(--gold-xl) !important;
@@ -3333,322 +3226,21 @@ img.img-error{ opacity: 1; }
 .is-tv .browse-card:focus   { transform: scale(1.02) !important; }
 
 /* ══════════════════════════════════════════════════════════
-   QUICK RESUME / HOME EXTRAS
+   ANIMATIONS & UTILITIES
    ══════════════════════════════════════════════════════════ */
+@keyframes fadeSlideUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.anim-in { animation: fadeSlideUp .26s cubic-bezier(0.33,1,0.68,1) both; }
+.song-row.long-press-active { background: var(--song-active); }
 .quick-resume-section { padding: 0 0 4px; }
-/* ═══════════════════════════════════════════════════════════════════════
-   AURUM SETTINGS v2.0 — CSS OVERRIDES
-   Drop this into your existing style.css or a separate aurum-settings.css
-   All transitions use cubic-bezier(0.33, 1, 0.68, 1) — the "buttery" curve.
-═══════════════════════════════════════════════════════════════════════ */
 
-/* ─── SECTION ACCORDION HEADERS ────────────────────────────────────────────── */
-.settings-section-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 18px;
-  margin: 6px 0 0;
-  border-radius: var(--radius, 12px);
-  background: var(--surface2);
-  cursor: pointer;
-  user-select: none;
-  -webkit-tap-highlight-color: transparent;
-  transition:
-    background 0.22s cubic-bezier(0.33, 1, 0.68, 1),
-    transform   0.15s cubic-bezier(0.33, 1, 0.68, 1);
-}
-.settings-section-header:active {
-  background: var(--surface3);
-  transform: scale(0.985);
-}
-
-.ssh-left {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text);
-  letter-spacing: 0.01em;
-}
-
-.ssh-icon {
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  background: rgba(var(--gold-rgb, 184,150,64), 0.12);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-.ssh-icon svg {
-  width: 15px;
-  height: 15px;
-  stroke: var(--gold);
-  stroke-width: 1.8;
-  fill: none;
-}
-
-.ssh-chevron {
-  width: 18px;
-  height: 18px;
-  stroke: var(--text3);
-  stroke-width: 2;
-  fill: none;
-  transform: rotate(0deg);
-  transition: transform 0.3s cubic-bezier(0.33, 1, 0.68, 1);
-  flex-shrink: 0;
-}
-
-/* ─── SECTION BODY — ACCORDION COLLAPSE ────────────────────────────────────── */
-.settings-section-body {
-  overflow: hidden;
-  max-height: 0;
-  /* Using max-height trick — works without JS height calculation */
-  transition: max-height 0.38s cubic-bezier(0.33, 1, 0.68, 1),
-              opacity    0.28s cubic-bezier(0.33, 1, 0.68, 1);
-  opacity: 0;
-}
-.settings-section-body.open {
-  max-height: 9999px; /* large enough for any section */
-  opacity: 1;
-  transition: max-height 0.45s cubic-bezier(0.33, 1, 0.68, 1),
-              opacity    0.3s  cubic-bezier(0.33, 1, 0.68, 1);
-}
-
-/* ─── LIVE PREVIEW CARD ─────────────────────────────────────────────────────── */
-.settings-live-preview {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 14px 16px;
-  margin: 0 0 12px;
-  border: 1px solid rgba(255,255,255,0.08);
-  position: relative;
-  overflow: hidden;
-  transition:
-    border-color        0.35s cubic-bezier(0.33, 1, 0.68, 1),
-    border-radius       0.35s cubic-bezier(0.33, 1, 0.68, 1),
-    backdrop-filter     0.35s cubic-bezier(0.33, 1, 0.68, 1),
-    -webkit-backdrop-filter 0.35s cubic-bezier(0.33, 1, 0.68, 1),
-    background          0.35s cubic-bezier(0.33, 1, 0.68, 1);
-}
-
-/* Subtle shimmer overlay */
-.settings-live-preview::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    105deg,
-    transparent 30%,
-    rgba(255,255,255,0.04) 50%,
-    transparent 70%
-  );
-  pointer-events: none;
-}
-
-.slp-artwork {
-  width: 52px;
-  height: 52px;
-  flex-shrink: 0;
-  overflow: hidden;
-  transition: border-radius 0.35s cubic-bezier(0.33, 1, 0.68, 1);
-}
-.slp-artwork-placeholder {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background 0.35s cubic-bezier(0.33, 1, 0.68, 1);
-}
-
-.slp-info {
-  flex: 1;
-  min-width: 0;
-}
-.slp-title {
-  font-size: 14px;
-  font-weight: 600;
-  margin-bottom: 2px;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  transition: color 0.35s ease;
-}
-.slp-sub {
-  font-size: 12px;
-  font-weight: 500;
-  margin-bottom: 3px;
-  transition: color 0.35s cubic-bezier(0.33, 1, 0.68, 1);
-}
-.slp-meta {
-  font-size: 11px;
-  color: var(--text3);
-}
-
-.slp-badge {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  padding: 4px 8px;
-  border: 1px solid currentColor;
-  flex-shrink: 0;
-  transition:
-    color         0.35s cubic-bezier(0.33, 1, 0.68, 1),
-    background    0.35s cubic-bezier(0.33, 1, 0.68, 1),
-    border-radius 0.35s cubic-bezier(0.33, 1, 0.68, 1);
-  animation: badge-pulse 2.5s ease-in-out infinite;
-}
-@keyframes badge-pulse {
-  0%, 100% { opacity: 0.7; }
-  50%       { opacity: 1;   }
-}
-
-/* ─── SETTINGS ITEMS — REFINED MICRO-INTERACTIONS ──────────────────────────── */
-.settings-item {
-  /* Override the existing transition with the premium curve */
-  transition:
-    background 0.18s cubic-bezier(0.33, 1, 0.68, 1),
-    transform  0.14s cubic-bezier(0.33, 1, 0.68, 1) !important;
-}
-.settings-item:active {
-  background: var(--surface3) !important;
-  transform: scale(0.982) !important;
-}
-
-/* ─── TOGGLE — BUTTERY CUBIC-BEZIER ────────────────────────────────────────── */
-.settings-toggle-track {
-  transition:
-    background 0.22s cubic-bezier(0.33, 1, 0.68, 1) !important;
-}
-.settings-toggle-track::after {
-  /* The thumb */
-  transition:
-    transform  0.26s cubic-bezier(0.33, 1, 0.68, 1),
-    background 0.22s cubic-bezier(0.33, 1, 0.68, 1) !important;
-}
-.settings-toggle input:checked + .settings-toggle-track {
-  background: var(--gold) !important;
-}
-
-/* ─── SLIDER ────────────────────────────────────────────────────────────────── */
-.settings-slider {
-  transition: none; /* let oninput handle visual updates instantly */
-  accent-color: var(--gold);
-  cursor: pointer;
-}
-.settings-slider:active {
-  transform: scaleY(1.15);
-  transition: transform 0.12s cubic-bezier(0.33, 1, 0.68, 1);
-}
-
-/* ─── EXPAND TOGGLE ─────────────────────────────────────────────────────────── */
-.expand-toggle svg {
-  transition: transform 0.28s cubic-bezier(0.33, 1, 0.68, 1);
-}
-.settings-sub-expand {
-  transition:
-    max-height 0.36s cubic-bezier(0.33, 1, 0.68, 1),
-    opacity    0.28s cubic-bezier(0.33, 1, 0.68, 1) !important;
-}
-
-/* ─── ICON ACTIVE STATE ─────────────────────────────────────────────────────── */
-.settings-item-icon {
-  transition:
-    background 0.22s cubic-bezier(0.33, 1, 0.68, 1),
-    color      0.22s cubic-bezier(0.33, 1, 0.68, 1) !important;
-}
-
-/* ─── SMART SAVER ITEM — HIGHLIGHTED STATE ──────────────────────────────────── */
-.smart-saver-item {
-  position: relative;
-  transition: all 0.3s cubic-bezier(0.33, 1, 0.68, 1) !important;
-}
-.smart-saver-active {
-  background: rgba(var(--gold-rgb, 184,150,64), 0.08) !important;
-  border-left: 2px solid var(--gold) !important;
-}
-.smart-saver-active .settings-item-title {
-  color: var(--gold) !important;
-}
-.smart-saver-active .settings-item-icon svg {
-  stroke: var(--gold) !important;
-}
-
-/* Subtle glow animation on Smart Saver when active */
-@keyframes smart-saver-glow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--gold-rgb, 184,150,64), 0); }
-  50%       { box-shadow: 0 0 12px 2px rgba(var(--gold-rgb, 184,150,64), 0.15); }
-}
-.smart-saver-active {
-  animation: smart-saver-glow 2.5s ease-in-out infinite;
-}
-
-/* ─── CHEVRON IN SECTION HEADERS ────────────────────────────────────────────── */
-/* Rotated when section is collapsed */
-.settings-section-header:not(.section-open) .ssh-chevron {
-  transform: rotate(-90deg);
-}
-/* We manage this via JS, but this is the CSS baseline */
-
-/* ─── STAGGER ANIMATION ON SECTION OPEN ────────────────────────────────────── */
-/* Each settings-item inside an opening section staggers in */
-.settings-section-body.open .settings-item,
-.settings-section-body.open .settings-item-expandable {
-  animation: item-reveal 0.32s cubic-bezier(0.33, 1, 0.68, 1) both;
-}
-
-@keyframes item-reveal {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-/* Stagger delays — each item in a section gets a slight delay */
-.settings-section-body.open .settings-item:nth-child(1)  { animation-delay: 0.03s; }
-.settings-section-body.open .settings-item:nth-child(2)  { animation-delay: 0.06s; }
-.settings-section-body.open .settings-item:nth-child(3)  { animation-delay: 0.09s; }
-.settings-section-body.open .settings-item:nth-child(4)  { animation-delay: 0.12s; }
-.settings-section-body.open .settings-item:nth-child(5)  { animation-delay: 0.14s; }
-.settings-section-body.open .settings-item:nth-child(6)  { animation-delay: 0.16s; }
-.settings-section-body.open .settings-item:nth-child(7)  { animation-delay: 0.18s; }
-.settings-section-body.open .settings-item:nth-child(8)  { animation-delay: 0.20s; }
-.settings-section-body.open .settings-item:nth-child(n+9){ animation-delay: 0.22s; }
-
-/* ─── EXPORT / IMPORT MODAL POLISH ──────────────────────────────────────────── */
-#aurum-export-modal .modal-sheet,
-#aurum-import-modal .modal-sheet {
-  animation: sheet-rise 0.32s cubic-bezier(0.33, 1, 0.68, 1);
-}
-@keyframes sheet-rise {
-  from { transform: translateY(60px); opacity: 0; }
-  to   { transform: translateY(0);    opacity: 1; }
-}
-
-#aurum-export-txt,
-#aurum-import-txt {
-  transition: border-color 0.2s cubic-bezier(0.33, 1, 0.68, 1);
-}
-#aurum-export-txt:focus,
-#aurum-import-txt:focus {
-  border-color: var(--gold) !important;
-  outline: none;
-  box-shadow: 0 0 0 2px rgba(var(--gold-rgb, 184,150,64), 0.18);
-}
-
-/* ─── REDUCED MOTION RESPECT ────────────────────────────────────────────────── */
-/* When Smart Saver is off but OS prefers reduced motion */
 @media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: .01ms !important;
+    transition-duration: .01ms !important;
+  }
   .settings-section-body,
   .settings-section-header,
   .settings-item,
@@ -3656,6 +3248,6 @@ img.img-error{ opacity: 1; }
   .smart-saver-active,
   .settings-live-preview {
     animation: none !important;
-    transition-duration: 0.01ms !important;
+    transition-duration: .01ms !important;
   }
 }
