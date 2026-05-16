@@ -263,8 +263,70 @@
 }
 
 /* ══════════════════════════════════════════════════════════
-   RESET
+   UNIVERSAL BROWSER + PWA COMPATIBILITY LAYER
+   ──────────────────────────────────────────────────────────
+   Tested targets:
+   ✅ Chrome Android (WebView in PWABuilder app)
+   ✅ Samsung Internet (WebView variant)  
+   ✅ Brave Android (Chromium + shields)
+   ✅ Firefox Android (Gecko)
+   ✅ Safari iOS (WebKit — via PWA homescreen install)
+   ✅ Edge Android (Chromium)
+
+   NOTES:
+   • PWABuilder wraps in a WebView — same as Chrome Android.
+     The key difference: no URL bar, so 100vh = full screen.
+     --vh JS sync (setVh) still needed for iOS Safari PWA.
+   • @property not supported in Firefox < 128. Fallback via
+     JS inline style (which we already use in swipe handler).
+   • env(safe-area-inset-*) requires
+     <meta name="viewport" content="viewport-fit=cover">
+   • backdrop-filter needs -webkit- prefix for all WebKit/Blink.
    ══════════════════════════════════════════════════════════ */
+
+/* Firefox @property fallback — FF ignores @property but still
+   reads the CSS var; the initial-value just won't animate.
+   JS swipe handler drives transform directly, so it's fine. */
+:root {
+  --fp-y: 900px; /* non-Firefox: overridden by @property initial-value */
+}
+
+/* PWABuilder / standalone display-mode — hide browser chrome artifacts */
+@media (display-mode: standalone) {
+  /* In standalone PWA, 100vh = full screen including notch area.
+     We rely on --vh from JS setVh() which already handles this.
+     This rule is a belt-and-suspenders for devices where setVh
+     hasn't fired yet on first paint. */
+  html, body, #app {
+    height: 100%;
+    min-height: -webkit-fill-available; /* iOS Safari PWA fix */
+  }
+}
+
+/* iOS Safari PWA — status bar overlap fix */
+@supports (padding-top: env(safe-area-inset-top)) {
+  #app {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+  /* Compensate so content doesn't shift */
+  .ph-topbar {
+    padding-top: 12px; /* env() already applied via padding-top on #app */
+  }
+}
+
+/* Samsung Internet — backdrop-filter sometimes needs an explicit
+   stacking context trigger to render correctly */
+@supports (-webkit-backdrop-filter: blur(1px)) {
+  #mini-player,
+  #nav,
+  .fp-close,
+  .fp-more,
+  .ph-icon-btn {
+    -webkit-backdrop-filter: var(--webkit-bf, blur(16px));
+  }
+}
+
+
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
@@ -488,12 +550,15 @@ img.img-error{ opacity: 1; }
   transition: opacity .20s ease, transform var(--t-spring);
   z-index: 1;
   overscroll-behavior-y: contain;
-  /* ✅ FIX: pan-y so vertical scroll works */
   touch-action: pan-y;
   isolation: isolate;
-  /* ✅ PERF: Promotes scroll container to compositor thread.
-     scroll-position (not transform) — avoids extra paint layer bloat */
+  /* Fallback for Firefox < 121 */
+  contain: layout style paint;
   will-change: scroll-position;
+}
+/* Upgrade to strict where supported (Chrome, Edge, Safari, Brave, FF 121+) */
+@supports (contain: strict) {
+  .page { contain: strict; }
 }
 .page.active {
   opacity: 1;
@@ -3199,77 +3264,4 @@ img.img-error{ opacity: 1; }
 [data-theme="light"] #playlist-opts-modal .modal-sheet {
   background: #ffffff;
   box-shadow: 0 -1px 0 rgba(0,0,0,0.08);
-  color: #121212;
-}
-#playlist-opts-modal.open .modal-sheet { transform: translateY(0); }
-
-/* ══════════════════════════════════════════════════════════
-   RENAME MODAL
-   ✅ FIX: z-index: 10000
-   ══════════════════════════════════════════════════════════ */
-#rename-modal {
-  position: absolute;
-  inset: 0;
-  background: rgba(0,0,0,0.46);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  z-index: 10000;
-  display: flex;
-  align-items: flex-end;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity .18s ease;
-}
-#rename-modal.open { opacity: 1; pointer-events: all; }
-[data-theme="light"] #rename-modal { background: rgba(0,0,0,0.22); }
-
-#rename-modal .input-sheet { transform: translateY(100%); transition: transform var(--t-sheet); }
-#rename-modal.open .input-sheet { transform: translateY(0); }
-
-/* Add-to-playlist modal */
-#add-playlist-modal,
-#create-playlist-modal {
-  position: absolute;
-  inset: 0;
-  background: rgba(0,0,0,0.46);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  z-index: 10000;
-  display: flex;
-  align-items: flex-end;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity .18s ease;
-}
-#add-playlist-modal.open,
-#create-playlist-modal.open { opacity: 1; pointer-events: all; }
-[data-theme="light"] #add-playlist-modal,
-[data-theme="light"] #create-playlist-modal { background: rgba(0,0,0,0.22); }
-
-/* Song modal (3-dot menu) */
-#song-modal {
-  position: absolute;
-  inset: 0;
-  background: var(--modal-overlay);
-  backdrop-filter: blur(7px);
-  -webkit-backdrop-filter: blur(7px);
-  z-index: 10000;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity .18s ease;
-}
-#song-modal.open { opacity: 1; pointer-events: all; }
-[data-theme="light"] #song-modal { background: rgba(0,0,0,0.26); }
-
-/* ══════════════════════════════════════════════════════════
-   TOAST
-   ✅ FIX: z-index: 10001 so it floats above modals too
-   ══════════════════════════════════════════════════════════ */
-#toast {
-  position: absolute;
-  bottom: calc(var(--nav) + var(--safe-bottom) + 88px);
-  left: 50%;
-  transform: translateX(-50%) translateY(16px);
-  background: rgba(18,18,24,0.96);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter
+  color: #121212
