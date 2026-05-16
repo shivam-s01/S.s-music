@@ -3155,3 +3155,326 @@ img.img-error{ opacity: 1; }
    QUICK RESUME / HOME EXTRAS
    ══════════════════════════════════════════════════════════ */
 .quick-resume-section { padding: 0 0 4px; }
+/* ═══════════════════════════════════════════════════════════════════════
+   AURUM SETTINGS v2.0 — CSS OVERRIDES
+   Drop this into your existing style.css or a separate aurum-settings.css
+   All transitions use cubic-bezier(0.33, 1, 0.68, 1) — the "buttery" curve.
+═══════════════════════════════════════════════════════════════════════ */
+
+/* ─── SECTION ACCORDION HEADERS ────────────────────────────────────────────── */
+.settings-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  margin: 6px 0 0;
+  border-radius: var(--radius, 12px);
+  background: var(--surface2);
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background 0.22s cubic-bezier(0.33, 1, 0.68, 1),
+    transform   0.15s cubic-bezier(0.33, 1, 0.68, 1);
+}
+.settings-section-header:active {
+  background: var(--surface3);
+  transform: scale(0.985);
+}
+
+.ssh-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.01em;
+}
+
+.ssh-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: rgba(var(--gold-rgb, 184,150,64), 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.ssh-icon svg {
+  width: 15px;
+  height: 15px;
+  stroke: var(--gold);
+  stroke-width: 1.8;
+  fill: none;
+}
+
+.ssh-chevron {
+  width: 18px;
+  height: 18px;
+  stroke: var(--text3);
+  stroke-width: 2;
+  fill: none;
+  transform: rotate(0deg);
+  transition: transform 0.3s cubic-bezier(0.33, 1, 0.68, 1);
+  flex-shrink: 0;
+}
+
+/* ─── SECTION BODY — ACCORDION COLLAPSE ────────────────────────────────────── */
+.settings-section-body {
+  overflow: hidden;
+  max-height: 0;
+  /* Using max-height trick — works without JS height calculation */
+  transition: max-height 0.38s cubic-bezier(0.33, 1, 0.68, 1),
+              opacity    0.28s cubic-bezier(0.33, 1, 0.68, 1);
+  opacity: 0;
+}
+.settings-section-body.open {
+  max-height: 9999px; /* large enough for any section */
+  opacity: 1;
+  transition: max-height 0.45s cubic-bezier(0.33, 1, 0.68, 1),
+              opacity    0.3s  cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+/* ─── LIVE PREVIEW CARD ─────────────────────────────────────────────────────── */
+.settings-live-preview {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  margin: 0 0 12px;
+  border: 1px solid rgba(255,255,255,0.08);
+  position: relative;
+  overflow: hidden;
+  transition:
+    border-color        0.35s cubic-bezier(0.33, 1, 0.68, 1),
+    border-radius       0.35s cubic-bezier(0.33, 1, 0.68, 1),
+    backdrop-filter     0.35s cubic-bezier(0.33, 1, 0.68, 1),
+    -webkit-backdrop-filter 0.35s cubic-bezier(0.33, 1, 0.68, 1),
+    background          0.35s cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+/* Subtle shimmer overlay */
+.settings-live-preview::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 30%,
+    rgba(255,255,255,0.04) 50%,
+    transparent 70%
+  );
+  pointer-events: none;
+}
+
+.slp-artwork {
+  width: 52px;
+  height: 52px;
+  flex-shrink: 0;
+  overflow: hidden;
+  transition: border-radius 0.35s cubic-bezier(0.33, 1, 0.68, 1);
+}
+.slp-artwork-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.35s cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+.slp-info {
+  flex: 1;
+  min-width: 0;
+}
+.slp-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 2px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  transition: color 0.35s ease;
+}
+.slp-sub {
+  font-size: 12px;
+  font-weight: 500;
+  margin-bottom: 3px;
+  transition: color 0.35s cubic-bezier(0.33, 1, 0.68, 1);
+}
+.slp-meta {
+  font-size: 11px;
+  color: var(--text3);
+}
+
+.slp-badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 4px 8px;
+  border: 1px solid currentColor;
+  flex-shrink: 0;
+  transition:
+    color         0.35s cubic-bezier(0.33, 1, 0.68, 1),
+    background    0.35s cubic-bezier(0.33, 1, 0.68, 1),
+    border-radius 0.35s cubic-bezier(0.33, 1, 0.68, 1);
+  animation: badge-pulse 2.5s ease-in-out infinite;
+}
+@keyframes badge-pulse {
+  0%, 100% { opacity: 0.7; }
+  50%       { opacity: 1;   }
+}
+
+/* ─── SETTINGS ITEMS — REFINED MICRO-INTERACTIONS ──────────────────────────── */
+.settings-item {
+  /* Override the existing transition with the premium curve */
+  transition:
+    background 0.18s cubic-bezier(0.33, 1, 0.68, 1),
+    transform  0.14s cubic-bezier(0.33, 1, 0.68, 1) !important;
+}
+.settings-item:active {
+  background: var(--surface3) !important;
+  transform: scale(0.982) !important;
+}
+
+/* ─── TOGGLE — BUTTERY CUBIC-BEZIER ────────────────────────────────────────── */
+.settings-toggle-track {
+  transition:
+    background 0.22s cubic-bezier(0.33, 1, 0.68, 1) !important;
+}
+.settings-toggle-track::after {
+  /* The thumb */
+  transition:
+    transform  0.26s cubic-bezier(0.33, 1, 0.68, 1),
+    background 0.22s cubic-bezier(0.33, 1, 0.68, 1) !important;
+}
+.settings-toggle input:checked + .settings-toggle-track {
+  background: var(--gold) !important;
+}
+
+/* ─── SLIDER ────────────────────────────────────────────────────────────────── */
+.settings-slider {
+  transition: none; /* let oninput handle visual updates instantly */
+  accent-color: var(--gold);
+  cursor: pointer;
+}
+.settings-slider:active {
+  transform: scaleY(1.15);
+  transition: transform 0.12s cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+/* ─── EXPAND TOGGLE ─────────────────────────────────────────────────────────── */
+.expand-toggle svg {
+  transition: transform 0.28s cubic-bezier(0.33, 1, 0.68, 1);
+}
+.settings-sub-expand {
+  transition:
+    max-height 0.36s cubic-bezier(0.33, 1, 0.68, 1),
+    opacity    0.28s cubic-bezier(0.33, 1, 0.68, 1) !important;
+}
+
+/* ─── ICON ACTIVE STATE ─────────────────────────────────────────────────────── */
+.settings-item-icon {
+  transition:
+    background 0.22s cubic-bezier(0.33, 1, 0.68, 1),
+    color      0.22s cubic-bezier(0.33, 1, 0.68, 1) !important;
+}
+
+/* ─── SMART SAVER ITEM — HIGHLIGHTED STATE ──────────────────────────────────── */
+.smart-saver-item {
+  position: relative;
+  transition: all 0.3s cubic-bezier(0.33, 1, 0.68, 1) !important;
+}
+.smart-saver-active {
+  background: rgba(var(--gold-rgb, 184,150,64), 0.08) !important;
+  border-left: 2px solid var(--gold) !important;
+}
+.smart-saver-active .settings-item-title {
+  color: var(--gold) !important;
+}
+.smart-saver-active .settings-item-icon svg {
+  stroke: var(--gold) !important;
+}
+
+/* Subtle glow animation on Smart Saver when active */
+@keyframes smart-saver-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--gold-rgb, 184,150,64), 0); }
+  50%       { box-shadow: 0 0 12px 2px rgba(var(--gold-rgb, 184,150,64), 0.15); }
+}
+.smart-saver-active {
+  animation: smart-saver-glow 2.5s ease-in-out infinite;
+}
+
+/* ─── CHEVRON IN SECTION HEADERS ────────────────────────────────────────────── */
+/* Rotated when section is collapsed */
+.settings-section-header:not(.section-open) .ssh-chevron {
+  transform: rotate(-90deg);
+}
+/* We manage this via JS, but this is the CSS baseline */
+
+/* ─── STAGGER ANIMATION ON SECTION OPEN ────────────────────────────────────── */
+/* Each settings-item inside an opening section staggers in */
+.settings-section-body.open .settings-item,
+.settings-section-body.open .settings-item-expandable {
+  animation: item-reveal 0.32s cubic-bezier(0.33, 1, 0.68, 1) both;
+}
+
+@keyframes item-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Stagger delays — each item in a section gets a slight delay */
+.settings-section-body.open .settings-item:nth-child(1)  { animation-delay: 0.03s; }
+.settings-section-body.open .settings-item:nth-child(2)  { animation-delay: 0.06s; }
+.settings-section-body.open .settings-item:nth-child(3)  { animation-delay: 0.09s; }
+.settings-section-body.open .settings-item:nth-child(4)  { animation-delay: 0.12s; }
+.settings-section-body.open .settings-item:nth-child(5)  { animation-delay: 0.14s; }
+.settings-section-body.open .settings-item:nth-child(6)  { animation-delay: 0.16s; }
+.settings-section-body.open .settings-item:nth-child(7)  { animation-delay: 0.18s; }
+.settings-section-body.open .settings-item:nth-child(8)  { animation-delay: 0.20s; }
+.settings-section-body.open .settings-item:nth-child(n+9){ animation-delay: 0.22s; }
+
+/* ─── EXPORT / IMPORT MODAL POLISH ──────────────────────────────────────────── */
+#aurum-export-modal .modal-sheet,
+#aurum-import-modal .modal-sheet {
+  animation: sheet-rise 0.32s cubic-bezier(0.33, 1, 0.68, 1);
+}
+@keyframes sheet-rise {
+  from { transform: translateY(60px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+#aurum-export-txt,
+#aurum-import-txt {
+  transition: border-color 0.2s cubic-bezier(0.33, 1, 0.68, 1);
+}
+#aurum-export-txt:focus,
+#aurum-import-txt:focus {
+  border-color: var(--gold) !important;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(var(--gold-rgb, 184,150,64), 0.18);
+}
+
+/* ─── REDUCED MOTION RESPECT ────────────────────────────────────────────────── */
+/* When Smart Saver is off but OS prefers reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .settings-section-body,
+  .settings-section-header,
+  .settings-item,
+  .slp-badge,
+  .smart-saver-active,
+  .settings-live-preview {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
+}
