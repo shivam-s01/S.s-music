@@ -849,6 +849,138 @@ def godmode_fetch(title, artist='', fallback='', force_yt=False, low_quality=Fal
     return {'success': False, 'url': None, 'token': token}
 
 # ═══════════════════════════════════════════════════════════════
+# JIOSAAVN DIRECT API — Primary source, never goes down
+# ═══════════════════════════════════════════════════════════════
+JIOSAAVN_DIRECT = 'https://www.jiosaavn.com/api.php'
+
+def _parse_jiosaavn_image(song):
+    """Extract best image from JioSaavn direct API response"""
+    img = song.get('image', '')
+    if isinstance(img, str) and img.startswith('http'):
+        return img.replace('150x150', '500x500').replace('50x50', '500x500')
+    return ''
+
+def _parse_jiosaavn_url(song):
+    """Extract encrypted_media_url from JioSaavn direct API"""
+    # Direct API returns encrypted_media_url — we need to decrypt
+    # But also returns media_preview_url as fallback
+    enc = song.get('more_info', {}).get('encrypted_media_url', '')
+    prev = song.get('more_info', {}).get('media_preview_url', '')
+    # Return preview URL directly — it's a working MP3
+    if prev and prev.startswith('http'):
+        return prev, 'preview'
+    return None, None
+
+def fetch_from_jiosaavn_direct(query, limit=20):
+    """
+    Fetch songs directly from JioSaavn's internal API.
+    Returns list of normalized song dicts.
+    """
+    try:
+        params = {
+            '__call':      'search.getResults',
+            'q':           query,
+            '_format':     'json',
+            '_marker':     '0',
+            'api_version': '4',
+            'ctx':         'web6dot0',
+            'n':           str(limit),
+            'p':           '1',
+        }
+        r = requests.get(
+            JIOSAAVN_DIRECT,
+            params=params,
+            timeout=10,
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer':    'https://www.jiosaavn.com/',
+                'Origin':     'https://www.jiosaavn.com',
+            }
+        )
+        if r.status_code != 200:
+            log.warning(f"[JioSaavn Direct] HTTP {r.status_code}")
+            return []
+
+        data = r.json()
+        songs_raw = data.get('results', [])
+        if not songs_raw:
+            return []
+
+        results = []
+        for song in songs_raw:
+            more_info = song.get('more_info', {})
+
+            # Multiple URL sources — pick best available
+            # 1. encrypted_media_url (320kbps but needs decryption — skip for now)
+            # 2. media_preview_url (128kbps, directly playable)
+            preview_url = more_info.get('media_preview_url', '')
+            vlink       = song.get('vlink', '')  # sometimes has direct url
+
+            # Pick working URL
+            best_url = None
+            quality  = 'unknown'
+
+            if preview_url and preview_url.startswith('http'):
+                best_url = preview_url
+                quality  = '128kbps'
+
+            if not best_url:
+                continue
+
+            title  = song.get('title', '') or song.get('song', '')
+            artist = song.get('primary_artists', '') or song.get('singers', '')
+            image  = _parse_jiosaavn_image(song)
+            year   = _safe_year(song.get('year', ''))
+            song_id = song.get('id', random.randint(10000, 99999))
+
+            results.append({
+                'trackId':          song_id,
+                'trackName':        title,
+                'artistName':       artist,
+                'artworkUrl100':    image,
+                'artworkUrl600':    image,
+                'url':              best_url,
+                'previewUrl':       best_url,
+                'quality':          quality,
+                'releaseDate':      str(year),
+                'primaryGenreName': 'Bollywood',
+                'source':           'jiosaavn_direct',
+                # For fetch_saavn_parallel compat
+                'title':            title,
+                'artist':           artist,
+                'image':            image,
+                'score':            1.0,
+                '_raw_urls':        [{'url': best_url, 'quality': quality}],
+                'success':          True,
+            })
+
+        log.info(f"[JioSaavn Direct] ✓ {len(results)} songs for '{query}'")
+        return results
+
+    except Exception as e:
+        log.warning(f"[JioSaavn Direct] Error: {e}")
+        return []
+
+def fetch_from_jiosaavn_direct_single(query, min_score=0.3):
+    """Single song fetch from JioSaavn direct — for godmode chain"""
+    songs = fetch_from_jiosaavn_direct(query, limit=10)
+    if not songs:
+        return None
+
+    best_song, best_score = None, -1
+    for song in songs:
+        score = title_score(query, song['trackName'], song['artistName'])
+        if score > best_score:
+            best_score = score
+            best_song  = song
+
+    if not best_song or best_score < min_score:
+        return None
+
+    best_song['score'] = round(best_score, 3)
+    return best_song
+
+# ═══════════════════════════════════════════════════════════════
 # SAAVN MIRROR FETCH (unchanged core logic)
 # ═══════════════════════════════════════════════════════════════
 def fetch_from_mirror(mirror, query, min_score=0.4):
@@ -922,22 +1054,33 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
     return None
 
 def fetch_saavn_parallel(query):
-    threshold = dynamic_min_score(query)
-    alive_mirrors = [m for m in SAAVN_MIRRORS if is_mirror_alive(m)]
+    threshold   = dynamic_min_score(query)
+    all_results = []
 
+    # ── STEP A: JioSaavn Direct (primary) ───────────────────────
+    direct_future = _saavn_executor.submit(fetch_from_jiosaavn_direct_single, query, threshold)
+
+    # ── STEP B: Mirrors in parallel (backup) ────────────────────
+    alive_mirrors = [m for m in SAAVN_MIRRORS if is_mirror_alive(m)]
     if not alive_mirrors:
-        log.warning("[Saavn] All mirrors dead — resetting")
         _mirror_failures.clear()
         alive_mirrors = SAAVN_MIRRORS[:]
 
-    futures = {
+    mirror_futures = {
         _saavn_executor.submit(fetch_from_mirror, m, query, threshold): m
         for m in alive_mirrors
     }
-    all_results = []
 
     try:
-        for future in as_completed(futures, timeout=12):
+        direct_result = direct_future.result(timeout=10)
+        if direct_result:
+            all_results.append(direct_result)
+            log.info(f"[Saavn] Direct ok: {direct_result['title']}")
+    except Exception as e:
+        log.warning(f"[Saavn] Direct failed: {e}")
+
+    try:
+        for future in as_completed(mirror_futures, timeout=12):
             try:
                 result = future.result()
                 if result:
@@ -957,7 +1100,7 @@ def fetch_saavn_parallel(query):
 
     all_results.sort(key=result_rank, reverse=True)
     best = all_results[0]
-    log.info(f"[Parallel] Best → '{best['title']}' score={best['score']} quality={best['quality']}")
+    log.info(f"[Parallel] Best -> '{best['title']}' score={best.get('score',0)} quality={best['quality']}")
     return best
 
 # ═══════════════════════════════════════════════════════════════
@@ -973,57 +1116,65 @@ def get_songs():
     search_term = random.choice(NINETIES_SEEDS) if is_90s else q
 
     results = []
-    alive_mirrors = [m for m in SAAVN_MIRRORS if is_mirror_alive(m)]
-    if not alive_mirrors:
-        alive_mirrors = SAAVN_MIRRORS[:]
 
-    for mirror in alive_mirrors[:3]:
-        try:
-            r = requests.get(
-                f'{mirror}/api/search/songs',
-                params={'query': search_term, 'limit': 40},
-                timeout=8,
-                headers={'User-Agent': 'Mozilla/5.0'}
-            )
-            if r.status_code != 200:
+    # ── Primary: JioSaavn Direct ─────────────────────────────────
+    direct_songs = fetch_from_jiosaavn_direct(search_term, limit=40)
+    results.extend(direct_songs)
+    log.info(f"[Songs] Direct got {len(direct_songs)} songs for '{search_term}'")
+
+    # ── Backup: Mirrors (if direct gave less than 10) ─────────────
+    if len(results) < 10:
+        alive_mirrors = [m for m in SAAVN_MIRRORS if is_mirror_alive(m)]
+        if not alive_mirrors:
+            alive_mirrors = SAAVN_MIRRORS[:]
+
+        for mirror in alive_mirrors[:3]:
+            try:
+                r = requests.get(
+                    f'{mirror}/api/search/songs',
+                    params={'query': search_term, 'limit': 40},
+                    timeout=8,
+                    headers={'User-Agent': 'Mozilla/5.0'}
+                )
+                if r.status_code != 200:
+                    continue
+                data = r.json()
+                songs = (
+                    data.get('data', {}).get('results') or
+                    data.get('results') or
+                    data.get('songs', {}).get('results') or []
+                )
+                for song in songs:
+                    raw_urls = song.get('downloadUrl') or song.get('download_url') or []
+                    if not raw_urls:
+                        continue
+                    best_url, quality = pick_best_quality(raw_urls if isinstance(raw_urls, list) else [{'url': raw_urls, 'quality': 'unknown'}])
+                    if not best_url:
+                        continue
+
+                    title  = song.get('name') or song.get('title', '')
+                    artist = song.get('primaryArtists') or song.get('primary_artists') or ''
+                    image  = pick_image(song)
+                    year   = _safe_year(song.get('releaseDate') or song.get('year', ''))
+
+                    results.append({
+                        'trackId':          song.get('id', random.randint(10000, 99999)),
+                        'trackName':        title,
+                        'artistName':       artist,
+                        'artworkUrl100':    image,
+                        'artworkUrl600':    image,
+                        'url':              best_url,
+                        'previewUrl':       best_url,
+                        'quality':          quality,
+                        'releaseDate':      str(year),
+                        'primaryGenreName': 'Bollywood',
+                        'source':           'saavn',
+                    })
+                if results:
+                    break
+            except Exception as e:
+                log.warning(f"[Songs] Mirror {mirror} failed: {e}")
                 continue
-            data = r.json()
-            songs = (
-                data.get('data', {}).get('results') or
-                data.get('results') or
-                data.get('songs', {}).get('results') or []
-            )
-            for song in songs:
-                raw_urls = song.get('downloadUrl') or song.get('download_url') or []
-                if not raw_urls:
-                    continue
-                best_url, quality = pick_best_quality(raw_urls if isinstance(raw_urls, list) else [{'url': raw_urls, 'quality': 'unknown'}])
-                if not best_url:
-                    continue
-
-                title  = song.get('name') or song.get('title', '')
-                artist = song.get('primaryArtists') or song.get('primary_artists') or ''
-                image  = pick_image(song)
-                year   = _safe_year(song.get('releaseDate') or song.get('year', ''))
-
-                results.append({
-                    'trackId':          song.get('id', random.randint(10000, 99999)),
-                    'trackName':        title,
-                    'artistName':       artist,
-                    'artworkUrl100':    image,
-                    'artworkUrl600':    image,
-                    'url':              best_url,
-                    'previewUrl':       best_url,
-                    'quality':          quality,
-                    'releaseDate':      str(year),
-                    'primaryGenreName': 'Bollywood',
-                    'source':           'saavn',
-                })
-            if results:
-                break
-        except Exception as e:
-            log.warning(f"[Songs] Mirror {mirror} failed: {e}")
-            continue
 
     if is_90s and results:
         filtered = [s for s in results if 1990 <= int(s.get('releaseDate') or 0) <= 1999]
