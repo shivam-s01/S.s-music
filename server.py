@@ -201,8 +201,7 @@ def mark_mirror_ok(mirror):
     _mirror_failures.pop(mirror, None)
 
 # ═══════════════════════════════════════════════════════════════
-# DEEZER SEARCH — iTunes replace kiya (Railway gevent conflict)
-# No API key needed. Returns iTunes-compatible format.
+# DEEZER SEARCH
 # ═══════════════════════════════════════════════════════════════
 
 DEEZER_QUERY_MAP = {
@@ -260,7 +259,6 @@ DEEZER_QUERY_MAP = {
     '90s Bollywood superhits':            '90s bollywood superhits',
 }
 
-# Deezer response → iTunes-compatible dict
 def _deezer_to_itunes(track):
     try:
         preview = track.get('preview', '')
@@ -269,7 +267,6 @@ def _deezer_to_itunes(track):
         album   = track.get('album') or {}
         artist  = track.get('artist') or {}
         cover   = album.get('cover_big') or album.get('cover_medium') or album.get('cover') or ''
-        # artworkUrl100 format — app.js uses this
         art100  = cover.replace('500x500', '100x100') if cover else ''
         return {
             'trackId':          track.get('id', 0),
@@ -287,7 +284,6 @@ def _deezer_to_itunes(track):
         return None
 
 def _deezer_fetch(query, limit=50):
-    """Fetch songs from Deezer — no API key, Railway pe safe."""
     dz_query = DEEZER_QUERY_MAP.get(query, query)
     try:
         r = requests.get(
@@ -397,7 +393,6 @@ def normalize(text):
     text = re.sub(r'[^a-z0-9\s]', '', text)
     return re.sub(r'\s+', ' ', text).strip()
 
-# ── Iterative levenshtein — zero recursion ────────────────────
 def levenshtein(s1, s2):
     if len(s1) < len(s2):
         s1, s2 = s2, s1
@@ -945,6 +940,171 @@ def stream_audio():
     except Exception as e:
         log.error(f"[Stream] Error → {url[:80]}: {e}")
         return jsonify({'error': str(e)}), 500
+
+# ═══════════════════════════════════════════════════════════════
+# DOWNLOAD ENDPOINT — Quality-aware streaming
+# ═══════════════════════════════════════════════════════════════
+@app.route('/api/download')
+@limiter.limit("50 per minute")
+def download_song():
+    q        = request.args.get('q', '').strip()
+    artist   = request.args.get('artist', '').strip()
+    fallback = request.args.get('fallback', '').strip()
+    quality  = request.args.get('quality', 'full').strip().lower()
+    
+    if not q:
+        return jsonify({'success': False, 'error': 'Missing query'}), 400
+    
+    # Map quality strings to behavior
+    quality_map = {
+        'full':     {'low': False, 'force_yt': False},
+        'preview':  {'low': True,  'force_yt': False},
+        'ringtone': {'low': True,  'force_yt': False},
+        'gift':     {'low': False, 'force_yt': False},
+    }
+    
+    opts = quality_map.get(quality, quality_map['full'])
+    
+    # Fetch song from smart endpoint
+    for query in build_query_variants(q, artist, fallback):
+        saavn_result = fetch_saavn_parallel(query)
+        
+        if saavn_result and not has_word_match(q, saavn_result['title']):
+            saavn_result = None
+        
+        if saavn_result:
+            # Apply quality selection
+            if opts['low']:
+                low_url, low_q = _pick_low_quality(saavn_result.get('_raw_urls', []))
+                if low_url:
+                    saavn_result['url'] = low_url
+                    saavn_result['quality'] = low_q
+            
+            saavn_result.pop('_raw_urls', None)
+            
+            try:
+                # Stream from upstream
+                req_headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                    'Accept': 'audio/mpeg,audio/webm,audio/mp4,audio/*;q=0.9,*/*;q=0.5',
+                    'Accept-Encoding': 'identity',
+                    'Connection': 'keep-alive',
+                }
+                
+                upstream = requests.get(
+                    saavn_result['url'],
+                    headers=req_headers,
+                    stream=True,
+                    timeout=30,
+                    allow_redirects=True
+                )
+                
+                if upstream.status_code != 200:
+                    log.warning(f"[Download] Upstream error {upstream.status_code} for '{q}'")
+                    return jsonify({'success': False, 'error': 'Stream failed'}), 502
+                
+                # Sanitize filename
+                title = saavn_result.get('title', 'song').replace('"', '').replace('/', '_')[:50]
+                artist_name = saavn_result.get('artist', 'unknown').replace('"', '').replace('/', '_')[:30]
+                filename = f"{title} - {artist_name}.mp3"
+                
+                excluded = {'content-encoding', 'transfer-encoding', 'connection'}
+                resp_headers = {
+                    k: v for k, v in upstream.headers.items()
+                    if k.lower() not in excluded
+                }
+                
+                resp_headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+                resp_headers['Access-Control-Allow-Origin'] = '*'
+                resp_headers['Cache-Control'] = 'no-store'
+                resp_headers['X-Content-Type-Options'] = 'nosniff'
+                
+                if 'content-type' not in {k.lower() for k in resp_headers}:
+                    resp_headers['Content-Type'] = 'audio/mpeg'
+                
+                def generate():
+                    try:
+                        for chunk in upstream.iter_content(chunk_size=65536):
+                            if chunk:
+                                yield chunk
+                    finally:
+                        upstream.close()
+                
+                log.info(f"[Download] ✓ '{title}' quality={quality}")
+                return Response(
+                    stream_with_context(generate()),
+                    status=upstream.status_code,
+                    headers=resp_headers,
+                    direct_passthrough=True
+                )
+                
+            except requests.Timeout:
+                log.error(f"[Download] Timeout for '{q}'")
+                return jsonify({'success': False, 'error': 'timeout'}), 504
+            except Exception as e:
+                log.error(f"[Download] Error for '{q}': {e}")
+                return jsonify({'success': False, 'error': str(e)}), 500
+    
+    # Fallback to YT if Saavn fails
+    if opts['force_yt'] or YT_DLP_AVAILABLE:
+        try:
+            future = _yt_executor.submit(fetch_yt_url, q, artist)
+            yt_url = future.result(timeout=25)
+            
+            if yt_url:
+                req_headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                    'Accept': 'audio/mpeg,audio/webm,audio/mp4,audio/*;q=0.9,*/*;q=0.5',
+                    'Accept-Encoding': 'identity',
+                    'Connection': 'keep-alive',
+                }
+                
+                upstream = requests.get(
+                    yt_url,
+                    headers=req_headers,
+                    stream=True,
+                    timeout=30,
+                    allow_redirects=True
+                )
+                
+                title = q.replace('"', '').replace('/', '_')[:50]
+                artist_name = artist.replace('"', '').replace('/', '_')[:30] if artist else 'unknown'
+                filename = f"{title} - {artist_name}.mp3"
+                
+                excluded = {'content-encoding', 'transfer-encoding', 'connection'}
+                resp_headers = {
+                    k: v for k, v in upstream.headers.items()
+                    if k.lower() not in excluded
+                }
+                
+                resp_headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+                resp_headers['Access-Control-Allow-Origin'] = '*'
+                resp_headers['Cache-Control'] = 'no-store'
+                resp_headers['X-Content-Type-Options'] = 'nosniff'
+                
+                if 'content-type' not in {k.lower() for k in resp_headers}:
+                    resp_headers['Content-Type'] = 'audio/mpeg'
+                
+                def generate():
+                    try:
+                        for chunk in upstream.iter_content(chunk_size=65536):
+                            if chunk:
+                                yield chunk
+                    finally:
+                        upstream.close()
+                
+                log.info(f"[Download] ✓ YT '{q}' quality={quality}")
+                return Response(
+                    stream_with_context(generate()),
+                    status=upstream.status_code,
+                    headers=resp_headers,
+                    direct_passthrough=True
+                )
+        except Exception as e:
+            log.warning(f"[Download] YT fallback failed for '{q}': {e}")
+    
+    log.info(f"[Download] ✗ No source for '{q}'")
+    return jsonify({'success': False, 'error': 'No source found'}), 404
 
 # ═══════════════════════════════════════════════════════════════
 # HEALTH
