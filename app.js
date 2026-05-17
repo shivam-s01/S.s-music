@@ -838,19 +838,17 @@ function setupMiniGesture() {
     // FIX 3: Only preventDefault on confirmed vertical gesture
     // This prevents blocking horizontal/native scrolls accidentally
     if (axisLocked === 'vertical' && absDy > 6) {
-      moved = true;
-      e.preventDefault(); // Safe: we've confirmed it's vertical
-      const clamped = dy < 0
-        ? Math.max(-80, dy * 0.3)
-        : Math.min(160, dy * 0.55);
-      if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-      rafId = requestAnimationFrame(ts => {
-        rafId = null;
-        if (ts - _lastRafTime < FRAME_BUDGET) return;
-        _lastRafTime = ts;
-        mp.style.transform = `translateY(${clamped}px)`;
-      });
-    }
+  moved = true;
+  e.preventDefault();
+  const clamped = dy;
+  if (rafId) cancelAnimationFrame(rafId);
+  rafId = requestAnimationFrame(ts => {
+    rafId = null;
+    if (ts - _lastRafTime < FRAME_BUDGET) return;
+    _lastRafTime = ts;
+    mp.style.transform = `translateY(${clamped}px)`;(${clamped}px)`;
+  });
+}
   }, { passive: false });
 
   mp.addEventListener('touchend', e => {
@@ -1003,28 +1001,37 @@ function setupFullPlayerGesture() {
 
     if (gestureTarget === 'player' && dy > 0) {
       e.preventDefault(); // FIX 3: only after axis confirmed vertical
-      const clamped = Math.max(0, dy * 0.55);
+      const clamped = Math.max(0, dy * 0.85);  // 1:1 के करीब
       if (rafId) cancelAnimationFrame(rafId);
 rafId = requestAnimationFrame(() => {
-  mp.style.transform = `translateY(${clamped}px)`;
+  fp.style.transform = `translateY(${clamped}px)`;
   rafId = null;
 });
 
-    } else if (gestureTarget === 'queue' && dy > 0) {
-      e.preventDefault();
-      const clamped = Math.min(160, dy * 0.55);
-      if (rafId) cancelAnimationFrame(rafId);
-rafId = requestAnimationFrame(() => { fp.style.transform = `translateY(${clamped}px)`; rafId = null; });
-
-    } else if (gestureTarget === 'player' && dy < -60) {
-      // Fast upward → open queue
-      e.preventDefault();
-      openQueuePanel();
-      cleanupGesture();
-      fp.style.transform  = '';
-      qp.style.transform  = '';
-      _resumeBlur();
-    }
+} if (gestureTarget === 'player' && dy > 0) {
+  e.preventDefault();
+  const clamped = Math.max(0, dy);
+  if (rafId) cancelAnimationFrame(rafId);
+  rafId = requestAnimationFrame(() => {
+    fp.style.transform = `translateY(${clamped}px)`;
+    rafId = null;
+  });
+} else if (gestureTarget === 'queue' && dy > 0) {
+  e.preventDefault();
+  const clamped = Math.min(160, dy);
+  if (rafId) cancelAnimationFrame(rafId);
+  rafId = requestAnimationFrame(() => {
+    qp.style.transform = `translateY(${clamped}px)`;
+    rafId = null;
+  });
+} else if (gestureTarget === 'player' && dy < -60) {
+  e.preventDefault();
+  openQueuePanel();
+  cleanupGesture();
+  fp.style.transform = '';
+  qp.style.transform = '';
+  _resumeBlur();
+}
   }, { passive: false });
 
   fp.addEventListener('touchend', e => {
