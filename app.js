@@ -941,10 +941,11 @@ function setupFullPlayerGesture() {
            el.closest('.fp-art-wrap')           ||
            el.closest('.fp-progress-wrap')      ||
            el.closest('.fp-controls')           ||
+           el.closest('.fp-bottom')             ||
+           el.closest('.fp-next-strip')         ||
            el.closest('.queue-panel-handle')    ||
            el.closest('#queue-drag-handle');
   }
-
   fp.addEventListener('touchstart', e => {
     const qpOpen        = qp.classList.contains('open');
     const onQueueHandle = e.target.closest('#queue-drag-handle');
