@@ -25,13 +25,21 @@ const TARGET_FPS   = 30;
 const FRAME_BUDGET = 1000 / TARGET_FPS;
 let   _lastRafTime = 0;
 
+let _pendingRaf = null;
 function cappedRaf(cb) {
-  const id = requestAnimationFrame(ts => {
-    if (ts - _lastRafTime < FRAME_BUDGET) { cappedRaf(cb); return; }
-    _lastRafTime = ts;
-    cb(ts);
-  });
-  return id;
+  if (_pendingRaf) return;
+  const now = performance.now();
+  if (now - _lastRafTime >= FRAME_BUDGET) {
+    _lastRafTime = now;
+    cb(now);
+    _pendingRaf = null;
+  } else {
+    _pendingRaf = requestAnimationFrame((ts) => {
+      _pendingRaf = null;
+      _lastRafTime = ts;
+      cb(ts);
+    });
+  }
 }
 
 // ─── IMAGE SYSTEM ─────────────────────────────────────────────────────────────
@@ -520,7 +528,7 @@ function updatePlayerUI() {
   const ma = document.getElementById('mini-artist');  if (ma) ma.textContent  = currentTrack.artistName || 'Unknown';
   const ft = document.getElementById('fp-title');     if (ft) ft.textContent  = currentTrack.trackName  || 'Unknown';
   const fa = document.getElementById('fp-artist');    if (fa) fa.textContent  = currentTrack.artistName || 'Unknown';
-
+  
   _syncPlayIcons();
   _syncPlayingClass();
   updateSaveBtn();
@@ -997,13 +1005,16 @@ function setupFullPlayerGesture() {
       e.preventDefault(); // FIX 3: only after axis confirmed vertical
       const clamped = Math.max(0, dy * 0.55);
       if (rafId) cancelAnimationFrame(rafId);
-      rafId = cappedRaf(() => { fp.style.transform = `translateY(${clamped}px)`; rafId = null; });
+rafId = requestAnimationFrame(() => {
+  mp.style.transform = `translateY(${clamped}px)`;
+  rafId = null;
+});
 
     } else if (gestureTarget === 'queue' && dy > 0) {
       e.preventDefault();
       const clamped = Math.min(160, dy * 0.55);
       if (rafId) cancelAnimationFrame(rafId);
-      rafId = cappedRaf(() => { qp.style.transform = `translateY(${clamped}px)`; rafId = null; });
+rafId = requestAnimationFrame(() => { fp.style.transform = `translateY(${clamped}px)`; rafId = null; });
 
     } else if (gestureTarget === 'player' && dy < -60) {
       // Fast upward → open queue
