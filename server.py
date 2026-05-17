@@ -214,7 +214,7 @@ def _safe_year(date_str):
 def _itunes_fetch(search_term):
     """
     Isolated iTunes HTTP call — returns list of results or [].
-    RecursionError alag catch kiya — ye BaseException hai, Exception mein nahi aata.
+    Exceptions fully caught here so callers never crash.
     """
     try:
         r = requests.get(
@@ -226,8 +226,9 @@ def _itunes_fetch(search_term):
                 'limit':   50,
                 'country': 'IN',
             },
-            timeout=5
+            timeout=8
         )
+        # Don't raise_for_status — parse defensively instead
         if r.status_code != 200:
             log.warning(f"[iTunes] HTTP {r.status_code} for '{search_term}'")
             return []
@@ -242,9 +243,6 @@ def _itunes_fetch(search_term):
 
         return results
 
-    except RecursionError:
-        log.error(f"[iTunes] RecursionError — Railway IP blocked by iTunes: '{search_term}'")
-        return []
     except requests.Timeout:
         log.warning(f"[iTunes] Timeout for '{search_term}'")
         return []
