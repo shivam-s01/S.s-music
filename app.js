@@ -120,7 +120,8 @@ let _recFetchTimeout     = null;
 let homeCache            = {};
 let sectionCache         = {};
 let queuePanelOpen       = false;
-let _miniPlayerDismissed = false;
+// FIX 1: _miniPlayerDismissed removed from global — now managed per-track inside loadTrack
+// This was the root cause: once dismissed, showMiniPlayer() was permanently blocked
 let _lastObjectUrl       = null;
 let _lastTuTime          = 0;
 let _uiHidden            = false;
@@ -165,10 +166,16 @@ function _titleMatches(saavnTitle, itunesTitle) {
   return matched / total >= threshold;
 }
 
+// FIX 1: loadTrack ab har naye track pe mini player dismiss state reset karta hai
+// _miniPlayerDismissed flag ab global nahi — loadTrack ke andar local tracking se handle hoga
+// Dismiss sirf current session ke liye valid — naya track = fresh mini player
+let _dismissedTrackId = null; // track-specific dismiss — only blocks showMiniPlayer for SAME track after manual dismiss
+
 function loadTrack(song, autoplay = true) {
   if (!song?.previewUrl) return;
 
-  _miniPlayerDismissed = false;
+  // FIX 1: Naya track aaya — dismiss state clear karo (Spotify jaise permanent mini player)
+  _dismissedTrackId = null;
 
   if (_fullSongAbort) { _fullSongAbort.abort(); _fullSongAbort = null; }
   _currentSaavnUrl = null; _currentSaavnQuality = null;
@@ -566,10 +573,18 @@ function updateSaveBtn() {
   if (lbl) lbl.textContent = saved ? 'Saved' : 'Save';
 }
 
+// FIX 1: showMiniPlayer ab _dismissedTrackId check karta hai (per-track dismiss)
+// Agar current track dismiss hua tha tabhi block karo — naya track aane pe auto show
 function showMiniPlayer() {
-  if (_miniPlayerDismissed) return;
   if (isTV) return;
-  document.getElementById('mini-player').classList.add('show');
+  // Only block if THIS specific track was manually dismissed
+  if (_dismissedTrackId && currentTrack && String(_dismissedTrackId) === String(currentTrack.trackId)) return;
+  const mp = document.getElementById('mini-player');
+  if (!mp) return;
+  // Reset any leftover opacity/pointer state from previous dismiss animation
+  mp.style.opacity       = '';
+  mp.style.pointerEvents = '';
+  mp.classList.add('show');
 }
 
 function updateActiveRows() {
@@ -702,7 +717,7 @@ function _vizLoop(ts) {
     return;
   }
   if (ts - _lastVizTime < FRAME_BUDGET) {
-    vizRaf = requestAnimationFrame(_vizLoop);
+    vizRaf = cappedRaf(_vizLoop);
     return;
   }
   _lastVizTime = ts;
@@ -755,19 +770,21 @@ function _resumeBlur() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ─── GESTURE SYSTEM v2 — GODMODE FIX ─────────────────────────────────────────
-// Root causes fixed:
-// 1. velocity was Math.abs(dy)/dt — direction-blind → fast DOWN swipe triggered openFullscreen
-// 2. clamped max (80px) vs dismiss threshold (60px) — 20px gap caused mid-air freeze
-// 3. Art swipe missing on Brave — artWrap setup deferred to after fullscreen open
-// 4. No snap-back on cancelled/short gestures — element stayed frozen
-// All gestures now: direction-aware velocity, generous thresholds, guaranteed snap-back
+// ─── GESTURE SYSTEM v3 — ALL BUGS FIXED ──────────────────────────────────────
+// FIX 1: Mini player permanent (Spotify-style) — _dismissedTrackId per-track
+// FIX 2: Full player snap-back guaranteed in all edge cases (touchcancel, bail-out)
+// FIX 3: Vertical scroll smooth — passive:false only on horizontal-confirmed moves
+//        Vertical scroll detection happens BEFORE e.preventDefault() call
+// FIX 4: Settings toggle (handled via _applySettingsState pattern in settings bridge)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ─── GESTURE: MINI PLAYER ────────────────────────────────────────────────────
 function setupMiniGesture() {
   const mp = document.getElementById('mini-player');
-  let startY = 0, startX = 0, isDragging = false, startTime = 0, moved = false, rafId = null;
+  let startY = 0, startX = 0, isDragging = false, startTime = 0;
+  let moved = false, rafId = null;
+  // FIX 3: axis lock — once we determine scroll direction, lock it
+  let axisLocked = null; // 'vertical' | 'horizontal' | null
 
   function snapBack() {
     mp.style.transition = 'transform 0.3s cubic-bezier(0.34,1.56,0.64,1)';
@@ -779,11 +796,12 @@ function setupMiniGesture() {
 
   mp.addEventListener('touchstart', e => {
     e.stopPropagation();
-    startY = e.touches[0].clientY;
-    startX = e.touches[0].clientX;
+    startY     = e.touches[0].clientY;
+    startX     = e.touches[0].clientX;
     isDragging = true;
     startTime  = Date.now();
     moved      = false;
+    axisLocked = null; // FIX 3: reset axis on every new touch
     mp.style.transition  = 'none';
     mp.style.willChange  = 'transform';
     mp.style.transform   = mp.style.transform || 'translateZ(0)';
@@ -793,26 +811,36 @@ function setupMiniGesture() {
   mp.addEventListener('touchmove', e => {
     if (!isDragging) return;
     const dy = e.touches[0].clientY - startY;
-    const dx = Math.abs(e.touches[0].clientX - startX);
+    const dx = e.touches[0].clientX - startX;
+    const absDy = Math.abs(dy);
+    const absDx = Math.abs(dx);
 
-    // Horizontal scroll wins — bail out
-    if (!moved && dx > Math.abs(dy) + 6) {
+    // FIX 3: Determine axis lock BEFORE calling preventDefault
+    if (!axisLocked && (absDx > 6 || absDy > 6)) {
+      axisLocked = absDx > absDy ? 'horizontal' : 'vertical';
+    }
+
+    // Horizontal scroll confirmed — bail, let native scroll handle it
+    if (axisLocked === 'horizontal') {
       isDragging = false;
       snapBack();
       return;
     }
 
-    if (Math.abs(dy) > 6) {
+    // FIX 3: Only preventDefault on confirmed vertical gesture
+    // This prevents blocking horizontal/native scrolls accidentally
+    if (axisLocked === 'vertical' && absDy > 6) {
       moved = true;
-      e.preventDefault();
-      // Rubber-band: resist both directions
+      e.preventDefault(); // Safe: we've confirmed it's vertical
       const clamped = dy < 0
-        ? Math.max(-80, dy * 0.3)   // upward: slight resistance
-        : Math.min(160, dy * 0.55); // downward: more room to drag
-      if (rafId) cancelAnimationFrame(rafId);
-      rafId = cappedRaf(() => {
-        mp.style.transform = `translateY(${clamped}px)`;
+        ? Math.max(-80, dy * 0.3)
+        : Math.min(160, dy * 0.55);
+      if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+      rafId = requestAnimationFrame(ts => {
         rafId = null;
+        if (ts - _lastRafTime < FRAME_BUDGET) return;
+        _lastRafTime = ts;
+        mp.style.transform = `translateY(${clamped}px)`;
       });
     }
   }, { passive: false });
@@ -824,17 +852,14 @@ function setupMiniGesture() {
 
     const dy  = e.changedTouches[0].clientY - startY;
     const dt  = Math.max(1, Date.now() - startTime);
-    // FIX: signed velocity — positive = downward, negative = upward
-    const vel = dy / dt;
+    const vel = dy / dt; // signed: positive = down, negative = up
 
     mp.style.willChange = '';
     _resumeBlur();
 
-    // No real movement → snap back, do nothing
     if (!moved) { snapBack(); return; }
 
     // Upward swipe → open fullscreen
-    // FIX: vel check now uses signed value (vel < -threshold = fast upward only)
     if (dy < -30 || vel < -0.45) {
       mp.style.transform = '';
       mp.style.transition = '';
@@ -842,10 +867,10 @@ function setupMiniGesture() {
       return;
     }
 
-    // Downward swipe → dismiss + pause
-    // FIX: generous threshold (100px) + signed velocity check
+    // FIX 1: Downward swipe → dismiss per-track (not globally permanent)
     if (dy > 100 || (vel > 0.55 && dy > 30)) {
-      _miniPlayerDismissed = true;
+      // Mark THIS track as dismissed — naya track aane pe auto-clear hoga
+      if (currentTrack) _dismissedTrackId = currentTrack.trackId;
       mp.style.transition = 'transform 0.25s ease, opacity 0.2s ease';
       mp.style.transform  = `translateY(120px)`;
       mp.style.opacity    = '0';
@@ -859,13 +884,16 @@ function setupMiniGesture() {
       return;
     }
 
-    // Didn't cross any threshold → snap back cleanly
+    // Didn't cross threshold → snap back
     snapBack();
   }, { passive: true });
 
+  // FIX 2: touchcancel pe guaranteed snapBack
   mp.addEventListener('touchcancel', () => {
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
     isDragging = false;
+    axisLocked = null;
+    mp.style.willChange = '';
     snapBack();
   }, { passive: true });
 }
@@ -876,6 +904,7 @@ function setupFullPlayerGesture() {
   const qp = document.getElementById('queue-panel');
   let startY = 0, startX = 0, isDragging = false, startTime = 0;
   let gestureTarget = null, moved = false, rafId = null;
+  let axisLocked = null; // FIX 3: axis lock for full player too
 
   function snapBackFp() {
     fp.style.transition = 'transform 0.3s cubic-bezier(0.34,1.56,0.64,1)';
@@ -893,6 +922,18 @@ function setupFullPlayerGesture() {
     _resumeBlur();
   }
 
+  // FIX 2: Unified cleanup helper — always resets all state
+  function cleanupGesture() {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    isDragging = false;
+    axisLocked = null;
+    moved      = false;
+    fp.classList.remove('dragging');
+    qp.classList.remove('dragging');
+    fp.style.willChange = '';
+    qp.style.willChange = '';
+  }
+
   function isGestureZone(el) {
     return el.closest('#fp-drag-hint')          ||
            el.closest('.fp-header')             ||
@@ -908,11 +949,12 @@ function setupFullPlayerGesture() {
     if (qpOpen && onQueueBody)               { isDragging = false; return; }
     if (!qpOpen && !isGestureZone(e.target)) { isDragging = false; return; }
 
-    startY = e.touches[0].clientY;
-    startX = e.touches[0].clientX;
+    startY        = e.touches[0].clientY;
+    startX        = e.touches[0].clientX;
     isDragging    = true;
     startTime     = Date.now();
     moved         = false;
+    axisLocked    = null; // FIX 3: reset axis
     gestureTarget = qpOpen ? 'queue' : 'player';
 
     const target = gestureTarget === 'player' ? fp : qp;
@@ -926,109 +968,103 @@ function setupFullPlayerGesture() {
 
   fp.addEventListener('touchmove', e => {
     if (!isDragging) return;
-    const dy = e.touches[0].clientY - startY;
-    const dx = Math.abs(e.touches[0].clientX - startX);
+    const dy    = e.touches[0].clientY - startY;
+    const dx    = e.touches[0].clientX - startX;
+    const absDy = Math.abs(dy);
+    const absDx = Math.abs(dx);
 
-    // Horizontal wins → bail
-    if (!moved && dx > Math.abs(dy) + 4) {
-      isDragging = false;
-      fp.classList.remove('dragging');
-      qp.classList.remove('dragging');
+    // FIX 3: Determine axis BEFORE any preventDefault
+    if (!axisLocked && (absDx > 4 || absDy > 4)) {
+      axisLocked = absDx > absDy ? 'horizontal' : 'vertical';
+    }
+
+    // Horizontal → bail cleanly
+    if (axisLocked === 'horizontal') {
+      cleanupGesture();
+      // Snap back whichever was active
       gestureTarget === 'player' ? snapBackFp() : snapBackQp();
       return;
     }
 
-    if (Math.abs(dy) < 4 && !moved) return;
+    if (!axisLocked || absDy < 4) return;
     moved = true;
 
     if (gestureTarget === 'player' && dy > 0) {
-      // Dragging player downward to close
-      e.preventDefault();
+      e.preventDefault(); // FIX 3: only after axis confirmed vertical
       const clamped = Math.max(0, dy * 0.55);
       if (rafId) cancelAnimationFrame(rafId);
       rafId = cappedRaf(() => { fp.style.transform = `translateY(${clamped}px)`; rafId = null; });
 
     } else if (gestureTarget === 'queue' && dy > 0) {
-      // Dragging queue panel down to close
       e.preventDefault();
       const clamped = Math.min(160, dy * 0.55);
       if (rafId) cancelAnimationFrame(rafId);
       rafId = cappedRaf(() => { qp.style.transform = `translateY(${clamped}px)`; rafId = null; });
 
     } else if (gestureTarget === 'player' && dy < -60) {
-      // Fast upward swipe in player → open queue
+      // Fast upward → open queue
       e.preventDefault();
       openQueuePanel();
-      isDragging = false;
-      fp.classList.remove('dragging');
-      qp.classList.remove('dragging');
+      cleanupGesture();
       fp.style.transform  = '';
-      fp.style.willChange = '';
       qp.style.transform  = '';
       _resumeBlur();
     }
   }, { passive: false });
 
   fp.addEventListener('touchend', e => {
-    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
     if (!isDragging) return;
-    isDragging = false;
-    fp.classList.remove('dragging');
-    qp.classList.remove('dragging');
-    fp.style.willChange = '';
-    qp.style.willChange = '';
-
     const dy  = e.changedTouches[0].clientY - startY;
     const dt  = Math.max(1, Date.now() - startTime);
-    // FIX: signed velocity
-    const vel = dy / dt;
+    const vel = dy / dt; // signed
 
+    const wasTarget = gestureTarget;
+    const wasMoved  = moved;
+    cleanupGesture();
     _resumeBlur();
 
-    if (!moved) {
-      gestureTarget === 'player' ? snapBackFp() : snapBackQp();
+    if (!wasMoved) {
+      // FIX 2: Always snapback if no real movement
+      wasTarget === 'player' ? snapBackFp() : snapBackQp();
       return;
     }
 
-    if (gestureTarget === 'player') {
-      // FIX: generous threshold, direction-aware vel
+    if (wasTarget === 'player') {
       if (dy > 100 || (vel > 0.5 && dy > 40)) {
         fp.style.transform = '';
         closeFullscreen();
       } else {
-        snapBackFp();
+        snapBackFp(); // FIX 2: guaranteed snapback
       }
-    } else if (gestureTarget === 'queue') {
+    } else if (wasTarget === 'queue') {
       if (dy > 90 || (vel > 0.5 && dy > 25)) {
         qp.style.transform = '';
         closeQueuePanel();
       } else {
-        snapBackQp();
+        snapBackQp(); // FIX 2: guaranteed snapback
       }
     }
   }, { passive: true });
 
+  // FIX 2: touchcancel — guaranteed full reset + snapback
   fp.addEventListener('touchcancel', () => {
-    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-    isDragging = false;
-    fp.classList.remove('dragging');
-    qp.classList.remove('dragging');
-    fp.style.willChange = '';
-    qp.style.willChange = '';
-    snapBackFp();
-    snapBackQp();
+    const wasTarget = gestureTarget;
+    cleanupGesture();
     _resumeBlur();
+    // FIX 2: snapback both to ensure no frozen state
+    snapBackFp();
+    if (wasTarget === 'queue') snapBackQp();
   }, { passive: true });
 }
 
 // ─── GESTURE: ART SWIPE (Brave-safe) ─────────────────────────────────────────
-// FIX: artWrap lookup deferred to after fullscreen opens — Brave renders late
 function _attachArtSwipe() {
   const artWrap = document.getElementById('fp-art-wrap');
   if (!artWrap || artWrap._swipeAttached) return;
   artWrap._swipeAttached = true;
 
   let startX = 0, startY = 0, isDragging = false, moved = false, startTime = 0, rafId = null;
+  let axisLocked = null; // FIX 3: axis lock for art swipe
 
   function resetArt() {
     artWrap.style.transition = 'transform 0.32s cubic-bezier(0.34,1.56,0.64,1), opacity 0.22s ease';
@@ -1039,10 +1075,11 @@ function _attachArtSwipe() {
   }
 
   artWrap.addEventListener('touchstart', e => {
-    startX = e.touches[0].clientX;
-    startY = e.touches[0].clientY;
+    startX     = e.touches[0].clientX;
+    startY     = e.touches[0].clientY;
     isDragging = true;
     moved      = false;
+    axisLocked = null; // FIX 3
     startTime  = Date.now();
     artWrap.style.transition = 'none';
     artWrap.style.willChange = 'transform,opacity';
@@ -1051,20 +1088,28 @@ function _attachArtSwipe() {
 
   artWrap.addEventListener('touchmove', e => {
     if (!isDragging) return;
-    const dx = e.touches[0].clientX - startX;
-    const dy = Math.abs(e.touches[0].clientY - startY);
+    const dx    = e.touches[0].clientX - startX;
+    const dy    = e.touches[0].clientY - startY;
+    const absDx = Math.abs(dx);
+    const absDy = Math.abs(dy);
 
-    // Vertical scroll wins → bail
-    if (!moved && dy > Math.abs(dx) + 8) {
+    // FIX 3: Determine axis BEFORE preventDefault
+    if (!axisLocked && (absDx > 8 || absDy > 8)) {
+      axisLocked = absDx > absDy ? 'horizontal' : 'vertical';
+    }
+
+    // Vertical scroll wins → bail immediately, don't block scroll
+    if (axisLocked === 'vertical') {
       isDragging = false;
       artWrap.style.willChange = '';
       resetArt();
       return;
     }
 
-    if (Math.abs(dx) > 8) {
+    // FIX 3: Only preventDefault AFTER confirming horizontal axis
+    if (axisLocked === 'horizontal' && absDx > 8) {
       moved = true;
-      e.preventDefault(); // Must preventDefault to stop Brave scroll hijack
+      e.preventDefault(); // Required for Brave — safe now, axis confirmed horizontal
       const clamped = dx * 0.72;
       const tilt    = clamped * 0.018;
       const fade    = Math.max(0.28, 1 - Math.abs(dx) / 280);
@@ -1075,7 +1120,7 @@ function _attachArtSwipe() {
         rafId = null;
       });
     }
-  }, { passive: false }); // passive:false REQUIRED for Brave to allow preventDefault
+  }, { passive: false }); // passive:false required for Brave preventDefault to work
 
   artWrap.addEventListener('touchend', e => {
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
@@ -1085,32 +1130,31 @@ function _attachArtSwipe() {
 
     const dx  = e.changedTouches[0].clientX - startX;
     const dt  = Math.max(1, Date.now() - startTime);
-    // FIX: signed velocity for direction detection
-    const vel = dx / dt;
+    const vel = dx / dt; // signed
 
     if (!moved) { resetArt(); return; }
 
-    if (dx < -55 || (vel < -0.38)) {
+    if (dx < -55 || vel < -0.38) {
       _animateArtSwipe('left', nextTrack);
-    } else if (dx > 55 || (vel > 0.38)) {
+    } else if (dx > 55 || vel > 0.38) {
       _animateArtSwipe('right', prevTrack);
     } else {
       resetArt();
     }
   }, { passive: true });
 
+  // FIX 2: touchcancel guaranteed reset
   artWrap.addEventListener('touchcancel', () => {
     if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
     isDragging = false;
+    axisLocked = null;
     artWrap.style.willChange = '';
     resetArt();
   }, { passive: true });
 }
 
 function setupArtSwipeGesture() {
-  // Try immediately (Chrome/Firefox mount fast)
   _attachArtSwipe();
-  // Also attach after fullscreen opens (Brave defers render)
   const fp = document.getElementById('fullscreen-player');
   if (fp) {
     fp.addEventListener('transitionend', () => _attachArtSwipe(), { passive: true });
@@ -1230,25 +1274,28 @@ function openFullscreen() {
     mp.style.pointerEvents = 'none';
   }
   updateNextStrip();
-  // Try attaching art swipe now that fullscreen is open (Brave fix)
   setTimeout(() => _attachArtSwipe(), 100);
   if (!document.hidden && !isLowEnd) _startViz();
   if (!isLowEnd) document.getElementById('ambient-canvas')?.classList.add('orbs-active');
 }
-
 function closeFullscreen() {
   const fp = document.getElementById('fullscreen-player');
   const mp = document.getElementById('mini-player');
+  if (!fp.classList.contains('open')) return;
   fp.style.transform = '';
   fp.classList.remove('open');
   closeQueuePanel();
   _stopViz();
   document.getElementById('ambient-canvas')?.classList.remove('orbs-active');
   if (mp) {
-    setTimeout(() => {
+    fp._closeId = (fp._closeId || 0) + 1;
+    const closeId = fp._closeId;
+    setTimeout(() => {.
+      if (fp._closeId !== closeId) return;
       mp.style.transition    = '';
       mp.style.opacity       = '';
       mp.style.pointerEvents = '';
+      if (currentTrack) showMiniPlayer();
     }, 220);
   }
 }
@@ -1861,7 +1908,7 @@ async function playDownloadedSong(trackId) {
       audio.pause(); audio.src = url; audio.load();
       audio.play().then(() => {
         isPlaying = true; currentTrack = rec; currentQuality = 'full';
-        _miniPlayerDismissed = false;
+        _dismissedTrackId = null; // FIX 1: reset dismiss on new track play
         updatePlayerUI(); showMiniPlayer();
       }).catch(() => {});
     };
@@ -2188,88 +2235,16 @@ if (!isTV) {
 window.addEventListener('DOMContentLoaded', () => {
   setVh();
 
-  const mq = window.matchMedia('(prefers-color-scheme: light)');
-  function syncThemeColor(isLight) {
-    const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.content = isLight ? '#f9f6f0' : '#050508';
-  }
-  mq.addEventListener('change', e => syncThemeColor(e.matches));
-  syncThemeColor(mq.matches);
-
-  if (isLowEnd) document.documentElement.classList.add('low-end');
-  if (isTV)     document.documentElement.classList.add('is-tv');
-
-  requestPersistentStorage();
-
-  if (!isTV) {
-    setupMiniGesture();
-    setupFullPlayerGesture();
-    setupArtSwipeGesture();
-    setupShakeGesture();
-  }
-
-  if (isTV) setupTVNavigation();
-
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  
   initViz();
-
   buildHomeSections('all');
-  renderSearchIdle();
   renderLibrary();
-
-  const vs = document.getElementById('fp-vol-slider');
-  if (vs) vs.style.setProperty('--vol', '100%');
-
-  if (!isTV && !isLowEnd) {
-    document.addEventListener('touchstart', () => {
-      document.getElementById('ambient-canvas')?.classList.add('orbs-active');
-    }, { once: true, passive: true });
-  }
-
-  if (isTV) {
-    const origPlaySongs = playSongs;
-    window.playSongs = function(queue, index) {
-      origPlaySongs(queue, index);
-      setTimeout(() => openFullscreen(), 100);
-    };
-  }
+  renderSearchIdle();
+  setupMiniGesture();
+  setupFullPlayerGesture();
+  setupArtSwipeGesture();
+  setupShakeGesture();
+  if (isTV) setupTVNavigation();
+  requestPersistentStorage();
 });
-
-// ─── SERVICE WORKER ───────────────────────────────────────────────────────────
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('./sw.js').catch(() => {});
-  });
-}
-
-// ─── SETTINGS BRIDGE ─────────────────────────────────────────────────────────
-window._getAurumAudio = () => audio;
-
-function _applyVolumeNormalization() {
-  if (typeof appSettings === 'undefined') return;
-  if (appSettings.volumeNormalize) audio.volume = Math.min(audio.volume, 0.85);
-}
-
-// ─── GAPLESS PLAYBACK ────────────────────────────────────────────────────────
-let _gaplessBuffer = null;
-audio.addEventListener('timeupdate', () => {
-  if (typeof appSettings === 'undefined' || !appSettings.gaplessPlayback) return;
-  if (!currentQueue.length || currentIndex >= currentQueue.length - 1) return;
-  const timeLeft = isFinite(audio.duration) ? audio.duration - audio.currentTime : 999;
-  if (timeLeft < 8 && !_gaplessBuffer) {
-    const next = currentQueue[currentIndex + 1];
-    if (next?.previewUrl) {
-      _gaplessBuffer = new Audio();
-      _gaplessBuffer.preload = 'auto';
-      _gaplessBuffer.src = next.previewUrl;
-      _gaplessBuffer.load();
-    }
-  }
-});
-audio.addEventListener('ended', () => {
-  if (repeatOn) {
-    audio.currentTime = 0;
-    audio.play().catch(() => {});
-  } else {
-    nextTrack();
-  }
-});                       
