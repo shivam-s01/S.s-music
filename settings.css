@@ -10,6 +10,7 @@
   display: flex;
   flex-direction: column;
   contain: layout style paint; /* lightweight: limits repaint scope */
+  padding-top: env(safe-area-inset-top, 0px); /* FIX: accounts for notch */
 }
 #settings-panel.open {
   transform: translateX(0);
@@ -20,9 +21,11 @@
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: calc(env(safe-area-inset-top, 0px) + 44px) 22px 18px; /* FIX: safe area aware */
+  padding: 44px 22px 18px; /* FIX: safe area now handled by #settings-panel padding */
   flex-shrink: 0;
   border-bottom: 0.5px solid var(--border, rgba(255,255,255,0.05));
+  position: relative;
+  z-index: 301; /* FIX: stays above status bar on notched devices */
 }
 .settings-back {
   width: 38px; height: 38px;
