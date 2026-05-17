@@ -1290,7 +1290,7 @@ function closeFullscreen() {
   if (mp) {
     fp._closeId = (fp._closeId || 0) + 1;
     const closeId = fp._closeId;
-    setTimeout(() => {.
+    setTimeout(() => {
       if (fp._closeId !== closeId) return;
       mp.style.transition    = '';
       mp.style.opacity       = '';
