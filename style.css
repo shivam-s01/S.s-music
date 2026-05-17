@@ -430,8 +430,8 @@ img.img-error { opacity: 1; }
   overscroll-behavior-y: contain;
   touch-action: pan-y;
   isolation: isolate;
-  will-change: scroll-position;
 }
+  
 .page.active {
   opacity: 1;
   pointer-events: all;
@@ -680,7 +680,10 @@ img.img-error { opacity: 1; }
 }
 
 /*
- * ✅ FIX v7: Removed [data-theme="light"] #fp-bg-art { display: none }
+ * ✅ FIX v7: Removed [data-theme="light"] #fp-bg-art {
+  display: block !important;
+  opacity: 1;
+}
  * Light mode now SHOWS the blurred art, just with whiter overlay
  * so it looks like Apple Music / Spotify light mode — subtle color tint
  */
@@ -1661,7 +1664,6 @@ img.img-error { opacity: 1; }
   overscroll-behavior-x: contain;
   overscroll-behavior-y: none;
   scroll-snap-type: x mandatory;
-  /* ✅ FIX v7: pan-x so vertical page scroll not blocked */
   touch-action: pan-x;
 }
 .ph-chips::-webkit-scrollbar { display: none; }
@@ -1745,7 +1747,6 @@ img.img-error { opacity: 1; }
   overscroll-behavior-y: none;
   scroll-snap-type: x mandatory;
   scroll-padding-left: 22px;
-  /* ✅ FIX: was missing, caused vertical scroll conflict */
   touch-action: pan-x;
 }
 
