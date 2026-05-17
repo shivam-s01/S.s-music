@@ -938,6 +938,9 @@ function setupFullPlayerGesture() {
     return el.closest('#fp-drag-hint')          ||
            el.closest('.fp-header')             ||
            el.closest('.fp-info')               ||
+           el.closest('.fp-art-wrap')           ||
+           el.closest('.fp-progress-wrap')      ||
+           el.closest('.fp-controls')           ||
            el.closest('.queue-panel-handle')    ||
            el.closest('#queue-drag-handle');
   }
