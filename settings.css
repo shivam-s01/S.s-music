@@ -1,26 +1,28 @@
 /* ─── SETTINGS PANEL ─────────────────────────────────────────────────────── */
 #settings-panel {
-  position: fixed;
+  position: absolute; /* FIX: was 'fixed' — caused live preview to clip outside #app */
   inset: 0;
-  z-index: 999;
+  z-index: var(--z-settings, 300);
   background: var(--bg, #050508);
   transform: translateX(100%);
   transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  contain: layout style paint; /* lightweight: limits repaint scope */
 }
 #settings-panel.open {
   transform: translateX(0);
 }
 
+/* ─── HEADER ─────────────────────────────────────────────────────────────── */
 .settings-header {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 56px 22px 18px;
+  padding: calc(env(safe-area-inset-top, 0px) + 44px) 22px 18px; /* FIX: safe area aware */
   flex-shrink: 0;
-  border-bottom: 1px solid rgba(255,255,255,0.055);
+  border-bottom: 0.5px solid var(--border, rgba(255,255,255,0.05));
 }
 .settings-back {
   width: 38px; height: 38px;
@@ -29,8 +31,11 @@
   border: none;
   display: flex; align-items: center; justify-content: center;
   cursor: pointer; flex-shrink: 0;
+  touch-action: manipulation;
+  transition: transform 0.18s cubic-bezier(0.33,1,0.68,1);
   -webkit-tap-highlight-color: transparent;
 }
+.settings-back:active { transform: scale(0.86); }
 .settings-back svg {
   width: 18px; height: 18px;
   stroke: var(--text, #f0ece4);
@@ -47,15 +52,29 @@
   margin-top: 2px; font-weight: 500;
 }
 
+/* ─── BODY ───────────────────────────────────────────────────────────────── */
 #settings-body {
   flex: 1;
   overflow-y: auto;
-  padding: 12px 0 140px;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
+  touch-action: pan-y;
+  padding: 12px 0 calc(40px + env(safe-area-inset-bottom, 0px));
+  scrollbar-width: none;
+}
+#settings-body::-webkit-scrollbar { display: none; }
+
+/* ─── LIVE PREVIEW STRIP ─────────────────────────────────────────────────── */
+/* FIX: was getting clipped — now properly contained inside #app */
+.settings-live-preview {
+  margin: 12px 16px;
+  border-radius: 16px;
+  overflow: hidden;
+  flex-shrink: 0;
+  contain: layout style paint;
 }
 
-/* ─── SECTION ────────────────────────────────────────────────────────────── */
+/* ─── SECTION LABEL ──────────────────────────────────────────────────────── */
 .settings-section { margin-bottom: 6px; }
 .settings-section-label {
   font-size: 10px; font-weight: 700;
@@ -70,11 +89,14 @@
   justify-content: space-between;
   padding: 13px 22px;
   cursor: pointer;
+  touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
   transition: background 0.15s;
   min-height: 60px;
+  contain: layout style; /* lightweight */
 }
 .settings-item:active { background: rgba(255,255,255,0.03); }
+
 .settings-item-left {
   display: flex; align-items: center;
   gap: 14px; flex: 1; min-width: 0;
@@ -84,7 +106,8 @@
   border-radius: 10px;
   background: var(--surface2, #13121a);
   display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0; transition: background 0.2s;
+  flex-shrink: 0;
+  transition: background 0.2s;
 }
 .settings-item-icon svg {
   width: 15px; height: 15px;
@@ -92,7 +115,7 @@
   stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
 }
 .settings-item-icon.icon-active {
-  background: color-mix(in srgb, var(--gold, #b89640) 15%, transparent);
+  background: rgba(184,150,64,0.15);
 }
 .settings-item-icon.icon-active svg { stroke: var(--gold, #b89640); }
 
@@ -123,23 +146,7 @@
 .danger-item:active { background: rgba(220,60,60,0.04); }
 
 /* ─── DEVELOPER ITEM ─────────────────────────────────────────────────────── */
-.settings-item-developer {
-  position: relative;
-  overflow: hidden;
-}
-.settings-item-developer::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg,
-    rgba(249,168,37,0.04) 0%,
-    rgba(233,30,140,0.04) 50%,
-    rgba(106,61,232,0.04) 100%
-  );
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-.settings-item-developer:active::before { opacity: 1; }
+.settings-item-developer { position: relative; overflow: hidden; }
 .insta-icon { background: rgba(233,30,140,0.08) !important; }
 
 /* ─── TOGGLE SWITCH ──────────────────────────────────────────────────────── */
@@ -166,8 +173,8 @@
   box-shadow: 0 1px 4px rgba(0,0,0,0.4);
 }
 .settings-toggle input:checked + .settings-toggle-track {
-  background: color-mix(in srgb, var(--gold, #b89640) 22%, transparent);
-  border-color: color-mix(in srgb, var(--gold, #b89640) 30%, transparent);
+  background: rgba(184,150,64,0.22);
+  border-color: rgba(184,150,64,0.30);
 }
 .settings-toggle input:checked + .settings-toggle-track::after {
   transform: translateX(20px);
@@ -175,42 +182,33 @@
 }
 
 /* ─── EXPANDABLE ROW ─────────────────────────────────────────────────────── */
-.settings-item-expandable {
-  display: block;
-  padding: 0;
-  cursor: default;
-}
+.settings-item-expandable { display: block; padding: 0; cursor: default; }
 .settings-item-expandable:active { background: transparent; }
 .settings-item-full { width: 100%; }
 .settings-item-row-top {
   display: flex; align-items: center;
   justify-content: space-between;
   padding: 13px 22px;
-  min-height: 60px;
-  cursor: default;
+  min-height: 60px; cursor: default;
 }
 .settings-sub-expand {
   max-height: 0; overflow: hidden;
   transition: max-height 0.3s cubic-bezier(0.4,0,0.2,1), opacity 0.25s;
-  opacity: 0;
-  padding: 0 22px;
+  opacity: 0; padding: 0 22px;
 }
 .settings-sub-expand.open {
-  max-height: 120px; opacity: 1;
-  padding: 0 22px 16px;
+  max-height: 120px; opacity: 1; padding: 0 22px 16px;
 }
 .expand-label-row {
   display: flex; justify-content: space-between;
-  font-size: 11px; color: var(--text3, #6b6560);
-  margin-bottom: 8px;
+  font-size: 11px; color: var(--text3, #6b6560); margin-bottom: 8px;
 }
 .expand-value { color: var(--gold, #b89640); font-weight: 600; }
 .expand-toggle {
   width: 32px; height: 32px;
   background: transparent; border: none;
   display: flex; align-items: center; justify-content: center;
-  cursor: pointer; -webkit-tap-highlight-color: transparent;
-  flex-shrink: 0;
+  cursor: pointer; -webkit-tap-highlight-color: transparent; flex-shrink: 0;
 }
 .expand-toggle svg {
   width: 16px; height: 16px;
@@ -230,14 +228,14 @@
     var(--gold, #b89640) var(--pct, 50%),
     var(--surface3, #2a2838) var(--pct, 50%)
   );
-  outline: none; cursor: pointer;
+  outline: none; cursor: pointer; touch-action: none;
 }
 .settings-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 18px; height: 18px;
   border-radius: 50%;
   background: var(--gold, #b89640);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--gold,#b89640) 20%, transparent), 0 2px 6px rgba(0,0,0,0.4);
+  box-shadow: 0 0 0 3px rgba(184,150,64,0.20), 0 2px 6px rgba(0,0,0,0.4);
   cursor: pointer;
   transition: transform 0.15s;
 }
@@ -254,6 +252,7 @@
   display: flex; align-items: center;
   justify-content: space-between;
   padding: 14px 22px; cursor: pointer;
+  touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
   transition: background 0.12s;
 }
@@ -280,15 +279,14 @@
 .color-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  padding: 4px 22px 28px;
+  gap: 12px; padding: 4px 22px 28px;
 }
 .color-swatch {
   display: flex; flex-direction: column;
   align-items: center; gap: 8px;
-  cursor: pointer; -webkit-tap-highlight-color: transparent;
-  padding: 10px 6px;
-  border-radius: 14px;
+  cursor: pointer; touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  padding: 10px 6px; border-radius: 14px;
   transition: background 0.15s;
 }
 .color-swatch:active { background: rgba(255,255,255,0.05); }
@@ -300,23 +298,13 @@
   box-shadow: 0 4px 12px rgba(0,0,0,0.4);
   transition: transform 0.15s, box-shadow 0.15s;
 }
-.color-swatch.selected .color-circle {
-  transform: scale(1.1);
-  box-shadow: 0 6px 18px rgba(0,0,0,0.5);
-}
+.color-swatch.selected .color-circle { transform: scale(1.1); box-shadow: 0 6px 18px rgba(0,0,0,0.5); }
 .color-circle svg { width: 18px; height: 18px; }
-.color-swatch span {
-  font-size: 11px; font-weight: 500;
-  color: var(--text2, #a09890);
-}
+.color-swatch span { font-size: 11px; font-weight: 500; color: var(--text2, #a09890); }
 .color-swatch.selected span { color: var(--gold, #b89640); }
 
 /* ─── ACCENT DOTS ────────────────────────────────────────────────────────── */
-.accent-dot {
-  width: 16px; height: 16px;
-  border-radius: 50%;
-  display: block;
-}
+.accent-dot { width: 16px; height: 16px; border-radius: 50%; display: block; }
 .accent-dot.accent-gold   { background: #b89640; }
 .accent-dot.accent-rose   { background: #c05f7a; }
 .accent-dot.accent-sky    { background: #4a9cc8; }
@@ -325,70 +313,45 @@
 .accent-dot.accent-ember  { background: #c4622d; }
 
 /* ─── EQUALIZER SHEET ────────────────────────────────────────────────────── */
-.eq-sheet-inner {
-  padding-bottom: 36px !important;
-  max-height: 92vh;
-  overflow-y: auto;
-}
-.eq-header {
-  display: flex; align-items: center;
-  padding: 6px 22px 14px;
-}
+.eq-sheet-inner { padding-bottom: 36px !important; max-height: 92vh; overflow-y: auto; }
+.eq-header { display: flex; align-items: center; padding: 6px 22px 14px; }
 .eq-presets {
   display: flex; gap: 8px;
   padding: 0 22px 16px;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
+  overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none;
 }
 .eq-presets::-webkit-scrollbar { display: none; }
 .eq-preset-btn {
-  flex-shrink: 0;
-  padding: 6px 14px;
+  flex-shrink: 0; padding: 6px 14px;
   border-radius: 20px;
   background: var(--surface2, #13121a);
   border: 1px solid rgba(255,255,255,0.06);
   color: var(--text2, #a09890);
   font-size: 12px; font-weight: 600;
-  cursor: pointer; -webkit-tap-highlight-color: transparent;
+  cursor: pointer; touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
   font-family: inherit;
 }
 .eq-preset-btn.active {
-  background: color-mix(in srgb, var(--gold,#b89640) 16%, transparent);
-  border-color: color-mix(in srgb, var(--gold,#b89640) 35%, transparent);
+  background: rgba(184,150,64,0.16);
+  border-color: rgba(184,150,64,0.35);
   color: var(--gold, #b89640);
 }
 .eq-bands {
-  display: flex;
-  justify-content: space-between;
+  display: flex; justify-content: space-between;
   align-items: flex-end;
-  padding: 8px 22px 16px;
-  gap: 4px;
-  height: 200px;
+  padding: 8px 22px 16px; gap: 4px; height: 200px;
 }
-.eq-band {
-  display: flex; flex-direction: column;
-  align-items: center; gap: 6px;
-  flex: 1;
-}
-.eq-gain {
-  font-size: 9px; font-weight: 600;
-  color: var(--gold, #b89640);
-  white-space: nowrap;
-}
+.eq-band { display: flex; flex-direction: column; align-items: center; gap: 6px; flex: 1; }
+.eq-gain { font-size: 9px; font-weight: 600; color: var(--gold, #b89640); white-space: nowrap; }
 .eq-fader {
   -webkit-appearance: slider-vertical;
   appearance: slider-vertical;
-  writing-mode: vertical-lr;
-  direction: rtl;
-  width: 4px;
-  height: 120px;
-  padding: 0;
+  writing-mode: vertical-lr; direction: rtl;
+  width: 4px; height: 120px; padding: 0;
   background: var(--surface3, #1e1c28);
-  border-radius: 2px;
-  outline: none;
-  cursor: pointer;
+  border-radius: 2px; outline: none; cursor: pointer;
 }
 .eq-fader::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -397,29 +360,28 @@
   background: var(--gold, #b89640);
   box-shadow: 0 2px 6px rgba(0,0,0,0.5);
 }
-.eq-freq {
-  font-size: 9px; font-weight: 500;
-  color: var(--text3, #6b6560);
-}
+.eq-freq { font-size: 9px; font-weight: 500; color: var(--text3, #6b6560); }
 
 /* ─── AMBIENT EDGE GLOW ──────────────────────────────────────────────────── */
+/* FIX: changed fixed → absolute so it stays within #app */
 #ambient-edge-glow {
-  position: fixed;
+  position: absolute;
   inset: 0;
   pointer-events: none;
   z-index: 9998;
   --eg-r: 184; --eg-g: 150; --eg-b: 64;
   background:
-    radial-gradient(ellipse 60% 20% at 50% 0%, rgba(var(--eg-r),var(--eg-g),var(--eg-b),0.18) 0%, transparent 100%),
+    radial-gradient(ellipse 60% 20% at 50% 0%,   rgba(var(--eg-r),var(--eg-g),var(--eg-b),0.18) 0%, transparent 100%),
     radial-gradient(ellipse 60% 20% at 50% 100%, rgba(var(--eg-r),var(--eg-g),var(--eg-b),0.18) 0%, transparent 100%),
-    radial-gradient(ellipse 20% 60% at 0% 50%, rgba(var(--eg-r),var(--eg-g),var(--eg-b),0.14) 0%, transparent 100%),
+    radial-gradient(ellipse 20% 60% at 0% 50%,   rgba(var(--eg-r),var(--eg-g),var(--eg-b),0.14) 0%, transparent 100%),
     radial-gradient(ellipse 20% 60% at 100% 50%, rgba(var(--eg-r),var(--eg-g),var(--eg-b),0.14) 0%, transparent 100%);
   transition: background 1.2s ease;
+  /* Lightweight: will-change removed, animation kept minimal */
   animation: edge-pulse 3s ease-in-out infinite;
 }
 @keyframes edge-pulse {
   0%, 100% { opacity: 0.7; }
-  50% { opacity: 1; }
+  50%       { opacity: 1;   }
 }
 
 /* ─── SETTINGS GEAR BUTTON ───────────────────────────────────────────────── */
@@ -428,7 +390,8 @@
   border-radius: 50%;
   background: transparent; border: none;
   display: flex; align-items: center; justify-content: center;
-  cursor: pointer; -webkit-tap-highlight-color: transparent;
+  cursor: pointer; touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
   transition: background 0.15s;
 }
 .ph-settings-btn:active { background: rgba(255,255,255,0.07); }
@@ -438,29 +401,34 @@
   stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
 }
 
-/* ─── LIGHT THEME OVERRIDES ─────────────────────────────────────────────── */
-.theme-light .settings-item-icon { background: #ede8df; }
-.theme-light .settings-toggle-track { background: #ddd8ce; border-color: rgba(0,0,0,0.08); }
-.theme-light .settings-toggle-track::after { background: #a09880; }
-.theme-light #settings-panel { background: var(--bg, #f5f2ed); }
-.theme-light .settings-header { border-color: rgba(0,0,0,0.08); }
-.theme-light .settings-back { background: #ede8df; }
-.theme-light .settings-back svg { stroke: #1a1814; }
-.theme-light .settings-item-title { color: #1a1814; }
-.theme-light .settings-item-icon svg { stroke: #6a6460; }
-.theme-light .eq-preset-btn { background: #ede8df; border-color: rgba(0,0,0,0.08); color: #6a6460; }
-.theme-light .settings-slider { background: linear-gradient(to right, var(--gold,#b89640) 0%, var(--gold,#b89640) 50%, #ddd8ce 50%); }
+/* ─── LIGHT THEME OVERRIDES ──────────────────────────────────────────────── */
+[data-theme="light"] .settings-item-icon { background: #ede8df; }
+[data-theme="light"] .settings-toggle-track { background: #ddd8ce; border-color: rgba(0,0,0,0.08); }
+[data-theme="light"] .settings-toggle-track::after { background: #a09880; }
+[data-theme="light"] #settings-panel { background: var(--bg, #f5f2ed); }
+[data-theme="light"] .settings-header { border-color: rgba(0,0,0,0.08); }
+[data-theme="light"] .settings-back { background: #ede8df; }
+[data-theme="light"] .settings-back svg { stroke: #1a1814; }
+[data-theme="light"] .settings-item-title { color: #1a1814; }
+[data-theme="light"] .settings-item-icon svg { stroke: #6a6460; }
+[data-theme="light"] .eq-preset-btn { background: #ede8df; border-color: rgba(0,0,0,0.08); color: #6a6460; }
+[data-theme="light"] .settings-slider {
+  background: linear-gradient(to right, var(--gold,#b89640) 0%, var(--gold,#b89640) 50%, #ddd8ce 50%);
+}
 
 /* ─── AMOLED OVERRIDES ───────────────────────────────────────────────────── */
-.theme-amoled .settings-item-icon { background: #0d0d0d; }
-.theme-amoled .settings-toggle-track { background: #111; }
-.theme-amoled .settings-item:active { background: rgba(255,255,255,0.02); }
+[data-theme="amoled"] #settings-panel { background: #000; }
+[data-theme="amoled"] .settings-item-icon { background: #0d0d0d; }
+[data-theme="amoled"] .settings-toggle-track { background: #111; }
+[data-theme="amoled"] .settings-item:active { background: rgba(255,255,255,0.02); }
 
 /* ─── MODAL OVERLAY (shared) ─────────────────────────────────────────────── */
 .modal-overlay {
-  position: fixed; inset: 0; z-index: 1100;
+  position: absolute; /* FIX: was 'fixed' */
+  inset: 0; z-index: 1100;
   background: rgba(0,0,0,0.6);
   backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   display: flex; align-items: flex-end;
   opacity: 0; pointer-events: none;
   transition: opacity 0.22s;
@@ -470,13 +438,20 @@
   width: 100%; max-height: 90vh;
   background: var(--surface, #0e0d14);
   border-radius: 22px 22px 0 0;
-  overflow: hidden;
-  padding: 8px 0 0;
+  overflow: hidden; padding: 8px 0 0;
   box-shadow: 0 -8px 40px rgba(0,0,0,0.6);
 }
 .modal-handle {
   width: 36px; height: 4px;
   background: rgba(255,255,255,0.12);
-  border-radius: 2px;
-  margin: 0 auto 12px;
+  border-radius: 2px; margin: 0 auto 12px;
+}
+
+/* ─── REDUCED MOTION ─────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  #ambient-edge-glow { animation: none !important; }
+  .settings-panel,
+  .settings-sub-expand,
+  .settings-toggle-track,
+  .settings-toggle-track::after { transition-duration: 0.01ms !important; }
 }
