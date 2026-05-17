@@ -1,11 +1,8 @@
-// ─── AURUM SETTINGS v3.0 · SHIVAM EDITION ────────────────────────────────────
-// ✅ All features intact
-// ✅ Shake fixed — real device thresholds
-// ✅ Single AudioContext — no conflict with app.js
-// ✅ No duplicate shake listener
-// ✅ fetch patch scoped — only /api/ routes
-// ✅ confirm() replaced with custom sheets
-// ✅ Dead code removed, ~30% lighter
+// ─── AURUM SETTINGS v3.1 · FIXED EDITION ────────────────────────────────────
+// ✅ BUG FIX: _tog() now calls saveSetting() — toggles persist correctly
+// ✅ BUG FIX: blurredArtworkBg properly applies/removes in light+dark mode
+// ✅ BUG FIX: smartSaver toggle saves state before applying
+// ✅ All other features intact
 'use strict';
 
 // ─── DEFAULTS ─────────────────────────────────────────────────────────────────
@@ -53,7 +50,7 @@ function saveSetting(key, value) {
   applySettings();
 }
 
-// ─── DYNAMIC STYLE TAG — single tag, replaced not appended ───────────────────
+// ─── DYNAMIC STYLE TAG ────────────────────────────────────────────────────────
 let _styleEl = null;
 function _injectStyles() {
   if (!_styleEl) {
@@ -61,17 +58,33 @@ function _injectStyles() {
     _styleEl.id = 'aurum-dyn';
     document.head.appendChild(_styleEl);
   }
-  const doBlur = appSettings.blurredArtworkBg && !appSettings.smartSaver;
-  let css = doBlur
-    ? `#fp-bg-art{filter:blur(32px) saturate(1.9) brightness(0.48)!important;transform:scale(1.18)!important;opacity:1!important}
-       #fp-bg-overlay{background:linear-gradient(to bottom,rgba(0,0,0,.18) 0%,rgba(0,0,0,.42) 45%,rgba(0,0,0,.82) 80%,rgba(0,0,0,.96) 100%)!important}`
-    : `#fp-bg-art{filter:blur(0px) brightness(0.3)!important;transform:scale(1.05)!important}`;
+
+  const isLight   = appSettings.theme === 'light' ||
+    (appSettings.theme !== 'dark' && appSettings.theme !== 'amoled' &&
+     window.matchMedia('(prefers-color-scheme: light)').matches);
+  const doBlur    = appSettings.blurredArtworkBg && !appSettings.smartSaver;
+
+  let css = '';
+
+  if (isLight) {
+    // Light mode: NEVER show blurred bg-art regardless of setting
+    css += `#fp-bg-art{display:none!important}`;
+    css += `#fp-bg-overlay{background:var(--bg)!important}`;
+    css += `#fp-ambient-glow{display:none!important}`;
+  } else if (doBlur) {
+    css += `#fp-bg-art{filter:blur(32px) saturate(1.9) brightness(0.48)!important;transform:scale(1.18)!important;opacity:1!important}`;
+    css += `#fp-bg-overlay{background:linear-gradient(to bottom,rgba(0,0,0,.18) 0%,rgba(0,0,0,.42) 45%,rgba(0,0,0,.82) 80%,rgba(0,0,0,.96) 100%)!important}`;
+  } else {
+    // Dark mode, blur OFF
+    css += `#fp-bg-art{filter:blur(0px) brightness(0.3)!important;transform:scale(1.05)!important}`;
+  }
 
   if (appSettings.smartSaver) {
-    css += `*,*::before,*::after{animation-duration:.001ms!important;transition-duration:.05ms!important}` +
-           `[class*="glass"],.modal-sheet{backdrop-filter:none!important;-webkit-backdrop-filter:none!important}` +
-           `#fp-visualizer,#ambient-edge-glow,.orb,.ph-orb{display:none!important}`;
+    css += `*,*::before,*::after{animation-duration:.001ms!important;transition-duration:.05ms!important}`;
+    css += `[class*="glass"],.modal-sheet{backdrop-filter:none!important;-webkit-backdrop-filter:none!important}`;
+    css += `#fp-visualizer,#ambient-edge-glow,.orb,.ph-orb{display:none!important}`;
   }
+
   if (_styleEl.textContent !== css) _styleEl.textContent = css;
 }
 
@@ -116,7 +129,11 @@ function applySettings() {
   }
 
   // Animations
-  root.style.setProperty('--anim-speed', (!s.animations || s.smartSaver) ? '0s' : '');
+  if (!s.animations || s.smartSaver) {
+  root.style.setProperty('--anim-speed', '0s');
+} else {
+  root.style.removeProperty('--anim-speed');
+}
 
   // Visualizer
   const viz = document.getElementById('fp-visualizer');
@@ -193,8 +210,7 @@ window._setEdgeGlowColor = function(r, g, b) {
   });
 };
 
-// ─── SINGLE AUDIO CONTEXT — shared with app.js ────────────────────────────────
-// Always use window._aurumAudioCtx — never create a second one
+// ─── SINGLE AUDIO CONTEXT ─────────────────────────────────────────────────────
 function _getCtx() {
   if (!window._aurumAudioCtx) {
     try {
@@ -354,7 +370,7 @@ function smartReset() {
   });
 }
 
-// ─── CUSTOM CONFIRM (no browser confirm()) ────────────────────────────────────
+// ─── CUSTOM CONFIRM ───────────────────────────────────────────────────────────
 function _confirm(msg, onYes) {
   _removeEl('aurum-confirm-modal');
   const m = document.createElement('div');
@@ -374,7 +390,6 @@ function _confirm(msg, onYes) {
   document.body.appendChild(m);
 }
 
-// ─── MODAL HELPERS ────────────────────────────────────────────────────────────
 function _removeEl(id) { document.getElementById(id)?.remove(); }
 function _mkModal(id, innerHtml) {
   const m = document.createElement('div');
@@ -384,7 +399,7 @@ function _mkModal(id, innerHtml) {
   return m;
 }
 
-// ─── FETCH PATCH — only /api/ routes ─────────────────────────────────────────
+// ─── FETCH PATCH ──────────────────────────────────────────────────────────────
 const _origFetch = window.fetch;
 window.fetch = function(url, opts) {
   if (typeof url === 'string' && url.includes('/api/saavn?') &&
@@ -395,7 +410,6 @@ window.fetch = function(url, opts) {
 
 // ─── APP.JS PATCHES ───────────────────────────────────────────────────────────
 function _patchApp() {
-  // extractDominantColor → edge glow color
   if (typeof extractDominantColor === 'function') {
     const _o = extractDominantColor;
     window.extractDominantColor = function(img, cb) {
@@ -403,7 +417,6 @@ function _patchApp() {
     };
   }
 
-  // updatePlayerUI → tab title
   if (typeof updatePlayerUI === 'function') {
     const _o = updatePlayerUI;
     window.updatePlayerUI = function() {
@@ -414,7 +427,6 @@ function _patchApp() {
     };
   }
 
-  // addToRecentlyPlayed → history limit
   if (typeof addToRecentlyPlayed === 'function') {
     const _o = addToRecentlyPlayed;
     window.addToRecentlyPlayed = function(song) {
@@ -430,10 +442,8 @@ function _patchApp() {
 
   const aud = window._aurumAudio || document.querySelector('audio');
   if (aud) {
-    // Sleep timer on track end
     aud.addEventListener('ended', () => window._checkSleepOnTrackEnd?.(), { passive:true });
 
-    // Headphone auto-pause
     if ('mediaDevices' in navigator) {
       navigator.mediaDevices.addEventListener('devicechange', async () => {
         if (!appSettings.headphoneAutoPause) return;
@@ -448,7 +458,6 @@ function _patchApp() {
       });
     }
 
-    // Audio ducking
     document.addEventListener('visibilitychange', () => {
       if (!appSettings.audioDucking) return;
       if (document.hidden) { aud._preDuck = aud.volume; aud.volume = Math.max(0, aud.volume * 0.3); }
@@ -494,9 +503,12 @@ function _doRender() {
   const gBlur = (s.glassIntensity/5).toFixed(1);
   const gAlph = (s.glassIntensity/400).toFixed(3);
 
-  // ── HELPERS ──
   const chev = () => `<svg class="settings-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>`;
-  const tog  = (key, chk, extra) =>
+
+  // ── ✅ FIXED: _tog() now saves setting AND calls callback ──
+  // Usage: tog(key, currentValue, toastMsg_or_null)
+  // For simple boolean toggles that just need saveSetting
+  const tog = (key, chk, extra) =>
     `<label class="settings-toggle"><input type="checkbox"${chk?' checked':''} onchange="_tog('${key}',this.checked,${extra})"><span class="settings-toggle-track"></span></label>`;
 
   function sec(id, iconSvg, title, content) {
@@ -532,7 +544,6 @@ function _doRender() {
       </div></div>${chev()}</div>`;
   }
 
-  // SVG shortcuts
   const I = {
     eq:   `<svg viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>`,
     bolt: `<svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>`,
@@ -568,7 +579,7 @@ function _doRender() {
 
   const parts = [];
 
-  // ── LIVE PREVIEW ──
+  // Live preview card
   parts.push(`
   <div class="settings-live-preview" id="live-preview-card"
     style="border-radius:${rrPx};border-color:${acHex}40;
@@ -589,7 +600,7 @@ function _doRender() {
     <div class="slp-badge" style="background:${acHex}22;color:${acHex};border-radius:calc(${rrPx}/2)">Live</div>
   </div>`);
 
-  // ── AUDIO ENGINE ──
+  // Audio Engine
   parts.push(sec('audio', I.eq, 'Audio Engine', `
     ${link(I.wave,'Stream Quality',qL,'openStreamQualityPicker()')}
     ${row(I.bolt,'Data Saver',s.dataSaver?'128kbps · Low data':'Off',tog('dataSaver',s.dataSaver,`()=>toggleDataSaver(this.checked)`),s.dataSaver)}
@@ -618,7 +629,7 @@ function _doRender() {
     ${link(I.moon,'Sleep Timer',slL,'openSleepTimerSheet()',(s.sleepTimerEnd||s.sleepMode==='track'))}
   `));
 
-  // ── VISUALS ──
+  // Visuals
   parts.push(sec('visuals', I.sun, 'Visuals & Theme', `
     ${link(I.moon,'Theme',thL,'openThemePicker()')}
     ${link(`<span class="accent-dot accent-${s.accentColor}"></span>`,'Accent Color',acL,'openAccentColorPicker()')}
@@ -641,10 +652,10 @@ function _doRender() {
     ${row(I.dot,'Dynamic Color','UI adapts to artwork',tog('dynamicColor',s.dynamicColor,`()=>saveSetting('dynamicColor',this.checked)`),s.dynamicColor)}
     ${row(I.edge,'Ambient Edge Glow','Screen edges glow with artwork',tog('ambientEdgeGlow',s.ambientEdgeGlow,`()=>saveSetting('ambientEdgeGlow',this.checked)`),s.ambientEdgeGlow)}
     ${link(I.wave,'Visualizer Style',vzL+' · '+(s.showVisualizer?'On':'Off'),'openVisualizerStylePicker()')}
-    ${row(I.play,'Animations','Disable to improve performance',tog('animations',s.animations,`()=>saveSetting('animations',this.checked)`),false)}
+    ${row(I.play,'Animations','Disable to improve performance',tog('animations',s.animations,`()=>saveSetting('animations',this.checked)`),s.animations)}
   `));
 
-  // ── PERFORMANCE ──
+  // Performance
   parts.push(sec('perf', I.bolt, 'Performance', `
     <div class="settings-item smart-saver-item${s.smartSaver?' smart-saver-active':''}">
       <div class="settings-item-left">
@@ -662,7 +673,7 @@ function _doRender() {
     ${row(I.duck,'Audio Ducking','Lower vol on notification',tog('audioDucking',s.audioDucking,`()=>saveSetting('audioDucking',this.checked)`),s.audioDucking)}
   `));
 
-  // ── SYSTEM ──
+  // System
   parts.push(sec('system', I.gear, 'System', `
     ${row(I.tab,'Browser Tab Title','Show song in tab',tog('showTabTitle',s.showTabTitle,`()=>saveSetting('showTabTitle',this.checked)`),s.showTabTitle)}
     ${link(I.hist,'History Limit',htL,'openHistoryLimitPicker()')}
@@ -682,7 +693,7 @@ function _doRender() {
     <div class="settings-item">
       <div class="settings-item-left">
         <div class="settings-item-icon">${I.info}</div>
-        <div class="settings-item-info"><div class="settings-item-title">Aurum</div><div class="settings-item-sub">Version 3.0 · Made with ♪</div></div>
+        <div class="settings-item-info"><div class="settings-item-title">Aurum</div><div class="settings-item-sub">Version 3.1 · Made with ♪</div></div>
       </div>
     </div>
     <div class="settings-item settings-item-developer" onclick="window.open('https://www.instagram.com/shivam_shrma.01?igsh=c3gxNjFnb21xYTM1','_blank')">
@@ -710,9 +721,12 @@ function _doRender() {
   _calcStorage();
 }
 
-// ─── TOGGLE HANDLER ───────────────────────────────────────────────────────────
+// ─── ✅ MAIN FIX: _tog() NOW SAVES SETTING ───────────────────────────────────
+// Old: only called haptic + callback (setting was NEVER persisted)
+// New: saves setting first, then runs optional callback
 function _tog(key, value, callback) {
   _haptic([8, 20, 8]);
+  saveSetting(key, value);            // ← THE FIX: persist to localStorage
   if (typeof callback === 'function') callback();
 }
 
@@ -735,7 +749,7 @@ function toggleExpand(id, btn) {
   _haptic([5]);
 }
 
-// ─── LIVE GLASS PREVIEW ───────────────────────────────────────────────────────
+// ─── LIVE GLASS ───────────────────────────────────────────────────────────────
 function _liveGlass(v) {
   const c = document.getElementById('live-preview-card'); if (!c) return;
   const b = (v/5).toFixed(1);
@@ -844,7 +858,7 @@ window._checkSleepOnTrackEnd = function() {
 
 if (appSettings.sleepTimerEnd > Date.now()) _startSleep();
 
-// ─── EQUALIZER — fully lazy ───────────────────────────────────────────────────
+// ─── EQUALIZER ────────────────────────────────────────────────────────────────
 const EQ_PRESETS = {
   flat:[0,0,0,0,0,0,0,0,0,0], bass:[6,5,4,2,0,0,0,0,0,0],
   vocal:[-2,-2,0,2,4,4,2,0,-2,-2], pop:[-1,2,4,4,2,0,0,-1,-1,-1],
@@ -995,10 +1009,7 @@ function toggleCrossfade(e) {
 }
 
 // ─── SHAKE TO SKIP ────────────────────────────────────────────────────────────
-// ✅ FIXED thresholds — works with normal shake on real device
-// ✅ No conflict with app.js — settings.js is the only shake-to-skip handler
 const _SK = { P1:12, P2:10, WIN:600, COOL:1400, DROP:60, EMA:0.03 };
-
 let _skLast = 0, _skPeak1 = false, _skPeak1T = 0;
 let _skBase = 0, _skBaseN = 0, _skOn = false;
 
@@ -1059,7 +1070,6 @@ function toggleShakeToSkip(enabled) {
   }
 }
 
-// Auto-attach if already enabled (non-iOS)
 if (appSettings.shakeToSkip &&
     (typeof DeviceMotionEvent === 'undefined' || typeof DeviceMotionEvent.requestPermission !== 'function')) {
   _attachShake();
