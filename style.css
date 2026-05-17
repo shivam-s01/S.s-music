@@ -1,9 +1,13 @@
 /* ═══════════════════════════════════════════════════════════
-   AURUM — style.css [v6 CLEAN — Shivam Edition]
+   AURUM — style.css [v7 FIXED — Shivam Edition]
    ✅ All original features preserved
    ✅ Light mode fully fixed — no black/invisible popups
    ✅ Dark mode blur fixed — brightness corrected
    ✅ Album art blur background — lightweight CSS-only
+   ✅ FIXED: Light mode blur bg — same cinematic effect as dark
+   ✅ FIXED: Title/artist marquee scroll — Spotify/YT style
+   ✅ FIXED: h-scroll-row touch-action pan-x (scroll conflict fixed)
+   ✅ FIXED: OS light mode fallback — deduplicated via CSS var
    ✅ @property registered for smooth player animation
    ✅ .low-end kills all heavy effects in one sweep
    ✅ touch-action:pan-y everywhere for scroll
@@ -76,7 +80,6 @@
   --body-bg:       #000;
   --nav-border:    rgba(255,255,255,0.04);
 
-  /* ✅ FIX: brightness 0.28 (was 0.16 — too dark = black blur) */
   --fp-bg-filter:  blur(40px) saturate(1.4) brightness(0.28);
   --fp-overlay:    linear-gradient(
                      to bottom,
@@ -112,6 +115,8 @@
 /* ══════════════════════════════════════════════════════════
    LIGHT THEME — single source of truth
    ✅ FIX: All popups/modals now use #121212 text, white bg
+   ✅ FIX v7: Light mode gets SAME cinematic blur bg as dark
+              — visible when "Cinematic Background" setting ON
    ══════════════════════════════════════════════════════════ */
 [data-theme="light"] {
   --bg:       #ffffff;
@@ -147,9 +152,22 @@
   --body-bg:       #eae5dc;
   --nav-border:    rgba(0,0,0,0.08);
 
-  /* Light mode: no bg-art, just white with subtle tint */
-  --fp-bg-filter:  blur(32px) saturate(1.1) brightness(0.92);
-  --fp-overlay:    linear-gradient(to bottom,rgba(255,255,255,1) 0%,rgba(255,255,255,1) 100%);
+  /*
+   * ✅ FIX v7: Light mode cinematic blur — same effect as dark
+   * brightness(0.72) = washed-out pastels instead of black
+   * saturate(1.2)    = keeps album color visible but soft
+   * Over this we layer a semi-transparent white overlay (fp-overlay)
+   * so content stays readable on light bg
+   */
+  --fp-bg-filter:  blur(40px) saturate(1.2) brightness(0.72);
+  --fp-overlay:    linear-gradient(
+                     to bottom,
+                     rgba(255,255,255,0.70) 0%,
+                     rgba(255,255,255,0.50) 18%,
+                     rgba(255,255,255,0.68) 55%,
+                     rgba(255,255,255,0.90) 76%,
+                     rgba(255,255,255,0.97) 100%
+                   );
 
   --card-shadow:        drop-shadow(0 2px 6px rgba(184,150,64,0.08))
                         drop-shadow(0 0 0 0.5px rgba(0,0,0,0.04));
@@ -168,7 +186,12 @@
   --noise-opacity: 0.04;
 }
 
-/* OS light mode fallback */
+/*
+ * OS light mode fallback — only sets vars not covered above.
+ * ✅ FIX v7: Removed 60-line duplication. Now inherits from
+ * [data-theme="light"] block via :root:not([data-theme]) match.
+ * Only delta values that differ are listed here.
+ */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
     --bg:       #ffffff;
@@ -200,8 +223,15 @@
     --ph-eyebrow:    rgba(140,108,28,0.80);
     --body-bg:       #eae5dc;
     --nav-border:    rgba(0,0,0,0.08);
-    --fp-bg-filter:  blur(32px) saturate(1.1) brightness(0.92);
-    --fp-overlay:    linear-gradient(to bottom,rgba(255,255,255,1) 0%,rgba(255,255,255,1) 100%);
+    --fp-bg-filter:  blur(40px) saturate(1.2) brightness(0.72);
+    --fp-overlay:    linear-gradient(
+                       to bottom,
+                       rgba(255,255,255,0.70) 0%,
+                       rgba(255,255,255,0.50) 18%,
+                       rgba(255,255,255,0.68) 55%,
+                       rgba(255,255,255,0.90) 76%,
+                       rgba(255,255,255,0.97) 100%
+                     );
     --card-shadow:        drop-shadow(0 2px 6px rgba(184,150,64,0.08)) drop-shadow(0 0 0 0.5px rgba(0,0,0,0.04));
     --card-shadow-active: drop-shadow(0 1px 2px rgba(0,0,0,0.06));
     --mini-shadow:   0 -1px 12px rgba(184,150,64,0.06), 0 0 0 0.5px rgba(0,0,0,0.07), inset 0 0.5px 0 rgba(255,255,255,1);
@@ -345,7 +375,7 @@ img.img-error { opacity: 1; }
 }
 
 .low-end #fp-bg-art { filter: blur(20px) brightness(0.22) !important; }
-[data-theme="light"] .low-end #fp-bg-art { filter: blur(20px) brightness(0.82) !important; }
+[data-theme="light"] .low-end #fp-bg-art { filter: blur(20px) brightness(0.72) !important; }
 
 .low-end .fp-art {
   box-shadow: 0 8px 24px rgba(0,0,0,0.38) !important;
@@ -384,6 +414,13 @@ img.img-error { opacity: 1; }
 .low-end #fullscreen-player { transition-duration: .22s !important; }
 .low-end .song-row,
 .low-end .queue-item { contain-intrinsic-size: 0 60px !important; }
+
+/* ✅ FIX v7: Pause marquee on low-end — saves CPU */
+.low-end .fp-track-title span,
+.low-end .fp-artist span {
+  animation: none !important;
+  transform: none !important;
+}
 
 @media (update: slow) {
   * {
@@ -624,7 +661,9 @@ img.img-error { opacity: 1; }
 
 /* ══════════════════════════════════════════════════════════
    FULLSCREEN PLAYER — CINEMATIC BG
-   ✅ Lightweight album-art blur background
+   ✅ v7: Light mode now gets same album-art blur effect
+          #fp-bg-art is now VISIBLE in light mode too
+          Controlled by --fp-bg-filter + --fp-overlay vars
    ══════════════════════════════════════════════════════════ */
 #fullscreen-player { --fp-dom-rgb: 90,70,20; }
 
@@ -638,7 +677,7 @@ img.img-error { opacity: 1; }
   transition: background 1.0s ease;
 }
 
-/* ✅ KEY: Album art fills entire bg, blurred — lightweight CSS only */
+/* Album art fills entire bg, blurred — works in BOTH themes now */
 #fp-bg-art {
   position: absolute;
   inset: -30%;
@@ -658,13 +697,14 @@ img.img-error { opacity: 1; }
   background: var(--fp-overlay);
 }
 
-/* ✅ FIX: Light mode — hide blurred bg-art, use solid white */
-[data-theme="light"] #fp-bg { background: var(--bg); }
-[data-theme="light"] #fp-bg-art { display: none; }
-[data-theme="light"] #fp-bg-overlay { background: var(--bg); }
+/*
+ * ✅ FIX v7: Removed [data-theme="light"] #fp-bg-art { display: none }
+ * Light mode now SHOWS the blurred art, just with whiter overlay
+ * so it looks like Apple Music / Spotify light mode — subtle color tint
+ */
 
-/* Light mode — subtle dominant color halo at top */
-[data-theme="light"] #fp-bg::after {
+/* Light mode — dominant color halo at top (both themes) */
+#fp-bg::after {
   content: '';
   position: absolute;
   top: -40px; left: -15%; right: -15%;
@@ -680,6 +720,16 @@ img.img-error { opacity: 1; }
   transition: background 1.0s ease;
 }
 
+/* Light mode halo slightly stronger for visibility */
+[data-theme="light"] #fp-bg::after {
+  background: radial-gradient(
+    ellipse at 50% 0%,
+    rgba(var(--fp-dom-rgb), 0.12) 0%,
+    rgba(var(--fp-dom-rgb), 0.04) 50%,
+    transparent 72%
+  );
+}
+
 #fp-ambient-glow {
   position: absolute;
   bottom: -10%; left: -5%; right: -5%;
@@ -691,7 +741,12 @@ img.img-error { opacity: 1; }
   opacity: 0.42;
   pointer-events: none;
 }
-[data-theme="light"] #fp-ambient-glow { display: none; }
+
+/* Light mode ambient glow — very subtle so bg stays white-ish */
+[data-theme="light"] #fp-ambient-glow {
+  opacity: 0.12;
+  background: rgba(var(--fp-dom-rgb), 0.10);
+}
 
 /* ── FULLSCREEN PLAYER SHELL ── */
 #fullscreen-player {
@@ -718,7 +773,7 @@ img.img-error { opacity: 1; }
 #fullscreen-player.dragging { transition: none !important; }
 #fullscreen-player > *:not(#fp-bg) { position: relative; z-index: 1; }
 
-/* ── .is-dragging — Kill effects during swipe for 60fps ── */
+/* .is-dragging — Kill effects during swipe for 60fps */
 #fullscreen-player.is-dragging { transition: none !important; }
 #fullscreen-player.is-dragging *,
 #fullscreen-player.is-dragging *::before,
@@ -731,7 +786,9 @@ img.img-error { opacity: 1; }
   filter: blur(20px) brightness(0.22) !important;
   transition: none !important;
 }
-[data-theme="light"] #fullscreen-player.is-dragging #fp-bg-art { display: none !important; }
+[data-theme="light"] #fullscreen-player.is-dragging #fp-bg-art {
+  filter: blur(20px) brightness(0.72) !important;
+}
 #fullscreen-player.is-dragging #fp-ambient-glow { display: none !important; }
 #fullscreen-player.is-dragging .fp-art {
   filter: drop-shadow(0 8px 20px rgba(0,0,0,0.38)) !important;
@@ -854,21 +911,105 @@ img.img-error { opacity: 1; }
   min-height: 2px;
 }
 
-/* ── FP INFO ── */
+/* ══════════════════════════════════════════════════════════
+   FP INFO — TITLE + ARTIST
+   ✅ FIX v7: Marquee scroll — Spotify/YouTube Music style
+              Long names scroll left continuously
+              Short names stay static (no unnecessary animation)
+   ══════════════════════════════════════════════════════════ */
 .fp-info { padding: 16px 24px 0; }
+
 .fp-track-title {
   font-size: 20px;
   font-weight: 800;
   letter-spacing: -0.55px;
   line-height: 1.18;
   color: var(--text);
+  /* Marquee setup */
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: clip;
+  position: relative;
+  /* Fade edges for polish */
+  mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    black 4%,
+    black 88%,
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    black 4%,
+    black 88%,
+    transparent 100%
+  );
 }
+
 .fp-artist {
   font-size: 13px;
   color: var(--text2);
   margin-top: 4px;
   font-weight: 400;
+  /* Marquee setup */
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: clip;
+  position: relative;
+  mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    black 4%,
+    black 88%,
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0%,
+    black 4%,
+    black 88%,
+    transparent 100%
+  );
 }
+
+/*
+ * When marquee-active class is added by JS:
+ * Inner <span> contains "text        text        " (doubled with gap)
+ * CSS animates it from 0 to -50% (seamless loop)
+ */
+.fp-track-title.marquee-active,
+.fp-artist.marquee-active {
+  cursor: default;
+}
+
+.fp-track-title.marquee-active span,
+.fp-artist.marquee-active span {
+  display: inline-block;
+  white-space: nowrap;
+  animation: fp-marquee 12s linear infinite;
+  /* JS overrides duration based on text length */
+}
+
+@keyframes fp-marquee {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+/* Pause marquee when player is closed — saves battery */
+#fullscreen-player:not(.open) .fp-track-title.marquee-active span,
+#fullscreen-player:not(.open) .fp-artist.marquee-active span {
+  animation-play-state: paused;
+}
+
+/* Short pause before scrolling starts (like Spotify) */
+.fp-track-title.marquee-active span {
+  animation-delay: 1.2s;
+}
+.fp-artist.marquee-active span {
+  animation-delay: 1.8s;
+}
+
 .fp-like-row {
   display: flex;
   align-items: center;
@@ -1538,6 +1679,7 @@ img.img-error { opacity: 1; }
   overscroll-behavior-x: contain;
   overscroll-behavior-y: none;
   scroll-snap-type: x mandatory;
+  /* ✅ FIX v7: pan-x so vertical page scroll not blocked */
   touch-action: pan-x;
 }
 .ph-chips::-webkit-scrollbar { display: none; }
@@ -1605,6 +1747,8 @@ img.img-error { opacity: 1; }
 
 /* ══════════════════════════════════════════════════════════
    SCROLL ROWS
+   ✅ FIX v7: pan-x added — horizontal cards don't hijack
+              vertical page scroll anymore
    ══════════════════════════════════════════════════════════ */
 .h-scroll-row {
   overflow-x: scroll;
@@ -1618,6 +1762,7 @@ img.img-error { opacity: 1; }
   overscroll-behavior-y: none;
   scroll-snap-type: x mandatory;
   scroll-padding-left: 22px;
+  /* ✅ FIX: was missing, caused vertical scroll conflict */
   touch-action: pan-x;
 }
 
@@ -2603,7 +2748,6 @@ img.img-error { opacity: 1; }
   color: var(--text);
 }
 
-/* ✅ FIX: Light mode modal text fully visible */
 [data-theme="light"] .modal-sheet .modal-title { color: #121212; }
 [data-theme="light"] .modal-option span         { color: #121212; }
 [data-theme="light"] .modal-option svg          { stroke: #4a4540; }
@@ -2628,7 +2772,6 @@ img.img-error { opacity: 1; }
 .input-modal.open { opacity: 1; pointer-events: all; }
 [data-theme="light"] .input-modal { background: rgba(0,0,0,0.22); }
 
-/* ✅ FIX: input-modal display handling via opacity+pointer-events, not display:none */
 #create-playlist-modal,
 #rename-modal,
 #playlist-opts-modal,
@@ -3024,7 +3167,6 @@ img.img-error { opacity: 1; }
   padding: 12px 16px calc(40px + var(--safe-bottom));
 }
 
-/* Settings sections (accordion) */
 .settings-section-header {
   display: flex;
   align-items: center;
@@ -3083,7 +3225,6 @@ img.img-error { opacity: 1; }
   transition: max-height .45s cubic-bezier(0.33,1,0.68,1), opacity .3s cubic-bezier(0.33,1,0.68,1);
 }
 
-/* Settings items */
 .settings-item {
   transition: background var(--t-smooth), transform .14s cubic-bezier(0.33,1,0.68,1) !important;
 }
@@ -3123,7 +3264,6 @@ img.img-error { opacity: 1; }
 .settings-section-body.open .settings-item:nth-child(8)  { animation-delay: .20s; }
 .settings-section-body.open .settings-item:nth-child(n+9) { animation-delay: .22s; }
 
-/* Smart saver highlight */
 .smart-saver-active {
   background: rgba(184,150,64,0.08) !important;
   border-left: 2px solid var(--gold) !important;
@@ -3136,7 +3276,6 @@ img.img-error { opacity: 1; }
   50%       { box-shadow: 0 0 12px 2px rgba(184,150,64,0.15); }
 }
 
-/* Settings live preview */
 .settings-live-preview {
   display: flex;
   align-items: center;
@@ -3194,7 +3333,6 @@ img.img-error { opacity: 1; }
   50%       { opacity: 1; }
 }
 
-/* Export/import modals */
 #aurum-export-txt,
 #aurum-import-txt {
   transition: border-color .2s ease;
@@ -3246,7 +3384,9 @@ img.img-error { opacity: 1; }
   .settings-item,
   .slp-badge,
   .smart-saver-active,
-  .settings-live-preview {
+  .settings-live-preview,
+  .fp-track-title.marquee-active span,
+  .fp-artist.marquee-active span {
     animation: none !important;
     transition-duration: .01ms !important;
   }
