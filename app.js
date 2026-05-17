@@ -108,8 +108,7 @@ let _downloadSong        = null;
 let _fullSongAbort       = null;
 let _searchTimeout       = null;
 let _recFetchTimeout     = null;
-// homeCache removed — was unused
-let sectionCache         = {}; // used in visibilitychange to free memory
+let sectionCache         = {};
 let queuePanelOpen       = false;
 let _lastObjectUrl       = null;
 let _lastTuTime          = 0;
@@ -738,20 +737,16 @@ function _resumeBlur() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ─── GESTURE SYSTEM — FULLY FIXED & SPOTIFY/YT LEVEL ─────────────────────────
+// ─── GESTURE SYSTEM ───────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// ─── GESTURE: MINI PLAYER ─────────────────────────────────────────────────────
-// FIX 1: Single touchstart listener (duplicate removed)
-// FIX 2: touchcancel rafId properly cleared
-// FIX 3: Axis-lock so horizontal card scrolls never conflict
 function setupMiniGesture() {
   const mp = document.getElementById('mini-player');
   if (!mp) return;
 
   let startY = 0, startX = 0, isDragging = false, startTime = 0;
   let moved = false, rafId = null;
-  let axisLocked = null; // 'vertical' | 'horizontal' | null
+  let axisLocked = null;
 
   function snapBack() {
     mp.style.transition = 'transform 0.32s cubic-bezier(0.34,1.56,0.64,1)';
@@ -761,7 +756,6 @@ function setupMiniGesture() {
     _resumeBlur();
   }
 
-  // ── SINGLE touchstart (bug fix: was duplicated) ──
   mp.addEventListener('touchstart', e => {
     startY     = e.touches[0].clientY;
     startX     = e.touches[0].clientX;
@@ -782,12 +776,10 @@ function setupMiniGesture() {
     const absDy = Math.abs(dy);
     const absDx = Math.abs(dx);
 
-    // Axis lock — decide once after 8px movement
     if (!axisLocked && (absDy > 8 || absDx > 8)) {
       axisLocked = absDx > absDy ? 'horizontal' : 'vertical';
     }
 
-    // If horizontal axis locked → let native scroll handle it, don't drag mini player
     if (axisLocked === 'horizontal') {
       isDragging = false;
       mp.style.willChange = '';
@@ -797,7 +789,7 @@ function setupMiniGesture() {
 
     if (axisLocked === 'vertical' && absDy > 4) {
       moved = true;
-      e.preventDefault(); // prevent page scroll only on vertical drag
+      e.preventDefault();
       if (rafId) cancelAnimationFrame(rafId);
       rafId = requestAnimationFrame(() => {
         rafId = null;
@@ -807,7 +799,7 @@ function setupMiniGesture() {
   }, { passive: false });
 
   mp.addEventListener('touchend', e => {
-    if (rafId) { cancelAnimationFrame(rafId); rafId = null; } // FIX: rafId cleared
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
     if (!isDragging) return;
     isDragging  = false;
     axisLocked  = null;
@@ -821,7 +813,6 @@ function setupMiniGesture() {
 
     if (!moved) { snapBack(); return; }
 
-    // Swipe UP → open fullscreen
     if (dy < -30 || vel < -0.45) {
       mp.style.transform = '';
       mp.style.transition = '';
@@ -829,7 +820,6 @@ function setupMiniGesture() {
       return;
     }
 
-    // Swipe DOWN → dismiss
     if (dy > 100 || (vel > 0.55 && dy > 30)) {
       if (currentTrack) _dismissedTrackId = currentTrack.trackId;
       mp.style.transition = 'transform 0.25s ease, opacity 0.2s ease';
@@ -849,7 +839,7 @@ function setupMiniGesture() {
   }, { passive: true });
 
   mp.addEventListener('touchcancel', () => {
-    if (rafId) { cancelAnimationFrame(rafId); rafId = null; } // FIX: was missing rafId = null
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
     isDragging  = false;
     axisLocked  = null;
     mp.style.willChange = '';
@@ -857,9 +847,6 @@ function setupMiniGesture() {
   }, { passive: true });
 }
 
-// ─── GESTURE: FULLSCREEN PLAYER ──────────────────────────────────────────────
-// FIX 3: upward swipe to queue — cleanupGesture called BEFORE touchend continues
-//         so snapBackFp is never triggered after queue opens
 function setupFullPlayerGesture() {
   const fp = document.getElementById('fullscreen-player');
   const qp = document.getElementById('queue-panel');
@@ -868,7 +855,7 @@ function setupFullPlayerGesture() {
   let startY = 0, startX = 0, isDragging = false, startTime = 0;
   let gestureTarget = null, moved = false, rafId = null;
   let axisLocked = null;
-  let queueOpenTriggered = false; // FIX: guard against double-fire
+  let queueOpenTriggered = false;
 
   function snapBackFp() {
     fp.style.transition = 'transform 0.32s cubic-bezier(0.34,1.56,0.64,1)';
@@ -910,9 +897,7 @@ function setupFullPlayerGesture() {
     const onQueueHandle = e.target.closest('#queue-drag-handle');
     const onQueueBody   = qp.contains(e.target) && !onQueueHandle;
 
-    // If queue open and touching queue body (not handle) → let queue scroll
     if (qpOpen && onQueueBody) { isDragging = false; return; }
-    // If fullscreen closed, only respond to gesture zones
     if (!qpOpen && !isGestureZone(e.target)) { isDragging = false; return; }
 
     startY             = e.touches[0].clientY;
@@ -944,13 +929,11 @@ function setupFullPlayerGesture() {
       axisLocked = absDx > absDy ? 'horizontal' : 'vertical';
     }
 
-    // Horizontal swipe on art → let art swipe handle it
     if (axisLocked === 'horizontal') { isDragging = false; return; }
 
     if (axisLocked === 'vertical' && absDy > 4) {
       moved = true;
 
-      // Player swipe DOWN
       if (gestureTarget === 'player' && dy > 0) {
         e.preventDefault();
         if (rafId) cancelAnimationFrame(rafId);
@@ -958,8 +941,6 @@ function setupFullPlayerGesture() {
           fp.style.transform = `translateY(${dy}px)`;
           rafId = null;
         });
-
-      // Queue panel swipe DOWN
       } else if (gestureTarget === 'queue' && dy > 0) {
         e.preventDefault();
         if (rafId) cancelAnimationFrame(rafId);
@@ -967,11 +948,9 @@ function setupFullPlayerGesture() {
           qp.style.transform = `translateY(${dy}px)`;
           rafId = null;
         });
-
-      // Player swipe UP → open queue (FIX: cleanupGesture first, guard with flag)
       } else if (gestureTarget === 'player' && dy < -60) {
         e.preventDefault();
-        queueOpenTriggered = true; // prevent touchend from snapback
+        queueOpenTriggered = true;
         cleanupGesture();
         fp.style.transform = '';
         qp.style.transform = '';
@@ -982,7 +961,7 @@ function setupFullPlayerGesture() {
   }, { passive: false });
 
   fp.addEventListener('touchend', e => {
-    if (!isDragging) return; // already cleaned up by queue-open path
+    if (!isDragging) return;
     const dy      = e.changedTouches[0].clientY - startY;
     const dt      = Math.max(1, Date.now() - startTime);
     const vel     = dy / dt;
@@ -1022,7 +1001,6 @@ function setupFullPlayerGesture() {
   }, { passive: true });
 }
 
-// ─── GESTURE: ART SWIPE (Brave-safe, axis-locked) ────────────────────────────
 function _attachArtSwipe() {
   const artWrap = document.getElementById('fp-art-wrap');
   if (!artWrap || artWrap._swipeAttached) return;
@@ -1062,7 +1040,6 @@ function _attachArtSwipe() {
       axisLocked = absDx > absDy ? 'horizontal' : 'vertical';
     }
 
-    // Vertical → pass to fullscreen player gesture, abort art swipe
     if (axisLocked === 'vertical') {
       isDragging = false;
       artWrap.style.willChange = '';
@@ -1135,7 +1112,6 @@ function _animateArtSwipe(direction, callback) {
   }, 185);
 }
 
-// ─── GESTURE: SHAKE TO SHUFFLE ───────────────────────────────────────────────
 function setupShakeGesture() {
   if (!window.DeviceMotionEvent) return;
   const THRESHOLD = 18;
@@ -1183,7 +1159,6 @@ function setupShakeGesture() {
   }
 }
 
-// ─── TV: D-PAD NAVIGATION ────────────────────────────────────────────────────
 function setupTVNavigation() {
   document.addEventListener('keydown', e => {
     switch(e.key) {
@@ -1587,7 +1562,6 @@ function makeSongRow(s, i, queue) {
   row.onclick = () => { playSongs(queue, i); haptic(8); };
   row._song = s;
 
-  // Long press — only on non-TV, with proper pointer cancel on scroll
   if (!isTV) {
     let pt = null;
     let longPressTriggered = false;
@@ -1603,7 +1577,6 @@ function makeSongRow(s, i, queue) {
       }, 480);
     });
 
-    // Cancel long press if pointer moves (i.e. user is scrolling)
     row.addEventListener('pointermove', () => {
       if (pt) { clearTimeout(pt); pt = null; }
     });
@@ -1871,14 +1844,12 @@ async function deleteFromDb(trackId) {
 }
 
 async function requestPersistentStorage() {
-  // Silent on cold open — no annoying toast at launch
   if (!navigator.storage?.persist) return;
   const already = await navigator.storage.persisted();
-  if (!already) await navigator.storage.persist(); // silent attempt
+  if (!already) await navigator.storage.persist();
 }
 
 async function _warnIfStorageNotPersisted() {
-  // Called before first real download — then we can warn
   if (!navigator.storage?.persist) return;
   const already = await navigator.storage.persisted();
   if (already) return;
@@ -1889,7 +1860,7 @@ async function _warnIfStorageNotPersisted() {
 async function downloadSongOffline(song, customUrl, customQuality) {
   const url     = customUrl || (_currentSaavnUrl && currentQuality === 'full' ? _currentSaavnUrl : null) || song.previewUrl;
   const quality = customQuality || _currentSaavnQuality || 'preview';
-  await _warnIfStorageNotPersisted(); // warn here, not on cold open
+  await _warnIfStorageNotPersisted();
   showToast('Saving offline…');
   try {
     const r = await fetch(url);
@@ -1914,14 +1885,11 @@ async function playDownloadedSong(trackId) {
     req.onsuccess = () => {
       const rec = req.result;
       if (!rec || !rec._blob) { showToast('File missing — re-download'); return; }
-      // FIX: create new URL first, THEN revoke old one — avoids race condition
-      // where fast double-tap revokes a URL still being played
       const newUrl = URL.createObjectURL(rec._blob);
       audio.pause();
       audio.src = newUrl;
       audio.load();
       audio.play().then(() => {
-        // Only revoke old URL after new one is successfully playing
         if (_lastObjectUrl && _lastObjectUrl !== newUrl) {
           URL.revokeObjectURL(_lastObjectUrl);
         }
@@ -1930,7 +1898,6 @@ async function playDownloadedSong(trackId) {
         _dismissedTrackId = null;
         updatePlayerUI(); showMiniPlayer();
       }).catch(() => {
-        // Play failed — revoke the new URL we just created
         URL.revokeObjectURL(newUrl);
       });
     };
@@ -2033,15 +2000,46 @@ function shufflePlaylist() {
 function openPlaylistOpts(e, i) {
   e.stopPropagation(); optsPlaylistIndex = i;
   document.getElementById('pl-opts-title').textContent = playlists[i]?.name || 'Playlist';
-  document.getElementById('playlist-opts-modal').classList.add('open');
+  const modal = document.getElementById('playlist-opts-modal');
+  modal.style.display = '';
+  modal.classList.add('open');
 }
-function closePlaylistOpts(e) { if (e && !e.target.closest) return; if (e && e.target.closest('.modal-sheet')) return; document.getElementById('playlist-opts-modal').classList.remove('open'); optsPlaylistIndex = null; }
-function openRenameModal() { document.getElementById('playlist-opts-modal').classList.remove('open'); if (optsPlaylistIndex === null) return; document.getElementById('rename-input').value = playlists[optsPlaylistIndex].name || ''; document.getElementById('rename-modal').classList.add('open'); setTimeout(() => document.getElementById('rename-input').focus(), 360); }
-function closeRenameModal() { document.getElementById('rename-modal').classList.remove('open'); }
+function closePlaylistOpts(e) {
+  if (e && !e.target.closest) return;
+  if (e && e.target.closest('.modal-sheet')) return;
+  const modal = document.getElementById('playlist-opts-modal');
+  modal.classList.remove('open');
+  modal.style.display = 'none';
+  optsPlaylistIndex = null;
+}
+function openRenameModal() {
+  closePlaylistOpts();
+  if (optsPlaylistIndex === null) return;
+  document.getElementById('rename-input').value = playlists[optsPlaylistIndex].name || '';
+  const modal = document.getElementById('rename-modal');
+  modal.style.display = '';
+  modal.classList.add('open');
+  setTimeout(() => document.getElementById('rename-input').focus(), 360);
+}
+function closeRenameModal() {
+  const modal = document.getElementById('rename-modal');
+  modal.classList.remove('open');
+  modal.style.display = 'none';
+}
 function confirmRename() { const name = document.getElementById('rename-input').value.trim(); if (!name || optsPlaylistIndex === null) { showToast('Enter a name'); return; } playlists[optsPlaylistIndex].name = name; localStorage.setItem('aurum_playlists', JSON.stringify(playlists)); closeRenameModal(); renderPlaylists(); showToast('Renamed'); }
-function confirmDeletePlaylist() { if (optsPlaylistIndex === null) return; const name = playlists[optsPlaylistIndex].name; playlists.splice(optsPlaylistIndex, 1); localStorage.setItem('aurum_playlists', JSON.stringify(playlists)); document.getElementById('playlist-opts-modal').classList.remove('open'); optsPlaylistIndex = null; renderPlaylists(); showToast(`"${name}" deleted`); }
-function openCreatePlaylist() { document.getElementById('create-playlist-modal').classList.add('open'); setTimeout(() => document.getElementById('playlist-name-input').focus(), 360); }
-function closeCreatePlaylist() { document.getElementById('create-playlist-modal').classList.remove('open'); document.getElementById('playlist-name-input').value = ''; }
+function confirmDeletePlaylist() { if (optsPlaylistIndex === null) return; const name = playlists[optsPlaylistIndex].name; playlists.splice(optsPlaylistIndex, 1); localStorage.setItem('aurum_playlists', JSON.stringify(playlists)); closePlaylistOpts(); renderPlaylists(); showToast(`"${name}" deleted`); }
+function openCreatePlaylist() {
+  const modal = document.getElementById('create-playlist-modal');
+  modal.style.display = '';
+  modal.classList.add('open');
+  setTimeout(() => document.getElementById('playlist-name-input').focus(), 360);
+}
+function closeCreatePlaylist() {
+  const modal = document.getElementById('create-playlist-modal');
+  modal.classList.remove('open');
+  modal.style.display = 'none';
+  document.getElementById('playlist-name-input').value = '';
+}
 function createPlaylist() { const name = document.getElementById('playlist-name-input').value.trim(); if (!name) { showToast('Enter a playlist name'); return; } playlists.push({ name, songs:[] }); localStorage.setItem('aurum_playlists', JSON.stringify(playlists)); closeCreatePlaylist(); renderPlaylists(); showToast('"' + name + '" created'); }
 
 function openSongModal(song) {
@@ -2085,18 +2083,28 @@ function openQualitySheet() {
   const sub = document.getElementById('qs-track-name');
   if (sub) sub.textContent = `${currentTrack.trackName || 'Unknown'} · ${currentTrack.artistName || 'Unknown'}`;
   updateQualityLabel();
-  document.getElementById('quality-modal').classList.add('open');
+  const modal = document.getElementById('quality-modal');
+  modal.style.display = '';
+  modal.classList.add('open');
 }
 
-function closeQualitySheet(e) { if (e && e.target.closest?.('.quality-sheet')) return; document.getElementById('quality-modal').classList.remove('open'); }
-function selectQuality(q) { if (q === 'preview') { _fallbackToPreview(currentTrack); document.getElementById('quality-modal').classList.remove('open'); } else { if (_fullSongAbort) { _fullSongAbort.abort(); _fullSongAbort = null; } _autoFetchFullSong(currentTrack); document.getElementById('quality-modal').classList.remove('open'); } }
+function closeQualitySheet(e) {
+  if (e && e.target.closest?.('.quality-sheet')) return;
+  const modal = document.getElementById('quality-modal');
+  modal.classList.remove('open');
+  modal.style.display = 'none';
+}
+function selectQuality(q) { if (q === 'preview') { _fallbackToPreview(currentTrack); closeQualitySheet(); } else { if (_fullSongAbort) { _fullSongAbort.abort(); _fullSongAbort = null; } _autoFetchFullSong(currentTrack); closeQualitySheet(); } }
 
+// ─── DOWNLOAD MODAL — FIXED ───────────────────────────────────────────────────
 function openDownloadModal() {
   const song = _downloadSong || currentTrack;
   if (!song) { showToast('Play a song first'); return; }
   _downloadSong = song;
+
   const sub = document.getElementById('dl-track-name');
   if (sub) sub.textContent = `${song.trackName || 'Unknown'} · ${song.artistName || 'Unknown'}`;
+
   if (_currentSaavnQuality) {
     _updateDlSheetQuality(_currentSaavnQuality);
   } else {
@@ -2105,45 +2113,106 @@ function openDownloadModal() {
     if (desc)  desc.textContent  = currentQuality === 'loading' ? 'Fetching stream…' : 'Play song first';
     if (badge) { badge.textContent = '—'; badge.className = 'dl-kbps-badge b128'; }
   }
-  document.getElementById('download-modal').classList.add('open');
+
+  // ✅ KEY FIX: inline display:none hata do pehle, phir class add karo
+  const modal = document.getElementById('download-modal');
+  modal.style.display = '';
+  modal.classList.add('open');
 }
 
-function closeDownloadModal(e) { if (e && e.target.closest?.('.dl-sheet')) return; document.getElementById('download-modal').classList.remove('open'); _downloadSong = null; }
+function closeDownloadModal(e) {
+  if (e && e.target.closest?.('.dl-sheet')) return;
+  const modal = document.getElementById('download-modal');
+  modal.classList.remove('open');
+  modal.style.display = 'none';
+  _downloadSong = null;
+}
 
 async function triggerDownload(quality) {
-  const song = _downloadSong || currentTrack; _downloadSong = null;
+  const song = _downloadSong || currentTrack;
+  _downloadSong = null;
   if (!song) { showToast('No track selected'); return; }
-  document.getElementById('download-modal').classList.remove('open');
 
-  if (quality === 'preview' || quality === 'ringtone') {
+  // Modal band karo
+  const modal = document.getElementById('download-modal');
+  modal.classList.remove('open');
+  modal.style.display = 'none';
+
+  const cleanTitle  = (song.trackName  || 'audio').replace(/[/\?%*:|"<>]/g, '-');
+  const cleanArtist = (song.artistName || '').replace(/[/\?%*:|"<>]/g, '-');
+
+  // ── 30s Preview ──────────────────────────────────────────────────────────
+  if (quality === 'preview') {
     try {
-      showToast(quality === 'ringtone' ? 'Saving ringtone…' : 'Saving preview…');
-      const res = await fetch(song.previewUrl); if (!res.ok) throw new Error();
+      showToast('Downloading preview…');
+      const res = await fetch(song.previewUrl);
+      if (!res.ok) throw new Error('fetch failed');
       const blob   = await res.blob();
       const objUrl = URL.createObjectURL(blob);
-      const a      = document.createElement('a'); a.href = objUrl;
-      a.download   = (song.trackName||'audio').replace(/[/\?%*:|"<>]/g,'-') + (quality === 'ringtone' ? '_ringtone' : '_preview') + '.m4a';
+      const a      = document.createElement('a');
+      a.href       = objUrl;
+      a.download   = `${cleanTitle}_preview.m4a`;
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(objUrl), 5000);
-      showToast(quality === 'ringtone' ? 'Ringtone saved ✓' : 'Preview saved ✓');
-      haptic([10,30,10]);
+      haptic([10, 30, 10]);
+      showToast('Preview saved ✓');
     } catch(e) { showToast('Download failed'); }
-  } else if (quality === 'full') {
-    if (!_currentSaavnUrl) { showToast('Play full song first'); return; }
-    await downloadSongOffline(song, _currentSaavnUrl);
-  } else if (quality === 'gift') {
+    return;
+  }
+
+  // ── Ringtone (30s trim) ───────────────────────────────────────────────────
+  if (quality === 'ringtone') {
+    try {
+      showToast('Saving ringtone…');
+      const res = await fetch(song.previewUrl);
+      if (!res.ok) throw new Error('fetch failed');
+      const blob   = await res.blob();
+      const objUrl = URL.createObjectURL(blob);
+      const a      = document.createElement('a');
+      a.href       = objUrl;
+      a.download   = `${cleanTitle}_ringtone.m4a`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(objUrl), 5000);
+      haptic([10, 30, 10]);
+      showToast('Ringtone saved ✓');
+    } catch(e) { showToast('Download failed'); }
+    return;
+  }
+
+  // ── Full Song — /api/download endpoint use karo ───────────────────────────
+  if (quality === 'full') {
+    showToast('Downloading full song…');
+    try {
+      const q      = encodeURIComponent(song.trackName  || '');
+      const artist = encodeURIComponent(song.artistName || '');
+      const dlUrl  = `/api/download?q=${q}&artist=${artist}&quality=full`;
+      const a      = document.createElement('a');
+      a.href       = dlUrl;
+      a.download   = `${cleanTitle} - ${cleanArtist}.mp3`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      haptic([10, 30, 10]);
+      showToast('Download started ✓');
+    } catch(e) { showToast('Download failed'); }
+    return;
+  }
+
+  // ── Owner Gift — 320 kbps guaranteed ─────────────────────────────────────
+  if (quality === 'gift') {
     showToast('Fetching 320 kbps…');
     try {
-      const cleanTitle  = (song.trackName  || '').replace(/\(.*?\)/g,'').trim();
-      const cleanArtist = (song.artistName || '').split(/[&,]/)[0].trim();
-      const q = encodeURIComponent(`${cleanTitle} ${cleanArtist}`);
-      const r = await fetch(`/api/saavn?q=${q}&artist=${encodeURIComponent(cleanArtist)}`);
-      const d = await r.json();
-      if (!d.success || !d.url) { showToast('320 kbps not available'); if (_currentSaavnUrl) await downloadSongOffline(song, _currentSaavnUrl); return; }
-      if (!_titleMatches(d.title, song.trackName)) { showToast('Song mismatch — aborted'); return; }
-      const proxyUrl = `/api/stream?url=${encodeURIComponent(d.url)}`;
-      await downloadSongOffline(song, proxyUrl, d.quality);
+      const rawTitle  = (song.trackName  || '').replace(/\(.*?\)/g, '').trim();
+      const rawArtist = (song.artistName || '').split(/[&,]/)[0].trim();
+      const q      = encodeURIComponent(rawTitle);
+      const artist = encodeURIComponent(rawArtist);
+      const dlUrl  = `/api/download?q=${q}&artist=${artist}&quality=gift`;
+      const a      = document.createElement('a');
+      a.href       = dlUrl;
+      a.download   = `${cleanTitle} - ${cleanArtist}_320.mp3`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      haptic([10, 30, 10]);
+      showToast('320 kbps download started ✓');
     } catch(e) { showToast('Owner Gift failed'); }
+    return;
   }
 }
 
