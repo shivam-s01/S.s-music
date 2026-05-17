@@ -14,7 +14,7 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 import atexit
 
-# ── Recursion limit fix — Railway default bahut low hai ──────
+# ── Recursion limit fix ──────────────────────────────────────
 sys.setrecursionlimit(10000)
 
 # ── yt-dlp optional import ────────────────────────────────────
@@ -201,17 +201,21 @@ def mark_mirror_ok(mirror):
     _mirror_failures.pop(mirror, None)
 
 # ═══════════════════════════════════════════════════════════════
-# ITUNES SEARCH
+# ITUNES SEARCH — FIX: raise_for_status hata diya,
+#   safe JSON parsing, aur recursion-safe year filter
 # ═══════════════════════════════════════════════════════════════
-@app.route('/api/songs')
-@limiter.limit("60 per minute")
-def get_songs():
-    q   = request.args.get('q', 'top songs').strip()
-    era = request.args.get('era', '').strip()
+def _safe_year(date_str):
+    """Safely extract year from ISO date string — no recursion."""
+    try:
+        return int(str(date_str or '')[:4])
+    except (ValueError, TypeError):
+        return 0
 
-    is_90s      = (era == '90s') or any(t in q.lower() for t in NINETIES_TRIGGERS)
-    search_term = random.choice(NINETIES_SEEDS) if is_90s else q
-
+def _itunes_fetch(search_term):
+    """
+    Isolated iTunes HTTP call — returns list of results or [].
+    Exceptions fully caught here so callers never crash.
+    """
     try:
         r = requests.get(
             'https://itunes.apple.com/search',
@@ -224,25 +228,59 @@ def get_songs():
             },
             timeout=8
         )
-        r.raise_for_status()
-        results = r.json().get('results', [])
+        # Don't raise_for_status — parse defensively instead
+        if r.status_code != 200:
+            log.warning(f"[iTunes] HTTP {r.status_code} for '{search_term}'")
+            return []
 
-        if is_90s:
-            filtered = [
-                s for s in results
-                if s.get('previewUrl') and
-                1990 <= _safe_year(s.get('releaseDate')) <= 1999
-            ]
-            if len(filtered) < 5:
-                filtered = [s for s in results if s.get('previewUrl')]
-            random.shuffle(filtered)
-            return jsonify({'results': filtered[:30]})
+        data = r.json()
+        if not isinstance(data, dict):
+            return []
 
-        return jsonify({'results': [s for s in results if s.get('previewUrl')]})
+        results = data.get('results', [])
+        if not isinstance(results, list):
+            return []
 
+        return results
+
+    except requests.Timeout:
+        log.warning(f"[iTunes] Timeout for '{search_term}'")
+        return []
+    except ValueError as e:
+        log.warning(f"[iTunes] JSON parse error for '{search_term}': {e}")
+        return []
     except Exception as e:
-        log.error(f"[iTunes] Search failed '{search_term}': {e}")
-        return jsonify({'results': [], 'error': str(e)})
+        log.error(f"[iTunes] Unexpected error for '{search_term}': {e}")
+        return []
+
+@app.route('/api/songs')
+@limiter.limit("60 per minute")
+def get_songs():
+    q   = request.args.get('q', 'top songs').strip()
+    era = request.args.get('era', '').strip()
+
+    is_90s      = (era == '90s') or any(t in q.lower() for t in NINETIES_TRIGGERS)
+    search_term = random.choice(NINETIES_SEEDS) if is_90s else q
+
+    results = _itunes_fetch(search_term)
+
+    if is_90s:
+        # Iterative filter — no recursion risk
+        filtered = []
+        for s in results:
+            if not s.get('previewUrl'):
+                continue
+            year = _safe_year(s.get('releaseDate'))
+            if 1990 <= year <= 1999:
+                filtered.append(s)
+
+        if len(filtered) < 5:
+            filtered = [s for s in results if s.get('previewUrl')]
+
+        random.shuffle(filtered)
+        return jsonify({'results': filtered[:30]})
+
+    return jsonify({'results': [s for s in results if s.get('previewUrl')]})
 
 # ═══════════════════════════════════════════════════════════════
 # 90s ENDPOINT
@@ -250,39 +288,22 @@ def get_songs():
 @app.route('/api/songs/90s')
 @limiter.limit("60 per minute")
 def get_90s_songs():
-    seed = random.choice(NINETIES_SEEDS)
-    try:
-        r = requests.get(
-            'https://itunes.apple.com/search',
-            params={
-                'term':    seed,
-                'media':   'music',
-                'entity':  'song',
-                'limit':   50,
-                'country': 'IN',
-            },
-            timeout=8
-        )
-        r.raise_for_status()
-        results = r.json().get('results', [])
-        filtered = [
-            s for s in results
-            if s.get('previewUrl') and
-            1990 <= _safe_year(s.get('releaseDate')) <= 1999
-        ]
-        if len(filtered) < 5:
-            filtered = [s for s in results if s.get('previewUrl')]
-        random.shuffle(filtered)
-        return jsonify({'results': filtered[:30], 'seed': seed})
-    except Exception as e:
-        log.error(f"[iTunes/90s] Seed '{seed}' failed: {e}")
-        return jsonify({'results': [], 'error': str(e)})
+    seed    = random.choice(NINETIES_SEEDS)
+    results = _itunes_fetch(seed)
 
-def _safe_year(date_str):
-    try:
-        return int((date_str or '')[:4])
-    except (ValueError, TypeError):
-        return 0
+    filtered = []
+    for s in results:
+        if not s.get('previewUrl'):
+            continue
+        year = _safe_year(s.get('releaseDate'))
+        if 1990 <= year <= 1999:
+            filtered.append(s)
+
+    if len(filtered) < 5:
+        filtered = [s for s in results if s.get('previewUrl')]
+
+    random.shuffle(filtered)
+    return jsonify({'results': filtered[:30], 'seed': seed})
 
 # ═══════════════════════════════════════════════════════════════
 # HELPERS
@@ -322,7 +343,7 @@ def normalize(text):
     text = re.sub(r'[^a-z0-9\s]', '', text)
     return re.sub(r'\s+', ' ', text).strip()
 
-# ── FIX: Iterative levenshtein — recursion bilkul nahi ────────
+# ── Iterative levenshtein — zero recursion ────────────────────
 def levenshtein(s1, s2):
     if len(s1) < len(s2):
         s1, s2 = s2, s1
