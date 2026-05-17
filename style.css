@@ -1,21 +1,3 @@
-/* ═══════════════════════════════════════════════════════════
-   AURUM — style.css [v7 FIXED — Shivam Edition]
-   ✅ All original features preserved
-   ✅ Light mode fully fixed — no black/invisible popups
-   ✅ Dark mode blur fixed — brightness corrected
-   ✅ Album art blur background — lightweight CSS-only
-   ✅ FIXED: Light mode blur bg — same cinematic effect as dark
-   ✅ FIXED: Title/artist marquee scroll — Spotify/YT style
-   ✅ FIXED: h-scroll-row touch-action pan-x (scroll conflict fixed)
-   ✅ FIXED: OS light mode fallback — deduplicated via CSS var
-   ✅ @property registered for smooth player animation
-   ✅ .low-end kills all heavy effects in one sweep
-   ✅ touch-action:pan-y everywhere for scroll
-   ✅ GPU compositing: translate3d, drop-shadow not box-shadow
-   ✅ content-visibility:auto on lists for 60fps scroll
-   ✅ No dead code, no duplication
-   ═══════════════════════════════════════════════════════════ */
-
 /* ── @PROPERTY — CSS custom property animation support ── */
 @property --fp-y {
   syntax: '<length>';
@@ -1702,9 +1684,10 @@ img.img-error { opacity: 1; }
   display: flex;
   justify-content: space-between;
   align-items: center;
+  touch-action: pan-y;
 }
-.section-head h2 { font-size: 14.5px; font-weight: 700; letter-spacing: -0.14px; }
-.section-head span { font-size: 11px; color: var(--text2); cursor: pointer; font-weight: 600; }
+.section-head h2 { font-size: 14.5px; font-weight: 700; letter-spacing: -0.14px; pointer-events: none; }
+.section-head span { font-size: 11px; color: var(--text2); cursor: pointer; font-weight: 600; pointer-events: auto; }
 
 /* ══════════════════════════════════════════════════════════
    CHIPS
