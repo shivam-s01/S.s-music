@@ -1,1048 +1,1616 @@
-from flask import Flask, request, jsonify, send_file, Response, stream_with_context
-from werkzeug.middleware.proxy_fix import ProxyFix
-import requests
-import os
-import re
-import logging
-import random
-import time
-import threading
-import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
-from urllib.parse import urlparse
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
-import atexit
+// ─── DEVICE DETECTION (first — everything depends on this) ───────────────────
+const isTV = navigator.userAgent.includes('TV') ||
+             navigator.userAgent.includes('SmartTV') ||
+             navigator.userAgent.includes('SMART-TV') ||
+             (window.innerWidth >= 1280 &&
+              window.matchMedia('(hover:hover)').matches &&
+              !window.matchMedia('(pointer:fine)').matches);
 
-sys.setrecursionlimit(10000)
+const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent) && !isTV;
 
-try:
-    import yt_dlp
-    YT_DLP_AVAILABLE = True
-except ImportError:
-    YT_DLP_AVAILABLE = False
+const isLowEnd = isTV ||
+  (navigator.hardwareConcurrency || 8) <= 4 ||
+  (typeof navigator.deviceMemory !== 'undefined' && navigator.deviceMemory <= 2);
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+// ─── DYNAMIC VIEWPORT (Blank Fix) ────────────────────────────────────────────
+function setVh() {
+  document.documentElement.style.setProperty('--vh', (window.innerHeight * 0.01) + 'px');
+}
+window.addEventListener('resize', setVh, { passive: true });
+window.addEventListener('orientationchange', () => setTimeout(setVh, 300), { passive: true });
+setVh();
 
-# ═══════════════════════════════════════════════════════════════
-# APP INIT
-# ═══════════════════════════════════════════════════════════════
-app = Flask(__name__, static_folder='static')
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+// ─── FPS CAP (30fps) — for VISUALIZER only ────────────────────────────────────
+const TARGET_FPS   = 30;
+const FRAME_BUDGET = 1000 / TARGET_FPS;
+let _lastRafTime = 0;
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-log = logging.getLogger(__name__)
-
-# ═══════════════════════════════════════════════════════════════
-# REAL IP
-# ═══════════════════════════════════════════════════════════════
-def get_real_ip():
-    return (
-        request.headers.get('CF-Connecting-IP') or
-        request.headers.get('X-Forwarded-For', '').split(',')[0].strip() or
-        request.remote_addr or '127.0.0.1'
-    )
-
-# ═══════════════════════════════════════════════════════════════
-# RATE LIMITER
-# ═══════════════════════════════════════════════════════════════
-limiter = Limiter(get_real_ip, app=app, default_limits=[], storage_uri="memory://")
-
-# ═══════════════════════════════════════════════════════════════
-# CONSTANTS
-# ═══════════════════════════════════════════════════════════════
-SAAVN_MIRRORS = [
-    'https://jiosaavn-api-privatecvc2.vercel.app',
-    'https://saavn-api-sigma.vercel.app',
-    'https://jiosaavn-api2.vercel.app',
-    'https://jiosaavn-api-ts.vercel.app',
-    'https://saavn-api-eight.vercel.app',
-]
-
-# ── YT ke liye bhi domains allow karo stream proxy mein ────────
-ALLOWED_STREAM_DOMAINS = [
-    'akamaized.net',
-    'jiocdn.com',
-    'saavncdn.com',
-    'cf.saavncdn.com',
-    'aac.saavncdn.com',
-    'static.saavncdn.com',
-    'c.saavncdn.com',
-    'h.saavncdn.com',
-    'googlevideo.com',
-    'youtube.com',
-    'ytimg.com',
-]
-
-QUALITY_RANK = {
-    '320kbps': 7, '320': 7,
-    '160kbps': 5, '160': 5,
-    '96kbps':  3, '96':  3,
-    '48kbps':  2, '48':  2,
-    '12kbps':  1, '12':  1,
+function cappedRaf(cb) {
+  const now = performance.now();
+  if (now - _lastRafTime >= FRAME_BUDGET) {
+    _lastRafTime = now;
+    cb(now);
+    requestAnimationFrame(() => {});
+  } else {
+    requestAnimationFrame(() => cappedRaf(cb));
+  }
 }
 
-# ── 90s seeds — Saavn search ke liye ───────────────────────────
-NINETIES_SEEDS = [
-    "Kumar Sanu hits", "Udit Narayan 90s", "Alka Yagnik 90s",
-    "Lata Mangeshkar 90s", "Sonu Nigam 90s hits",
-    "Kavita Krishnamurthy songs", "Asha Bhosle 90s",
-    "Abhijeet Bhattacharya hits", "Shankar Mahadevan 90s",
-    "AR Rahman 90s", "Anu Malik 90s hits",
-    "Nadeem Shravan songs", "Jatin Lalit songs",
-    "Kumar Sanu Alka Yagnik duets", "90s Bollywood superhits",
-    "Kishore Kumar hits", "Mohammed Rafi songs",
-    "Dilwale Dulhania Le Jayenge songs", "Hum Aapke Hain Koun songs",
-    "Raja Hindustani songs", "Dil To Pagal Hai songs",
-]
+// ─── IMAGE SYSTEM ─────────────────────────────────────────────────────────────
+const IMG_PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Crect width='100' height='100' fill='%230d0d12'/%3E%3Ccircle cx='50' cy='42' r='14' fill='none' stroke='%232e2b26' stroke-width='2'/%3E%3Cpath d='M44 42v-8l16 4v8' fill='none' stroke='%232e2b26' stroke-width='2' stroke-linecap='round'/%3E%3Ccircle cx='44' cy='44' r='3' fill='%232e2b26'/%3E%3Ccircle cx='60' cy='46' r='3' fill='%232e2b26'/%3E%3C/svg%3E";
 
-NINETIES_TRIGGERS = [
-    '90', 'purane', 'purana', 'purani', 'old', 'retro',
-    'classic', 'nineties', 'throwback', 'evergreen', 'gaane',
-    'vintage', 'purani yaadein',
-]
+const _sharedCanvas = document.createElement('canvas');
+_sharedCanvas.width = 16; _sharedCanvas.height = 16;
+const _sharedCtx = _sharedCanvas.getContext('2d', { willReadFrequently: true });
 
-# ── Ye genres Saavn pe nahi milte — seedha YT pe bhejo ────────
-FORCE_YT_KEYWORDS = [
-    'nepali', 'nepal', 'bhojpuri', 'maithili', 'awadhi',
-    'pahadi', 'haryanvi', 'chhattisgarhi', 'garhwali',
-    'kumaoni', 'dogri', 'odia', 'assamese',
-]
-
-# ── Mirror health tracking ──────────────────────────────────────
-_mirror_failures = {}
-_MIRROR_COOLDOWN = 300  # 5 min baad dubara try karega
-
-# ── YT cache + semaphore ────────────────────────────────────────
-_yt_semaphore = threading.Semaphore(3)
-_yt_url_cache = {}
-_YT_CACHE_TTL = 3600  # 1 hour
-
-# ── Thread pools ────────────────────────────────────────────────
-_saavn_executor = ThreadPoolExecutor(max_workers=len(SAAVN_MIRRORS), thread_name_prefix='saavn')
-_yt_executor    = ThreadPoolExecutor(max_workers=3, thread_name_prefix='ytdlp')
-
-atexit.register(_saavn_executor.shutdown, wait=False)
-atexit.register(_yt_executor.shutdown,    wait=False)
-
-# ═══════════════════════════════════════════════════════════════
-# CORS
-# ═══════════════════════════════════════════════════════════════
-def add_cors(resp):
-    resp.headers['Access-Control-Allow-Origin']   = '*'
-    resp.headers['Access-Control-Allow-Methods']  = 'GET, OPTIONS'
-    resp.headers['Access-Control-Allow-Headers']  = '*'
-    resp.headers['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range'
-    return resp
-
-@app.after_request
-def after_request(resp):
-    return add_cors(resp)
-
-@app.route('/<path:path>', methods=['OPTIONS'])
-def options_handler(path):
-    return add_cors(Response(status=200))
-
-# ═══════════════════════════════════════════════════════════════
-# FRONTEND ROUTES
-# ═══════════════════════════════════════════════════════════════
-@app.route('/')
-def index():
-    return send_file(os.path.join(BASE_DIR, 'index.html'))
-
-@app.route('/manifest.json')
-def manifest():
-    resp = send_file(os.path.join(BASE_DIR, 'manifest.json'), mimetype='application/manifest+json')
-    resp.headers['Cache-Control'] = 'public, max-age=86400'
-    return resp
-
-@app.route('/sw.js')
-def service_worker():
-    resp = send_file(os.path.join(BASE_DIR, 'sw.js'), mimetype='application/javascript')
-    resp.headers['Cache-Control']          = 'no-cache, no-store, must-revalidate'
-    resp.headers['Service-Worker-Allowed'] = '/'
-    return resp
-
-@app.route('/.well-known/assetlinks.json')
-def assetlinks():
-    return app.send_static_file('assetlinks.json')
-
-@app.route('/<path:filename>')
-def serve_static(filename):
-    file_path = os.path.join(BASE_DIR, filename)
-    if os.path.isfile(file_path):
-        return send_file(file_path)
-    return jsonify({'error': 'Not found'}), 404
-
-# ═══════════════════════════════════════════════════════════════
-# MIRROR HEALTH
-# ═══════════════════════════════════════════════════════════════
-def is_mirror_alive(mirror):
-    fail_ts = _mirror_failures.get(mirror)
-    if fail_ts and (time.time() - fail_ts) < _MIRROR_COOLDOWN:
-        return False
-    return True
-
-def mark_mirror_failed(mirror):
-    _mirror_failures[mirror] = time.time()
-    log.warning(f"[Mirror] Dead for {_MIRROR_COOLDOWN}s: {mirror}")
-
-def mark_mirror_ok(mirror):
-    _mirror_failures.pop(mirror, None)
-
-# ═══════════════════════════════════════════════════════════════
-# HELPERS — Query cleaning
-# ═══════════════════════════════════════════════════════════════
-def clean_query(text):
-    text = re.sub(r'\(From\s+["\u201c\u201d\u2018\u2019]?[^)]*["\u201c\u201d\u2018\u2019]?\)', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'\((OST|official|audio|video|lyrics|full\s*song|feat\.?.*?|ft\.?.*?)\)', '', text, flags=re.IGNORECASE)
-    text = re.sub(r'["\u201c\u201d\u2018\u2019\'()]', '', text)
-    return re.sub(r'\s+', ' ', text).strip()
-
-def build_query_variants(title, artist='', fallback=''):
-    title_c  = clean_query(title)
-    artist_c = clean_query(artist)  if artist   else ''
-    fb_c     = clean_query(fallback) if fallback else ''
-    seen, variants = set(), []
-
-    def add(v):
-        v = v.strip()
-        if v and v not in seen:
-            seen.add(v); variants.append(v)
-
-    add(title_c)
-    if artist_c:
-        add(f"{title_c} {artist_c}")
-    if fb_c:
-        add(fb_c)
-    return variants
-
-def normalize(text):
-    text = text.lower()
-    text = re.sub(r'[^a-z0-9\s]', '', text)
-    return re.sub(r'\s+', ' ', text).strip()
-
-def _safe_year(date_str):
-    try:
-        return int(str(date_str or '')[:4])
-    except (ValueError, TypeError):
-        return 0
-
-# ═══════════════════════════════════════════════════════════════
-# SEARCH MATCHING — FIXED (1-word accurate)
-# ═══════════════════════════════════════════════════════════════
-def levenshtein(s1, s2):
-    if len(s1) < len(s2):
-        s1, s2 = s2, s1
-    if not s2:
-        return len(s1)
-    prev = list(range(len(s2) + 1))
-    for c1 in s1:
-        curr = [prev[0] + 1]
-        for j, c2 in enumerate(s2):
-            curr.append(min(prev[j+1]+1, curr[j]+1, prev[j]+(c1 != c2)))
-        prev = curr
-    return prev[-1]
-
-def fuzzy_word_match(qw, tw):
-    if tw.startswith(qw): return 1.0
-    if qw in tw:          return 0.85
-    max_len = max(len(qw), len(tw))
-    if max_len == 0:      return 0.0
-    # SHORT words (3 char ya kam) ke liye exact prefix kaafi hai
-    if len(qw) <= 3:
-        return 1.0 if tw.startswith(qw) else 0.0
-    ratio = 1.0 - (levenshtein(qw, tw) / max_len)
-    return ratio if ratio >= 0.55 else 0.0  # FIX: 0.65 → 0.55
-
-def title_score(query, song_title, song_artist=''):
-    q, t, a = normalize(query), normalize(song_title), normalize(song_artist)
-    if not q:  return 0.0
-    if q == t: return 3.0
-    q_words, t_words, a_words = q.split(), t.split(), a.split()
-    score = 0.0
-    if t.startswith(q): score += 2.0
-    title_match = sum(
-        max((fuzzy_word_match(qw, tw) for tw in t_words), default=0.0)
-        for qw in q_words
-    )
-    if q_words: score += (title_match / len(q_words)) * 1.5
-    artist_match = sum(
-        max((fuzzy_word_match(qw, aw) for aw in a_words), default=0.0)
-        for qw in q_words
-    )
-    if q_words: score += (artist_match / len(q_words)) * 0.5
-    return score
-
-def dynamic_min_score(query):
-    """
-    FIX: Thresholds loose kiye — 1-2 word search pe bhi result milega
-    Pehle: <=2 → 0.25, <=5 → 0.45, else → 0.60
-    Ab:    <=3 → 0.10, <=6 → 0.30, else → 0.45
-    """
-    length = len(normalize(query).replace(' ', ''))
-    if length <= 3:   return 0.10   # "Dil", "Jai", "Tum"
-    elif length <= 6: return 0.30   # "Tum Hi", "Dilwale"
-    else:             return 0.45   # longer queries
-
-def has_word_match(query, song_title):
-    """
-    FIX: Short words ke liye prefix match use karo, threshold 0.60→0.50
-    """
-    q_words = normalize(query).split()
-    t_words = normalize(song_title).split()
-    if not q_words or not t_words: return False
-    for qw in q_words:
-        if len(qw) <= 3:
-            # Short word — sirf prefix check
-            for tw in t_words:
-                if tw.startswith(qw):
-                    return True
-            continue
-        for tw in t_words:
-            if fuzzy_word_match(qw, tw) >= 0.50:  # FIX: 0.60 → 0.50
-                return True
-    return False
-
-# ═══════════════════════════════════════════════════════════════
-# QUALITY PICKERS
-# ═══════════════════════════════════════════════════════════════
-def pick_best_quality(urls):
-    if not urls: return None, None
-
-    def rank(item):
-        q = (item.get('quality') or '').lower().strip()
-        if q in QUALITY_RANK: return QUALITY_RANK[q]
-        m = re.search(r'(\d+)', q)
-        return int(m.group(1)) if m else 0
-
-    for item in sorted(urls, key=rank, reverse=True):
-        url = item.get('url') or item.get('link') or ''
-        if url.startswith('http'):
-            return url, item.get('quality', 'unknown')
-    return None, None
-
-def _pick_low_quality(urls):
-    if not urls: return None, None
-    LOW_PREFERENCE = ['96kbps', '96', '128kbps', '128', '48kbps', '48']
-    for preferred in LOW_PREFERENCE:
-        for item in urls:
-            q = (item.get('quality') or '').lower().strip()
-            if q == preferred or preferred in q:
-                url = item.get('url') or item.get('link') or ''
-                if url.startswith('http'):
-                    return url, item.get('quality', preferred)
-    def rank(item):
-        q = (item.get('quality') or '').lower().strip()
-        if q in QUALITY_RANK: return QUALITY_RANK[q]
-        m = re.search(r'(\d+)', q)
-        return int(m.group(1)) if m else 999
-    for item in sorted(urls, key=rank):
-        url = item.get('url') or item.get('link') or ''
-        if url.startswith('http'):
-            return url, item.get('quality', 'low')
-    return None, None
-
-def pick_image(song):
-    images = song.get('image') or []
-    if isinstance(images, list) and images:
-        for item in reversed(images):
-            url = item.get('url') or item.get('link') or ''
-            if url.startswith('http'):
-                return re.sub(r'\b(50|150)x(50|150)\b', '500x500', url)
-    if isinstance(images, str) and images.startswith('http'):
-        return re.sub(r'\b(50|150)x(50|150)\b', '500x500', images)
-    return ''
-
-# ═══════════════════════════════════════════════════════════════
-# YT-DLP — Full song fetch with cache
-# ═══════════════════════════════════════════════════════════════
-def _yt_cache_get(key):
-    entry = _yt_url_cache.get(key)
-    if entry:
-        url, ts = entry
-        if time.time() - ts < _YT_CACHE_TTL:
-            return url
-        del _yt_url_cache[key]
-    return None
-
-def _yt_cache_set(key, url):
-    if len(_yt_url_cache) >= 200:
-        oldest = min(_yt_url_cache, key=lambda k: _yt_url_cache[k][1])
-        del _yt_url_cache[oldest]
-    _yt_url_cache[key] = (url, time.time())
-
-def fetch_yt_url(title, artist='', genre_hint=''):
-    """
-    YT se full song URL fetch karo.
-    genre_hint = 'nepali'/'bhojpuri' etc. → search query tailor hoga
-    """
-    if not YT_DLP_AVAILABLE:
-        return None
-
-    cache_key = f"{normalize(title)}|{normalize(artist)}|{genre_hint}"
-    cached = _yt_cache_get(cache_key)
-    if cached:
-        log.info(f"[YT] Cache hit: {title}")
-        return cached
-
-    if not _yt_semaphore.acquire(blocking=True, timeout=3):
-        log.warning("[YT] Semaphore busy — skipping")
-        return None
-
-    try:
-        # Genre ke hisaab se search query banao
-        if genre_hint:
-            search_q = f"{title} {genre_hint} full song official".strip()
-        elif artist:
-            search_q = f"{title} {artist} official audio full song".strip()
-        else:
-            search_q = f"{title} official audio full song".strip()
-
-        ydl_opts = {
-            'format':             'bestaudio[ext=m4a]/bestaudio/best',
-            'quiet':              True,
-            'no_warnings':        True,
-            'noplaylist':         True,
-            'extract_flat':       False,
-            'skip_download':      True,
-            'socket_timeout':     10,
-            'playlist_items':     '1',
-            'geo_bypass':         True,
-            'http_headers': {
-                'User-Agent': (
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                    'AppleWebKit/537.36 (KHTML, like Gecko) '
-                    'Chrome/124.0.0.0 Safari/537.36'
-                )
-            },
+const imgObserver = (!isTV && typeof IntersectionObserver !== 'undefined')
+  ? new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          const img = entry.target;
+          if (img.dataset.lazySrc) { img.src = img.dataset.lazySrc; delete img.dataset.lazySrc; }
+          imgObserver.unobserve(img);
         }
+      });
+    }, { rootMargin: '80px', threshold: 0 })
+  : null;
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"ytsearch1:{search_q}", download=False)
-            if not info: return None
-            entries = info.get('entries') or [info]
-            if not entries: return None
-            entry = entries[0]
-            if not entry: return None
+function setupImg(img) {
+  img.classList.remove('loaded', 'img-error');
+  img.onerror = function() {
+    if (this.src !== IMG_PLACEHOLDER) this.src = IMG_PLACEHOLDER;
+    this.classList.add('img-error', 'loaded');
+    this.onerror = null;
+  };
+  img.onload = function() { this.classList.add('loaded'); };
+  if (img.complete && img.naturalWidth > 0) img.classList.add('loaded');
+}
 
-            # Duration check — 60 sec se kam = preview/short, skip karo
-            duration = entry.get('duration') or 0
-            if duration < 60:
-                log.warning(f"[YT] Too short ({duration}s), skipping: {title}")
-                return None
+function setImgSrc(img, src) {
+  if (!src) { img.src = IMG_PLACEHOLDER; setupImg(img); return; }
+  img.classList.remove('loaded', 'img-error');
+  img.onerror = function() {
+    if (this.src !== IMG_PLACEHOLDER) this.src = IMG_PLACEHOLDER;
+    this.classList.add('img-error', 'loaded');
+    this.onerror = null;
+  };
+  img.onload = function() { this.classList.add('loaded'); };
+  if (imgObserver && !img.closest('#fullscreen-player') && !img.closest('#mini-player')) {
+    img.dataset.lazySrc = src;
+    img.src = IMG_PLACEHOLDER;
+    imgObserver.observe(img);
+  } else {
+    img.src = src;
+    if (img.complete && img.naturalWidth > 0) img.classList.add('loaded');
+  }
+}
 
-            url = entry.get('url')
-            if not url or not url.startswith('http'):
-                requested = entry.get('requested_formats') or entry.get('formats') or []
-                audio_formats = [
-                    f for f in requested
-                    if f.get('acodec') != 'none' and f.get('url', '').startswith('http')
-                ]
-                if audio_formats:
-                    audio_formats.sort(key=lambda f: f.get('abr', 0) or 0, reverse=True)
-                    url = audio_formats[0]['url']
+function getArtUrl(song, size) {
+  const target = isLowEnd ? '300x300' : (size || '600x600');
+  return (song?.artworkUrl100 || '').replace('100x100', target);
+}
 
-            if url and url.startswith('http'):
-                _yt_cache_set(cache_key, url)
-                log.info(f"[YT] ✓ {entry.get('title', title)[:50]} ({duration}s)")
-                return url
-            return None
+document.querySelectorAll('img').forEach(img => setupImg(img));
+new MutationObserver(muts => {
+  muts.forEach(m => m.addedNodes.forEach(n => {
+    const imgs = n.nodeName === 'IMG' ? [n] : (n.querySelectorAll ? [...n.querySelectorAll('img')] : []);
+    imgs.forEach(img => setupImg(img));
+  }));
+}).observe(document.body, { childList: true, subtree: true });
 
-    except Exception as e:
-        log.warning(f"[YT] Failed '{title}': {type(e).__name__}: {e}")
-        return None
-    finally:
-        _yt_semaphore.release()
+// ─── STATE ────────────────────────────────────────────────────────────────────
+let currentQueue         = [];
+let currentIndex         = 0;
+let currentTrack         = null;
+let isPlaying            = false;
+let shuffleOn            = false;
+let repeatOn             = false;
+let savedSongs           = JSON.parse(localStorage.getItem('aurum_saved')         || '[]');
+let playlists            = JSON.parse(localStorage.getItem('aurum_playlists')     || '[]');
+let recentlyPlayed       = JSON.parse(localStorage.getItem('aurum_recent_played') || '[]');
+let recentSearches       = JSON.parse(localStorage.getItem('aurum_recent')        || '[]');
+let currentLibTab        = 'playlists';
+let currentQuality       = 'loading';
+let currentGenre         = 'all';
+let currentPlaylistIndex = null;
+let optsPlaylistIndex    = null;
+let modalTrack           = null;
+let _downloadSong        = null;
+let _fullSongAbort       = null;
+let _searchTimeout       = null;
+let _recFetchTimeout     = null;
+let homeCache            = {};
+let sectionCache         = {};
+let queuePanelOpen       = false;
+let _lastObjectUrl       = null;
+let _lastTuTime          = 0;
+let _uiHidden            = false;
+let _dismissedTrackId    = null;
 
-# ═══════════════════════════════════════════════════════════════
-# SAAVN MIRROR FETCH
-# ═══════════════════════════════════════════════════════════════
-def fetch_from_mirror(mirror, query, min_score=0.4):
-    if not is_mirror_alive(mirror):
-        return None
+// ─── AUDIO ENGINE ─────────────────────────────────────────────────────────────
+const audio = new Audio();
+audio.preload = 'none';
+audio.crossOrigin = 'anonymous';
+window._aurumAudio = audio;
 
-    endpoints = ['/api/search/songs', '/api/search', '/search/songs']
+let _currentSaavnUrl     = null;
+let _currentSaavnQuality = null;
 
-    for endpoint in endpoints:
-        try:
-            r = requests.get(
-                f'{mirror}{endpoint}',
-                params={'query': query, 'q': query, 'limit': 10},
-                timeout=8,
-                headers={'User-Agent': 'Mozilla/5.0'}
-            )
-            if r.status_code != 200:
-                continue
+// ── TITLE MISMATCH GUARD ──────────────────────────────────────────────────────
+function _titleMatches(saavnTitle, itunesTitle) {
+  if (!saavnTitle || !itunesTitle) return false;
+  const norm = s => s.toLowerCase()
+    .replace(/\(.*?\)/g,'').replace(/\[.*?\]/g,'')
+    .replace(/[^a-z0-9\s]/g,'').replace(/\s+/g,' ').trim();
+  const st = norm(saavnTitle), it = norm(itunesTitle);
+  if (!st || !it) return false;
+  if (st === it) return true;
+  if (st.includes(it) || it.includes(st)) return true;
+  const sw = st.split(' ').filter(w => w.length > 0);
+  const iw = it.split(' ').filter(w => w.length > 0);
+  if (!sw.length || !iw.length) return false;
+  if (sw.length >= 2 && iw.length >= 2) {
+    const bigrams = arr => arr.slice(0,-1).map((w,i) => w+' '+arr[i+1]);
+    const sb2 = bigrams(sw), ib2 = bigrams(iw);
+    const bigMatches = sb2.filter(b => ib2.includes(b)).length;
+    if (bigMatches > 0 && bigMatches / Math.max(sb2.length, ib2.length) >= 0.4) return true;
+  }
+  let matched = 0;
+  for (const w of sw) {
+    if (iw.some(iword =>
+      iword === w ||
+      (w.length > 3 && iword.length > 3 && (iword.startsWith(w) || w.startsWith(iword)))
+    )) matched++;
+  }
+  const total = Math.max(sw.length, iw.length);
+  const threshold = total <= 2 ? 1.0 : total <= 3 ? 0.67 : 0.55;
+  return matched / total >= threshold;
+}
 
-            data = r.json()
-            results = (
-                data.get('data', {}).get('results') or
-                data.get('results') or
-                data.get('songs', {}).get('results') or []
-            )
+function loadTrack(song, autoplay = true) {
+  if (!song?.previewUrl) return;
 
-            best_song, best_score = None, -1
+  _dismissedTrackId = null;
 
-            for song in results:
-                song_title  = song.get('name') or song.get('title', '')
-                song_artist = song.get('primaryArtists') or song.get('primary_artists') or ''
-                if not has_word_match(query, song_title):
-                    continue
-                score = title_score(query, song_title, song_artist)
-                if score > best_score:
-                    best_score = score
-                    best_song  = song
+  if (_fullSongAbort) { _fullSongAbort.abort(); _fullSongAbort = null; }
+  _currentSaavnUrl = null; _currentSaavnQuality = null;
 
-            if not best_song or best_score < min_score:
-                continue
+  const pill = document.querySelector('.quality-pill');
+  if (pill) pill.style.boxShadow = '';
 
-            raw_urls = best_song.get('downloadUrl') or best_song.get('download_url') or []
-            if isinstance(raw_urls, str):
-                raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
+  const sb = document.getElementById('fp-seekbar');
+  if (sb) { sb.classList.remove('full-active'); sb.max = 30; sb.value = 0; sb.style.setProperty('--prog', '0%'); }
 
-            best_url, quality = pick_best_quality(raw_urls)
-            if not best_url:
-                continue
+  currentTrack = song; currentQuality = 'loading';
+  document.getElementById('fp-duration').textContent = '0:30';
 
-            mark_mirror_ok(mirror)
-            return {
-                'url':       best_url,
-                'quality':   quality,
-                'title':     best_song.get('name') or best_song.get('title', ''),
-                'artist':    best_song.get('primaryArtists') or best_song.get('primary_artists') or '',
-                'image':     pick_image(best_song),
-                'score':     round(best_score, 3),
-                'source':    'saavn',
-                '_raw_urls': raw_urls,
-            }
+  audio.pause();
+  audio.src = '';
+  audio.load();
+  audio.src = song.previewUrl;
 
-        except requests.Timeout:
-            mark_mirror_failed(mirror)
-            log.warning(f"[Mirror] Timeout: {mirror}{endpoint}")
-            break
-        except Exception as e:
-            log.warning(f"[Mirror {mirror}] {endpoint} → {e}")
-            continue
-
-    return None
-
-def fetch_saavn_parallel(query):
-    threshold = dynamic_min_score(query)
-    alive_mirrors = [m for m in SAAVN_MIRRORS if is_mirror_alive(m)]
-
-    if not alive_mirrors:
-        log.warning("[Saavn] All mirrors dead — resetting")
-        _mirror_failures.clear()
-        alive_mirrors = SAAVN_MIRRORS[:]
-
-    futures = {
-        _saavn_executor.submit(fetch_from_mirror, m, query, threshold): m
-        for m in alive_mirrors
+  if (autoplay) {
+    const p = audio.play();
+    if (p && p.then) {
+      p.then(() => { isPlaying = true; updatePlayerUI(); })
+       .catch(err => {
+         if (err.name !== 'AbortError') { isPlaying = false; updatePlayerUI(); }
+       });
     }
-    all_results = []
-
-    try:
-        for future in as_completed(futures, timeout=12):
-            try:
-                result = future.result()
-                if result:
-                    all_results.append(result)
-            except Exception as e:
-                log.warning(f"[Parallel] Future error: {e}")
-    except FuturesTimeout:
-        log.warning("[Parallel] Some mirrors timed out")
-
-    if not all_results:
-        return None
-
-    def result_rank(r):
-        score   = r.get('score', 0)
-        quality = r.get('quality', '')
-        return score + (0.05 if '320' in str(quality) else 0)
-
-    all_results.sort(key=result_rank, reverse=True)
-    best = all_results[0]
-    log.info(f"[Parallel] Best → '{best['title']}' score={best['score']} quality={best['quality']}")
-    return best
-
-# ═══════════════════════════════════════════════════════════════
-# /api/songs — Song listing for homepage
-# Sirf metadata return karta hai (title, artist, image, query)
-# Frontend /api/song se full URL fetch karega
-# ═══════════════════════════════════════════════════════════════
-@app.route('/api/songs')
-@limiter.limit("60 per minute")
-def get_songs():
-    q   = request.args.get('q', 'bollywood hits').strip()
-    era = request.args.get('era', '').strip()
-
-    is_90s      = (era == '90s') or any(t in q.lower() for t in NINETIES_TRIGGERS)
-    search_term = random.choice(NINETIES_SEEDS) if is_90s else q
-
-    # Saavn se metadata fetch karo
-    results = []
-    alive_mirrors = [m for m in SAAVN_MIRRORS if is_mirror_alive(m)]
-    if not alive_mirrors:
-        alive_mirrors = SAAVN_MIRRORS[:]
-
-    for mirror in alive_mirrors[:3]:  # Pehle 3 mirrors enough hain listing ke liye
-        try:
-            r = requests.get(
-                f'{mirror}/api/search/songs',
-                params={'query': search_term, 'limit': 40},
-                timeout=8,
-                headers={'User-Agent': 'Mozilla/5.0'}
-            )
-            if r.status_code != 200:
-                continue
-            data = r.json()
-            songs = (
-                data.get('data', {}).get('results') or
-                data.get('results') or
-                data.get('songs', {}).get('results') or []
-            )
-            for song in songs:
-                raw_urls = song.get('downloadUrl') or song.get('download_url') or []
-                if not raw_urls:
-                    continue
-                best_url, quality = pick_best_quality(raw_urls if isinstance(raw_urls, list) else [{'url': raw_urls, 'quality': 'unknown'}])
-                if not best_url:
-                    continue
-
-                title  = song.get('name') or song.get('title', '')
-                artist = song.get('primaryArtists') or song.get('primary_artists') or ''
-                image  = pick_image(song)
-                year   = _safe_year(song.get('releaseDate') or song.get('year', ''))
-
-                results.append({
-                    'trackId':          song.get('id', random.randint(10000, 99999)),
-                    'trackName':        title,
-                    'artistName':       artist,
-                    'artworkUrl100':    image,
-                    'artworkUrl600':    image,
-                    'url':              best_url,      # Full song URL — preview nahi
-                    'quality':          quality,
-                    'releaseDate':      str(year),
-                    'primaryGenreName': 'Bollywood',
-                    'source':           'saavn',
-                })
-            if results:
-                break
-        except Exception as e:
-            log.warning(f"[Songs] Mirror {mirror} failed: {e}")
-            continue
-
-    if is_90s and results:
-        filtered = [s for s in results if 1990 <= int(s.get('releaseDate') or 0) <= 1999]
-        if len(filtered) >= 5:
-            random.shuffle(filtered)
-            return jsonify({'results': filtered[:30]})
-
-    random.shuffle(results)
-    return jsonify({'results': results[:30]})
-
-# ═══════════════════════════════════════════════════════════════
-# /api/songs/90s — 90s dedicated endpoint
-# ═══════════════════════════════════════════════════════════════
-@app.route('/api/songs/90s')
-@limiter.limit("60 per minute")
-def get_90s_songs():
-    seed    = random.choice(NINETIES_SEEDS)
-    results = []
-
-    alive_mirrors = [m for m in SAAVN_MIRRORS if is_mirror_alive(m)]
-    if not alive_mirrors:
-        alive_mirrors = SAAVN_MIRRORS[:]
-
-    for mirror in alive_mirrors[:3]:
-        try:
-            r = requests.get(
-                f'{mirror}/api/search/songs',
-                params={'query': seed, 'limit': 40},
-                timeout=8,
-                headers={'User-Agent': 'Mozilla/5.0'}
-            )
-            if r.status_code != 200:
-                continue
-            data = r.json()
-            songs = (
-                data.get('data', {}).get('results') or
-                data.get('results') or
-                data.get('songs', {}).get('results') or []
-            )
-            for song in songs:
-                raw_urls = song.get('downloadUrl') or song.get('download_url') or []
-                if not raw_urls:
-                    continue
-                best_url, quality = pick_best_quality(raw_urls if isinstance(raw_urls, list) else [{'url': raw_urls, 'quality': 'unknown'}])
-                if not best_url:
-                    continue
-
-                title  = song.get('name') or song.get('title', '')
-                artist = song.get('primaryArtists') or song.get('primary_artists') or ''
-                image  = pick_image(song)
-                year   = _safe_year(song.get('releaseDate') or song.get('year', ''))
-
-                results.append({
-                    'trackId':       song.get('id', random.randint(10000, 99999)),
-                    'trackName':     title,
-                    'artistName':    artist,
-                    'artworkUrl100': image,
-                    'artworkUrl600': image,
-                    'url':           best_url,
-                    'quality':       quality,
-                    'releaseDate':   str(year),
-                    'source':        'saavn',
-                })
-            if results:
-                break
-        except Exception as e:
-            log.warning(f"[90s] Mirror {mirror} failed: {e}")
-            continue
-
-    # Agar Saavn se 90s songs kam mile to YT se bhi try karo
-    if len(results) < 5 and YT_DLP_AVAILABLE:
-        log.info(f"[90s] Saavn se kam results, YT try kar raha hun")
-        try:
-            yt_seed = f"90s {seed} full song"
-            future  = _yt_executor.submit(fetch_yt_url, yt_seed, '', '90s bollywood')
-            yt_url  = future.result(timeout=20)
-            if yt_url:
-                results.append({
-                    'trackId':       random.randint(10000, 99999),
-                    'trackName':     seed,
-                    'artistName':    '90s Bollywood',
-                    'artworkUrl100': '',
-                    'artworkUrl600': '',
-                    'url':           yt_url,
-                    'quality':       'full',
-                    'releaseDate':   '1995',
-                    'source':        'youtube',
-                })
-        except Exception as e:
-            log.warning(f"[90s] YT fallback failed: {e}")
-
-    filtered = [s for s in results if 1990 <= int(s.get('releaseDate') or 0) <= 1999]
-    if len(filtered) < 5:
-        filtered = results
-    random.shuffle(filtered)
-    return jsonify({'results': filtered[:30], 'seed': seed})
-
-# ═══════════════════════════════════════════════════════════════
-# /api/song — MAIN SMART ENDPOINT
-# Saavn first → YT fallback
-# Nepali/Bhojpuri → seedha YT
-# ═══════════════════════════════════════════════════════════════
-@app.route('/api/song')
-@limiter.limit("60 per minute")
-def get_song_smart():
-    q           = request.args.get('q', '').strip()
-    artist      = request.args.get('artist', '').strip()
-    fallback    = request.args.get('fallback', '').strip()
-    token       = request.args.get('token', '').strip()
-    low_quality = request.args.get('low_quality', 'false').lower() == 'true'
-    force_yt    = request.args.get('force_yt', 'false').lower() == 'true'
-
-    if not q:
-        return jsonify({'success': False, 'error': 'Missing query', 'token': token})
-
-    # Nepali/Bhojpuri → auto force YT (Saavn pe nahi milta)
-    genre_hint = ''
-    q_lower = q.lower()
-    for kw in FORCE_YT_KEYWORDS:
-        if kw in q_lower or (artist and kw in artist.lower()):
-            force_yt   = True
-            genre_hint = kw
-            log.info(f"[Smart] Auto force_yt for genre: {kw}")
-            break
-
-    saavn_result = None
-
-    # Saavn try karo (force_yt nahi hai to)
-    if not force_yt:
-        for query in build_query_variants(q, artist, fallback):
-            saavn_result = fetch_saavn_parallel(query)
-            if saavn_result and not has_word_match(q, saavn_result['title']):
-                log.warning(f"[Smart] Reject '{saavn_result['title']}' for query '{q}'")
-                saavn_result = None
-            if saavn_result:
-                break
-
-    # Saavn se mila
-    if saavn_result:
-        if low_quality:
-            low_url, low_q = _pick_low_quality(saavn_result.get('_raw_urls', []))
-            if low_url:
-                saavn_result['url']     = low_url
-                saavn_result['quality'] = low_q
-        saavn_result.pop('_raw_urls', None)
-        log.info(f"[Smart] Saavn ✓ '{q}' → '{saavn_result['title']}'")
-        return jsonify({'success': True, 'token': token, **saavn_result})
-
-    # YT fallback
-    if YT_DLP_AVAILABLE:
-        log.info(f"[Smart] Saavn miss — YT try for '{q}'")
-        try:
-            future = _yt_executor.submit(fetch_yt_url, q, artist, genre_hint)
-            yt_url = future.result(timeout=25)
-            if yt_url:
-                log.info(f"[Smart] YT ✓ '{q}'")
-                return jsonify({
-                    'success': True,
-                    'url':     yt_url,
-                    'source':  'youtube',
-                    'title':   q,
-                    'artist':  artist,
-                    'quality': 'full',
-                    'image':   '',
-                    'token':   token,
-                })
-        except FuturesTimeout:
-            log.warning(f"[Smart] YT timeout for '{q}'")
-        except Exception as e:
-            log.error(f"[Smart] YT error: {e}")
-
-    log.info(f"[Smart] ✗ No result for '{q}'")
-    return jsonify({'success': False, 'url': None, 'token': token})
-
-# ═══════════════════════════════════════════════════════════════
-# /api/saavn — Direct Saavn endpoint (frontend compatibility)
-# ═══════════════════════════════════════════════════════════════
-@app.route('/api/saavn')
-@limiter.limit("80 per minute")
-def get_saavn_song():
-    q           = request.args.get('q', '').strip()
-    artist      = request.args.get('artist', '').strip()
-    fallback    = request.args.get('fallback', '').strip()
-    token       = request.args.get('token', '').strip()
-    low_quality = request.args.get('low_quality', 'false').lower() == 'true'
-
-    if not q:
-        return jsonify({'success': False, 'url': None, 'token': token})
-
-    for query in build_query_variants(q, artist, fallback):
-        result = fetch_saavn_parallel(query)
-
-        if result and not has_word_match(q, result['title']):
-            log.warning(f"[Saavn] Final reject — '{result['title']}' for '{q}'")
-            result = None
-
-        if result:
-            if low_quality:
-                low_url, low_q = _pick_low_quality(result.get('_raw_urls', []))
-                if low_url:
-                    result['url']     = low_url
-                    result['quality'] = low_q
-
-            result.pop('_raw_urls', None)
-            log.info(f"[Saavn] ✓ '{q}' → '{result['title']}' quality={result['quality']}")
-            return jsonify({'success': True, 'token': token, **result})
-
-    log.info(f"[Saavn] ✗ No match — '{q}'")
-    return jsonify({'success': False, 'url': None, 'token': token})
-
-# ═══════════════════════════════════════════════════════════════
-# /api/yt — Direct YT endpoint
-# ═══════════════════════════════════════════════════════════════
-@app.route('/api/yt')
-@limiter.limit("30 per minute")
-def get_yt_song():
-    q      = request.args.get('q', '').strip()
-    artist = request.args.get('artist', '').strip()
-    token  = request.args.get('token', '').strip()
-
-    if not q:
-        return jsonify({'success': False, 'error': 'Missing query', 'token': token})
-
-    if not YT_DLP_AVAILABLE:
-        return jsonify({'success': False, 'error': 'yt-dlp not installed', 'token': token}), 503
-
-    try:
-        # Genre detect karo
-        genre_hint = ''
-        for kw in FORCE_YT_KEYWORDS:
-            if kw in q.lower():
-                genre_hint = kw
-                break
-
-        future = _yt_executor.submit(fetch_yt_url, q, artist, genre_hint)
-        url    = future.result(timeout=25)
-
-        if url:
-            return jsonify({'success': True, 'url': url, 'source': 'youtube', 'title': q, 'artist': artist, 'token': token})
-        return jsonify({'success': False, 'url': None, 'token': token})
-
-    except FuturesTimeout:
-        return jsonify({'success': False, 'error': 'timeout', 'token': token})
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e), 'token': token})
-
-# ═══════════════════════════════════════════════════════════════
-# /api/stream — Proxy streamer (Saavn CDN + googlevideo)
-# ═══════════════════════════════════════════════════════════════
-@app.route('/api/stream')
-@limiter.limit("120 per minute")
-def stream_audio():
-    url = request.args.get('url', '').strip()
-
-    if not url:
-        return jsonify({'error': 'Missing URL'}), 400
-
-    try:
-        parsed = urlparse(url)
-        if parsed.scheme not in ('http', 'https'):
-            return jsonify({'error': 'Invalid URL scheme'}), 400
-
-        domain         = parsed.netloc.lower().split(':')[0]
-        is_googlevideo = domain.endswith('.googlevideo.com')
-        allowed = is_googlevideo or any(
-            domain == d or domain.endswith('.' + d)
-            for d in ALLOWED_STREAM_DOMAINS
-        )
-        if not allowed:
-            log.warning(f"[Stream] Blocked domain: {domain}")
-            return jsonify({'error': 'Domain not allowed'}), 403
-
-    except Exception:
-        return jsonify({'error': 'Invalid URL'}), 400
-
-    try:
-        req_headers = {
-            'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-            'Accept':          'audio/mpeg,audio/webm,audio/mp4,audio/*;q=0.9,*/*;q=0.5',
-            'Accept-Encoding': 'identity',
-            'Connection':      'keep-alive',
-        }
-        range_header = request.headers.get('Range')
-        if range_header:
-            req_headers['Range'] = range_header
-
-        upstream = requests.get(url, headers=req_headers, stream=True, timeout=30, allow_redirects=True)
-
-        excluded = {'content-encoding', 'transfer-encoding', 'connection'}
-        resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in excluded}
-
-        resp_headers['Access-Control-Allow-Origin'] = '*'
-        resp_headers['Accept-Ranges']               = 'bytes'
-        resp_headers['Cache-Control']               = 'no-store'
-        resp_headers['X-Content-Type-Options']      = 'nosniff'
-
-        if 'content-type' not in {k.lower() for k in resp_headers}:
-            resp_headers['Content-Type'] = 'audio/mpeg'
-
-        def generate():
-            try:
-                for chunk in upstream.iter_content(chunk_size=65536):
-                    if chunk:
-                        yield chunk
-            finally:
-                upstream.close()
-
-        return Response(
-            stream_with_context(generate()),
-            status=upstream.status_code,
-            headers=resp_headers,
-            direct_passthrough=True
-        )
-
-    except Exception as e:
-        log.error(f"[Stream] Error → {url[:80]}: {e}")
-        return jsonify({'error': str(e)}), 500
-
-# ═══════════════════════════════════════════════════════════════
-# /api/download — Direct download endpoint
-# ═══════════════════════════════════════════════════════════════
-@app.route('/api/download')
-@limiter.limit("50 per minute")
-def download_song():
-    q      = request.args.get('q', '').strip()
-    artist = request.args.get('artist', '').strip()
-
-    if not q:
-        return jsonify({'success': False, 'error': 'Missing query'}), 400
-
-    # Smart endpoint se URL lo
-    result = None
-    for query in build_query_variants(q, artist, ''):
-        result = fetch_saavn_parallel(query)
-        if result and has_word_match(q, result['title']):
-            break
-        result = None
-
-    # YT fallback
-    if not result and YT_DLP_AVAILABLE:
-        genre_hint = ''
-        for kw in FORCE_YT_KEYWORDS:
-            if kw in q.lower():
-                genre_hint = kw
-                break
-        try:
-            future = _yt_executor.submit(fetch_yt_url, q, artist, genre_hint)
-            yt_url = future.result(timeout=25)
-            if yt_url:
-                result = {'url': yt_url, 'title': q, 'artist': artist, 'quality': 'full'}
-        except Exception as e:
-            log.warning(f"[Download] YT failed: {e}")
-
-    if not result:
-        return jsonify({'success': False, 'error': 'Not found'}), 404
-
-    try:
-        req_headers = {
-            'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-            'Accept':          'audio/mpeg,audio/webm,audio/mp4,audio/*;q=0.9,*/*;q=0.5',
-            'Accept-Encoding': 'identity',
-            'Connection':      'keep-alive',
-        }
-        upstream = requests.get(result['url'], headers=req_headers, stream=True, timeout=30, allow_redirects=True)
-
-        if upstream.status_code != 200:
-            return jsonify({'success': False, 'error': 'Stream failed'}), 502
-
-        title_safe  = re.sub(r'[^\w\s-]', '', result.get('title', 'song'))[:50]
-        artist_safe = re.sub(r'[^\w\s-]', '', result.get('artist', 'unknown'))[:30]
-        filename    = f"{title_safe} - {artist_safe}.mp3"
-
-        excluded = {'content-encoding', 'transfer-encoding', 'connection'}
-        resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in excluded}
-        resp_headers['Content-Disposition']          = f'attachment; filename="{filename}"'
-        resp_headers['Access-Control-Allow-Origin']  = '*'
-        resp_headers['Cache-Control']                = 'no-store'
-
-        if 'content-type' not in {k.lower() for k in resp_headers}:
-            resp_headers['Content-Type'] = 'audio/mpeg'
-
-        def generate():
-            try:
-                for chunk in upstream.iter_content(chunk_size=65536):
-                    if chunk: yield chunk
-            finally:
-                upstream.close()
-
-        return Response(stream_with_context(generate()), status=upstream.status_code, headers=resp_headers, direct_passthrough=True)
-
-    except Exception as e:
-        return jsonify({'success': False, 'error': str(e)}), 500
-
-# ═══════════════════════════════════════════════════════════════
-# HEALTH
-# ═══════════════════════════════════════════════════════════════
-@app.route('/health')
-def health():
-    alive = [m for m in SAAVN_MIRRORS if is_mirror_alive(m)]
-    return jsonify({
-        'status':        'ok',
-        'yt_dlp':        YT_DLP_AVAILABLE,
-        'mirrors_alive': len(alive),
-        'mirrors_total': len(SAAVN_MIRRORS),
-        'yt_cache_size': len(_yt_url_cache),
-    })
-
-# ═══════════════════════════════════════════════════════════════
-# RUN
-# ═══════════════════════════════════════════════════════════════
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 7700))
-    log.info(f"Server starting on port {port} | yt-dlp: {YT_DLP_AVAILABLE}")
-    app.run(host='0.0.0.0', port=port, threaded=True, debug=False)
+  }
+
+  updatePlayerUI();
+  showMiniPlayer();
+  updateActiveRows();
+  updateQualityLabel();
+  addToRecentlyPlayed(song);
+  _autoFetchFullSong(song);
+  clearTimeout(_recFetchTimeout);
+  _recFetchTimeout = setTimeout(() => fetchRecommendations(song), 800);
+}
+
+function playSongs(queue, index) {
+  currentQueue = [...queue]; currentIndex = index;
+  loadTrack(currentQueue[currentIndex]);
+}
+
+async function _autoFetchFullSong(song) {
+  const ctrl = new AbortController();
+  _fullSongAbort = ctrl;
+  const requested = song;
+  try {
+    const rawTitle   = song.trackName  || '';
+    const rawArtist  = song.artistName || '';
+    const movieMatch = rawTitle.match(/\(From\s+[\u201c\u201d""]?(.+?)[\u201c\u201d""]?\)/i);
+    const movieName  = movieMatch ? movieMatch[1].trim() : '';
+    const cleanTitle  = rawTitle.replace(/\(.*?\)|\[.*?\]/g, '').trim();
+    const cleanArtist = rawArtist.split(/[&,]|feat\.|ft\./i)[0].trim();
+
+    const primaryQ  = encodeURIComponent(movieName ? `${cleanTitle} ${movieName}` : `${cleanTitle} ${cleanArtist}`);
+    const fallbackQ = encodeURIComponent(`${cleanTitle} ${cleanArtist}`);
+    const artistQ   = encodeURIComponent(cleanArtist);
+
+    const r = await fetch(`/api/saavn?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`, { signal: ctrl.signal });
+    if (!r.ok) throw new Error('api-err');
+    const d = await r.json();
+
+    if (ctrl.signal.aborted) return;
+    if (currentTrack?.trackId !== requested.trackId) return;
+    if (!d.success || !d.url) return;
+
+    if (!_titleMatches(d.title, requested.trackName)) {
+      console.warn(`[Mismatch] Asked="${requested.trackName}" Got="${d.title}" — staying on preview`);
+      return;
+    }
+
+    const proxyUrl = `/api/stream?url=${encodeURIComponent(d.url)}`;
+    _currentSaavnUrl     = proxyUrl;
+    _currentSaavnQuality = d.quality || 'unknown';
+    _updateDlSheetQuality(d.quality);
+
+    const preAudio = new Audio();
+    preAudio.preload = 'auto';
+    preAudio.crossOrigin = 'anonymous';
+
+    await new Promise((res, rej) => {
+      const to = setTimeout(() => rej(new Error('preload-timeout')), 14000);
+      preAudio.addEventListener('canplay', () => { clearTimeout(to); res(); }, { once: true });
+      preAudio.addEventListener('error',   () => { clearTimeout(to); rej(new Error('preload-error')); }, { once: true });
+      preAudio.src = proxyUrl;
+      preAudio.load();
+    });
+
+    if (ctrl.signal.aborted || currentTrack?.trackId !== requested.trackId) {
+      preAudio.src = ''; return;
+    }
+
+    const wasPlaying = isPlaying;
+    const pos = audio.currentTime;
+
+    const onMeta = () => {
+      if (isFinite(pos) && pos > 0 && pos < audio.duration) audio.currentTime = pos;
+    };
+    audio.addEventListener('loadedmetadata', onMeta, { once: true });
+
+    audio.src = proxyUrl;
+
+    const sbEl = document.getElementById('fp-seekbar');
+    if (sbEl) sbEl.classList.add('full-active');
+
+    if (wasPlaying) {
+      const pp = audio.play();
+      if (pp?.then) pp.then(() => {
+        if (ctrl.signal.aborted || currentTrack?.trackId !== requested.trackId) { audio.pause(); return; }
+        isPlaying = true; currentQuality = 'full'; _fullSongAbort = null;
+        updateQualityLabel(); updatePlayerUI();
+      }).catch(() => { if (!ctrl.signal.aborted) _fallbackToPreview(requested); });
+    } else {
+      currentQuality = 'full'; _fullSongAbort = null;
+      updateQualityLabel(); updatePlayerUI();
+    }
+    preAudio.src = '';
+
+  } catch(e) {
+    if (e.name !== 'AbortError') console.info('[AutoFetch] Staying on preview:', e.message);
+  }
+}
+
+function _fallbackToPreview(song) {
+  if (!song?.previewUrl) return;
+  if (currentTrack?.trackId !== song.trackId) return;
+  const sb = document.getElementById('fp-seekbar');
+  if (sb) { sb.classList.remove('full-active'); sb.max = 30; }
+  audio.src = song.previewUrl;
+  const p = audio.play();
+  if (p?.then) p.then(() => { isPlaying = true; updatePlayerUI(); }).catch(() => {});
+  currentQuality = 'preview'; updateQualityLabel();
+}
+
+function _updateDlSheetQuality(quality) {
+  const desc  = document.getElementById('dl-full-desc');
+  const badge = document.getElementById('dl-full-badge');
+  if (!desc || !badge) return;
+  const q = (quality || '').toLowerCase();
+  if (q.includes('320'))      { desc.textContent = 'JioSaavn stream · 320 kbps'; badge.textContent = '320 kbps'; badge.className = 'dl-kbps-badge b320'; }
+  else if (q.includes('160')) { desc.textContent = 'JioSaavn stream · 160 kbps'; badge.textContent = '160 kbps'; badge.className = 'dl-kbps-badge b160'; }
+  else if (q.includes('96'))  { desc.textContent = 'JioSaavn stream · 96 kbps';  badge.textContent = '96 kbps';  badge.className = 'dl-kbps-badge b128'; }
+  else                        { desc.textContent = 'JioSaavn stream · best available'; badge.textContent = 'HQ'; badge.className = 'dl-kbps-badge b320'; }
+}
+
+// ─── PLAYBACK CONTROLS ────────────────────────────────────────────────────────
+function togglePlay() {
+  if (!currentTrack) return;
+  if (isPlaying) {
+    audio.pause(); isPlaying = false;
+  } else {
+    const p = audio.play();
+    if (p && p.then) {
+      p.then(() => { isPlaying = true; updatePlayerUI(); })
+       .catch(() => { isPlaying = false; updatePlayerUI(); });
+      return;
+    }
+    isPlaying = true;
+  }
+  updatePlayerUI();
+}
+
+function nextTrack() {
+  if (!currentQueue.length) return;
+  if (shuffleOn) {
+    let next;
+    do { next = Math.floor(Math.random() * currentQueue.length); }
+    while (next === currentIndex && currentQueue.length > 1);
+    currentIndex = next;
+  } else {
+    currentIndex = (currentIndex + 1) % currentQueue.length;
+  }
+  loadTrack(currentQueue[currentIndex]);
+  updateQueuePanel();
+}
+
+function prevTrack() {
+  if (audio.currentTime > 3) { audio.currentTime = 0; return; }
+  if (!currentQueue.length) return;
+  currentIndex = (currentIndex - 1 + currentQueue.length) % currentQueue.length;
+  loadTrack(currentQueue[currentIndex]);
+  updateQueuePanel();
+}
+
+function seekTo(v) { if (isFinite(audio.duration)) audio.currentTime = parseFloat(v); }
+
+function setVolume(v) {
+  audio.volume = parseFloat(v);
+  const vv = (parseFloat(v) * 100).toFixed(0) + '%';
+  const slider = document.getElementById('fp-vol-slider');
+  if (slider) slider.style.setProperty('--vol', vv);
+  const vPath = document.getElementById('vol-path');
+  if (vPath) {
+    if (parseFloat(v) === 0)        vPath.setAttribute('d', 'M23 9l-4.5 4.5M18.5 9L23 13.5');
+    else if (parseFloat(v) < 0.5)  vPath.setAttribute('d', 'M15.54 8.46a5 5 0 0 1 0 7.07');
+    else                            vPath.setAttribute('d', 'M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14');
+  }
+}
+
+function toggleShuffle() {
+  shuffleOn = !shuffleOn;
+  document.getElementById('shuffle-btn').querySelector('svg').style.stroke = shuffleOn ? 'var(--gold-l)' : '';
+  showToast(shuffleOn ? 'Shuffle on' : 'Shuffle off');
+}
+
+function toggleRepeat() {
+  repeatOn = !repeatOn; audio.loop = repeatOn;
+  document.getElementById('repeat-btn').querySelector('svg').style.stroke = repeatOn ? 'var(--gold-l)' : '';
+  showToast(repeatOn ? 'Repeat on' : 'Repeat off');
+}
+
+// ─── AUDIO EVENTS ─────────────────────────────────────────────────────────────
+audio.addEventListener('ended', () => { if (!repeatOn) nextTrack(); });
+
+audio.addEventListener('error', () => {
+  if (currentQuality === 'full' && currentTrack?.previewUrl) _fallbackToPreview(currentTrack);
+  const pc = document.getElementById('fp-play-circle');
+  if (pc) pc.classList.remove('buffering');
+});
+
+audio.addEventListener('waiting',  () => { const pc = document.getElementById('fp-play-circle'); if (pc) pc.classList.add('buffering'); });
+audio.addEventListener('stalled',  () => { const pc = document.getElementById('fp-play-circle'); if (pc) pc.classList.add('buffering'); });
+audio.addEventListener('canplay',  () => { const pc = document.getElementById('fp-play-circle'); if (pc) pc.classList.remove('buffering'); });
+
+audio.addEventListener('playing', () => {
+  const pc = document.getElementById('fp-play-circle');
+  if (pc) pc.classList.remove('buffering');
+  isPlaying = true;
+  _syncPlayIcons();
+  _syncPlayingClass();
+  updateMediaSession();
+});
+
+audio.addEventListener('pause', () => {
+  isPlaying = false;
+  _syncPlayIcons();
+  _syncPlayingClass();
+  updateMediaSession();
+});
+
+audio.addEventListener('timeupdate', () => {
+  const now = Date.now();
+  if (now - _lastTuTime < 250) return;
+  _lastTuTime = now;
+  if (_uiHidden) return;
+  const dur = isFinite(audio.duration) && audio.duration > 0 ? audio.duration : (currentQuality === 'full' ? 0 : 30);
+  const p = dur ? audio.currentTime / dur * 100 : 0;
+  const mpb = document.getElementById('mini-progress-bar');
+  if (mpb) mpb.style.width = p + '%';
+  const s = document.getElementById('fp-seekbar');
+  if (s && !s.matches(':active')) {
+    s.value = audio.currentTime;
+    s.style.setProperty('--prog', p + '%');
+  }
+  const fc = document.getElementById('fp-current');
+  if (fc) fc.textContent = formatSec(audio.currentTime);
+});
+
+audio.addEventListener('durationchange', () => {
+  if (isFinite(audio.duration) && audio.duration > 0) {
+    const sb = document.getElementById('fp-seekbar');
+    if (sb) sb.max = audio.duration;
+    const fd = document.getElementById('fp-duration');
+    if (fd) fd.textContent = formatSec(audio.duration);
+  }
+});
+
+// ─── OFFLINE DETECTION ────────────────────────────────────────────────────────
+function _handleConnectivity() {
+  const banner = document.getElementById('offline-banner');
+  if (!banner) return;
+  navigator.onLine ? banner.classList.remove('show') : banner.classList.add('show');
+}
+window.addEventListener('online', _handleConnectivity, { passive: true });
+window.addEventListener('offline', _handleConnectivity, { passive: true });
+_handleConnectivity();
+
+// ─── SCREEN OFF / ON ─────────────────────────────────────────────────────────
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    _uiHidden = true;
+    _stopViz();
+    document.getElementById('ambient-canvas')?.classList.remove('orbs-active');
+    const fp = document.getElementById('fullscreen-player');
+    const ac = document.getElementById('ambient-canvas');
+    if (fp) fp.style.setProperty('visibility', 'hidden', 'important');
+    if (ac) ac.style.setProperty('display', 'none', 'important');
+    const keep = new Set(['recent', 'featured']);
+    Object.keys(sectionCache).forEach(k => { if (!keep.has(k)) delete sectionCache[k]; });
+  } else {
+    _uiHidden = false;
+    const fp = document.getElementById('fullscreen-player');
+    const ac = document.getElementById('ambient-canvas');
+    if (fp) fp.style.removeProperty('visibility');
+    if (ac) ac.style.removeProperty('display');
+    if (fp?.classList.contains('open') && !isLowEnd) _startViz();
+    if (!isLowEnd) document.getElementById('ambient-canvas')?.classList.add('orbs-active');
+    if (currentTrack) {
+      _syncPlayIcons();
+      _syncPlayingClass();
+      updateQualityLabel();
+    }
+  }
+}, { passive: true });
+
+// ─── UI UPDATES ───────────────────────────────────────────────────────────────
+function _syncPlayIcons() {
+  const playIcon  = '<polygon points="5 3 19 12 5 21 5 3"/>';
+  const pauseIcon = '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>';
+  const icon = isPlaying ? pauseIcon : playIcon;
+  const mi = document.getElementById('mini-play-icon');
+  const fi = document.getElementById('fp-play-icon');
+  if (mi) mi.innerHTML = icon;
+  if (fi) fi.innerHTML = icon;
+}
+
+function _syncPlayingClass() {
+  const fp = document.getElementById('fullscreen-player');
+  const mp = document.getElementById('mini-player');
+  if (fp) isPlaying ? fp.classList.add('playing') : fp.classList.remove('playing');
+  if (mp) isPlaying ? mp.classList.add('playing-glow') : mp.classList.remove('playing-glow');
+}
+
+function updatePlayerUI() {
+  if (!currentTrack) return;
+  const artUrl = getArtUrl(currentTrack, '600x600');
+  const miniArt = document.getElementById('mini-art');
+  if (miniArt) setImgSrc(miniArt, artUrl);
+  const fpArt = document.getElementById('fp-art');
+  if (fpArt) setImgSrc(fpArt, artUrl);
+  const mt = document.getElementById('mini-title'); if (mt) mt.textContent = currentTrack.trackName || 'Unknown';
+  const ma = document.getElementById('mini-artist'); if (ma) ma.textContent = currentTrack.artistName || 'Unknown';
+  const ft = document.getElementById('fp-title'); if (ft) ft.textContent = currentTrack.trackName || 'Unknown';
+  const fa = document.getElementById('fp-artist'); if (fa) fa.textContent = currentTrack.artistName || 'Unknown';
+  _syncPlayIcons();
+  _syncPlayingClass();
+  updateSaveBtn();
+  updateActiveRows();
+  updateAmbientPlayer(artUrl);
+  updateNextStrip();
+  updateMediaSession();
+  showMiniPlayer();
+}
+
+function updateNextStrip() {
+  const strip = document.getElementById('fp-next-strip');
+  if (!strip) return;
+  if (!currentQueue.length || currentQueue.length < 2) { strip.style.display = 'none'; return; }
+  const nextIdx = shuffleOn ? (currentIndex + 1 + Math.floor(Math.random() * (currentQueue.length - 1))) % currentQueue.length : (currentIndex + 1) % currentQueue.length;
+  const nextSong = currentQueue[nextIdx];
+  if (!nextSong) { strip.style.display = 'none'; return; }
+  strip.style.display = '';
+  setImgSrc(document.getElementById('fp-next-art'), getArtUrl(nextSong, '300x300'));
+  const nt = document.getElementById('fp-next-title'); if (nt) nt.textContent = nextSong.trackName || 'Unknown';
+  const na = document.getElementById('fp-next-artist'); if (na) na.textContent = nextSong.artistName || 'Unknown';
+}
+
+function updateMediaSession() {
+  if (!('mediaSession' in navigator) || !currentTrack) return;
+  try {
+    const artUrl = getArtUrl(currentTrack, '512x512');
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: currentTrack.trackName || 'Unknown',
+      artist: currentTrack.artistName || 'Unknown',
+      artwork: [{ src: artUrl, sizes: '512x512', type: 'image/jpeg' }]
+    });
+    navigator.mediaSession.setActionHandler('play', () => { audio.play().catch(()=>{}); isPlaying = true; updatePlayerUI(); });
+    navigator.mediaSession.setActionHandler('pause', () => { audio.pause(); isPlaying = false; updatePlayerUI(); });
+    navigator.mediaSession.setActionHandler('nexttrack', nextTrack);
+    navigator.mediaSession.setActionHandler('previoustrack', prevTrack);
+    try { navigator.mediaSession.setActionHandler('seekto', d => { if (isFinite(d.seekTime)) seekTo(d.seekTime); }); } catch(e) {}
+    navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+  } catch(e) {}
+}
+
+function updateSaveBtn() {
+  if (!currentTrack) return;
+  const saved = isSaved(currentTrack);
+  const btn = document.getElementById('fp-save-btn');
+  const lbl = document.getElementById('fp-save-label');
+  if (btn) btn.classList.toggle('saved', saved);
+  if (lbl) lbl.textContent = saved ? 'Saved' : 'Save';
+}
+
+function showMiniPlayer() {
+  if (isTV) return;
+  if (_dismissedTrackId && currentTrack && String(_dismissedTrackId) === String(currentTrack.trackId)) return;
+  const mp = document.getElementById('mini-player');
+  if (!mp) return;
+  mp.style.opacity = '';
+  mp.style.pointerEvents = '';
+  mp.classList.add('show');
+}
+
+function updateActiveRows() {
+  document.querySelectorAll('.song-row,.queue-item').forEach(r => {
+    const isCurrent = currentTrack && (String(r.dataset.trackId) === String(currentTrack.trackId));
+    r.classList.toggle('playing', isCurrent);
+    r.classList.toggle('current', isCurrent);
+    const rightDiv = r.querySelector('.song-row-right');
+    if (!rightDiv) return;
+    const existing = rightDiv.querySelector('.now-playing-bar');
+    const durSpan = rightDiv.querySelector('.song-row-duration');
+    if (isCurrent && isPlaying) {
+      if (!existing) {
+        const bar = document.createElement('div'); bar.className = 'now-playing-bar';
+        bar.innerHTML = '<span></span><span></span><span></span>';
+        if (durSpan) durSpan.style.display = 'none';
+        rightDiv.appendChild(bar);
+      }
+    } else {
+      if (existing) existing.remove();
+      if (durSpan) durSpan.style.display = '';
+    }
+  });
+}
+
+function updateQualityLabel() {
+  const lbl = document.getElementById('quality-label');
+  const pill = document.querySelector('.quality-pill');
+  if (!lbl) return;
+  if (currentQuality === 'full') {
+    const q = (_currentSaavnQuality || '').toLowerCase();
+    const kbps = q.includes('320') ? '320 kbps' : q.includes('160') ? '160 kbps' : q.includes('96') ? '96 kbps' : 'HQ';
+    lbl.textContent = kbps; lbl.style.color = 'var(--gold-l)';
+    if (pill) pill.style.boxShadow = '0 0 0 0.5px rgba(184,150,64,0.24)';
+  } else if (currentQuality === 'loading') {
+    lbl.textContent = '·'; lbl.style.color = 'var(--text3)';
+    if (pill) pill.style.boxShadow = '';
+  } else {
+    lbl.textContent = '128 kbps'; lbl.style.color = 'var(--text3)';
+    if (pill) pill.style.boxShadow = '';
+  }
+  const fb = document.getElementById('q-badge-full');
+  const pb = document.getElementById('q-badge-preview');
+  if (fb) {
+    const q = (_currentSaavnQuality || '').toLowerCase();
+    const kLabel = q.includes('320') ? '320 kbps' : q.includes('160') ? '160 kbps' : 'HQ Stream';
+    fb.textContent = currentQuality === 'full' ? `● ${kLabel}` : '▶ Stream';
+    fb.className = 'quality-badge' + (currentQuality === 'full' ? ' active' : ' ext');
+  }
+  if (pb) {
+    pb.textContent = currentQuality === 'preview' ? '● 128 kbps' : '○ Preview';
+    pb.className = 'quality-badge' + (currentQuality === 'preview' ? ' active' : ' ext');
+  }
+}
+
+// ─── AMBIENT PLAYER BG ───────────────────────────────────────────────────────
+let _lastAmbientSrc = '';
+function updateAmbientPlayer(artUrl) {
+  if (isLowEnd) return;
+  if (!artUrl || artUrl === _lastAmbientSrc) return;
+  _lastAmbientSrc = artUrl;
+  const bgArt = document.getElementById('fp-bg-art');
+  if (!bgArt) return;
+  bgArt.onerror = () => { bgArt.style.opacity = '0'; };
+  bgArt.onload = () => {
+    bgArt.style.opacity = '1';
+    try {
+      extractDominantColor(bgArt, (r, g, b) => {
+        const glow = document.getElementById('fp-ambient-glow');
+        if (glow) glow.style.background = `radial-gradient(ellipse at 50% 80%,rgba(${r},${g},${b},0.2),transparent 72%)`;
+        document.querySelectorAll('.fp-viz-bar').forEach(bar => {
+          bar.style.background = `linear-gradient(to top,rgba(${r},${g},${b},0.75) 0%,rgba(${r},${g},${b},0.1) 100%)`;
+        });
+        const fp = document.getElementById('fullscreen-player');
+        if (fp) fp.style.setProperty('--fp-art-glow', `rgba(${r},${g},${b},0.24)`);
+      });
+    } catch(e) {}
+  };
+  bgArt.style.opacity = '0';
+  bgArt.src = artUrl;
+  if (bgArt.complete && bgArt.naturalWidth > 0) bgArt.onload && bgArt.onload();
+}
+
+function extractDominantColor(imgEl, callback) {
+  try {
+    _sharedCtx.drawImage(imgEl, 0, 0, 16, 16);
+    const data = _sharedCtx.getImageData(0, 0, 16, 16).data;
+    let r = 0, g = 0, b = 0, count = 0;
+    for (let i = 0; i < data.length; i += 16) { r += data[i]; g += data[i+1]; b += data[i+2]; count++; }
+    if (!count) { callback(184, 150, 64); return; }
+    r = Math.round(r / count); g = Math.round(g / count); b = Math.round(b / count);
+    const max = Math.max(r, g, b, 1);
+    r = Math.round(r / max * 210); g = Math.round(g / max * 210); b = Math.round(b / max * 210);
+    callback(r, g, b);
+  } catch(e) { callback(184, 150, 64); }
+}
+
+// ─── VISUALIZER ───────────────────────────────────────────────────────────────
+const VIZ_COUNT = isLowEnd ? 0 : 44;
+let vizBars = [];
+let vizRaf = null;
+let vizPhase = 0;
+let vizTarget = [];
+let _lastVizTime = 0;
+const vizRandOffsets = Array.from({ length: VIZ_COUNT }, () => Math.random() * 6.28);
+
+function initViz() {
+  if (isLowEnd) return;
+  const c = document.getElementById('fp-visualizer'); if (!c) return;
+  c.innerHTML = ''; vizBars = []; vizTarget = [];
+  for (let i = 0; i < VIZ_COUNT; i++) {
+    const b = document.createElement('div'); b.className = 'fp-viz-bar';
+    c.appendChild(b); vizBars.push(b); vizTarget.push(0.05);
+  }
+}
+
+function _startViz() {
+  if (isLowEnd || vizRaf !== null) return;
+  vizRaf = requestAnimationFrame(_vizLoop);
+}
+
+function _stopViz() {
+  if (vizRaf) { cancelAnimationFrame(vizRaf); vizRaf = null; }
+}
+
+function _vizLoop(ts) {
+  const fp = document.getElementById('fullscreen-player');
+  if (document.hidden || !fp?.classList.contains('open') || isLowEnd) {
+    vizRaf = null;
+    return;
+  }
+  if (ts - _lastVizTime < FRAME_BUDGET) {
+    vizRaf = requestAnimationFrame(_vizLoop);
+    return;
+  }
+  _lastVizTime = ts;
+  vizPhase += 0.034 + Math.sin(vizPhase * 0.1) * 0.004;
+  vizBars.forEach((b, i) => {
+    if (!isPlaying) {
+      vizTarget[i] = vizTarget[i] * 0.88 + 0.05 * 0.12;
+      b.style.transform = `scaleY(${vizTarget[i].toFixed(3)})`; return;
+    }
+    const norm = i / VIZ_COUNT;
+    const freqCurve = norm < 0.12 ? (norm / 0.12) : norm < 0.44 ? 1 - (norm - 0.12) * 0.55 : Math.max(0.1, 0.8 - (norm - 0.44) * 1.35);
+    const rOff = vizRandOffsets[i];
+    const o1 = Math.sin(vizPhase * 2.0 + i * 0.36 + rOff) * 0.38 + 0.38;
+    const o2 = Math.sin(vizPhase * 1.3 + i * 0.68 + rOff * 0.7 + 0.9) * 0.22 + 0.22;
+    const o3 = Math.sin(vizPhase * 3.1 + i * 0.22 + rOff * 0.4 + 2.1) * 0.11 + 0.11;
+    const target = Math.max(0.05, Math.min(1, (o1 + o2 * 0.58 + o3 * 0.38) * freqCurve * 0.88));
+    vizTarget[i] = vizTarget[i] * 0.74 + target * 0.26;
+    b.style.transform = `scaleY(${vizTarget[i].toFixed(3)})`;
+  });
+  vizRaf = requestAnimationFrame(_vizLoop);
+}
+
+function tickViz() { _startViz(); }
+
+// ─── SMART BLUR HELPERS ───────────────────────────────────────────────────────
+function _pauseBlur() {
+  const els = [
+    document.getElementById('fullscreen-player'),
+    document.getElementById('mini-player'),
+    document.getElementById('queue-panel'),
+  ];
+  els.forEach(el => {
+    if (!el) return;
+    el.style.backdropFilter = 'none';
+    el.style.webkitBackdropFilter = 'none';
+  });
+}
+
+function _resumeBlur() {
+  const els = [
+    document.getElementById('fullscreen-player'),
+    document.getElementById('mini-player'),
+    document.getElementById('queue-panel'),
+  ];
+  els.forEach(el => {
+    if (!el) return;
+    el.style.backdropFilter = '';
+    el.style.webkitBackdropFilter = '';
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── GESTURE SYSTEM — ALL BUGS FIXED ─────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── GESTURE: MINI PLAYER ────────────────────────────────────────────────────
+function setupMiniGesture() {
+  const mp = document.getElementById('mini-player');
+  let startY = 0, startX = 0, isDragging = false, startTime = 0;
+  let moved = false, rafId = null;
+  let axisLocked = null;
+
+  function snapBack() {
+    mp.style.transition = 'transform 0.3s cubic-bezier(0.34,1.56,0.64,1)';
+    mp.style.transform = '';
+    mp.style.willChange = '';
+    setTimeout(() => { mp.style.transition = ''; }, 320);
+    _resumeBlur();
+  }
+
+  mp.addEventListener('touchstart', e => {
+    e.stopPropagation();
+    startY = e.touches[0].clientY;
+    startX = e.touches[0].clientX;
+    isDragging = true;
+    startTime = Date.now();
+    moved = false;
+    axisLocked = null;
+    mp.style.transition = 'none';
+    mp.style.willChange = 'transform';
+    mp.style.transform = mp.style.transform || 'translateZ(0)';
+    _pauseBlur();
+  }, { passive: true });
+
+// ========== TOUCHSTART ==========
+mp.addEventListener('touchstart', e => {
+  // ... touchstart code ...
+}, { passive: true });
+
+// ========= TOUCHMOVE =========
+mp.addEventListener('touchmove', e => {
+  if (!isDragging) return;
+  const dy = e.touches[0].clientY - startY;
+  const dx = e.touches[0].clientX - startX;
+  const absDy = Math.abs(dy);
+  const absDx = Math.abs(dx);
+
+  if (absDy > 6) {
+    moved = true;
+    e.preventDefault();
+    const clamped = dy;
+    if (rafId) cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(ts => {
+      rafId = null;
+      if (ts - _lastRafTime < FRAME_BUDGET) return;
+      _lastRafTime = ts;
+      mp.style.transform = `translateY(${clamped}px)`;
+    });
+  }
+}, { passive: false });
+
+// ========= TOUCHEND =========
+mp.addEventListener('touchend', e => {
+  if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+  if (!isDragging) return;
+  isDragging = false;
+
+  const dy = e.changedTouches[0].clientY - startY;
+  const dt = Math.max(1, Date.now() - startTime);
+  const vel = dy / dt;
+
+  mp.style.willChange = '';
+  _resumeBlur();
+
+  if (!moved) { snapBack(); return; }
+
+  if (dy < -30 || vel < -0.45) {
+    mp.style.transform = '';
+    mp.style.transition = '';
+    openFullscreen();
+    return;
+  }
+
+  if (dy > 100 || (vel > 0.55 && dy > 30)) {
+    if (currentTrack) _dismissedTrackId = currentTrack.trackId;
+    mp.style.transition = 'transform 0.25s ease, opacity 0.2s ease';
+    mp.style.transform = `translateY(120px)`;
+    mp.style.opacity = '0';
+    setTimeout(() => {
+      mp.classList.remove('show');
+      mp.style.transform = '';
+      mp.style.opacity = '';
+      mp.style.transition = '';
+    }, 250);
+    if (isPlaying) { audio.pause(); isPlaying = false; _syncPlayIcons(); _syncPlayingClass(); }
+    return;
+  }
+
+  snapBack();
+}, { passive: true });
+  mp.addEventListener('touchcancel', () => {
+    if (rafId) { cancelAnimationFrame(rafId);  // ✅ सही; rafId = null; }
+    isDragging = false;
+    axisLocked = null;
+    mp.style.willChange = '';
+    snapBack();
+  }, { passive: true });
+}
+
+// ─── GESTURE: FULLSCREEN PLAYER ──────────────────────────────────────────────
+function setupFullPlayerGesture() {
+  const fp = document.getElementById('fullscreen-player');
+  const qp = document.getElementById('queue-panel');
+  let startY = 0, startX = 0, isDragging = false, startTime = 0;
+  let gestureTarget = null, moved = false, rafId = null;
+  let axisLocked = null;
+
+  function snapBackFp() {
+    fp.style.transition = 'transform 0.3s cubic-bezier(0.34,1.56,0.64,1)';
+    fp.style.transform = '';
+    fp.style.willChange = '';
+    setTimeout(() => { fp.style.transition = ''; }, 320);
+    _resumeBlur();
+  }
+
+  function snapBackQp() {
+    qp.style.transition = 'transform 0.3s cubic-bezier(0.34,1.56,0.64,1)';
+    qp.style.transform = '';
+    qp.style.willChange = '';
+    setTimeout(() => { qp.style.transition = ''; }, 320);
+    _resumeBlur();
+  }
+
+  function cleanupGesture() {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    isDragging = false;
+    axisLocked = null;
+    moved = false;
+    fp.classList.remove('dragging');
+    qp.classList.remove('dragging');
+    fp.style.willChange = '';
+    qp.style.willChange = '';
+  }
+
+  function isGestureZone(el) {
+    return el.closest('#fp-drag-hint') || el.closest('.fp-header') || el.closest('.fp-info') ||
+           el.closest('.fp-art-wrap') || el.closest('.fp-progress-wrap') || el.closest('.fp-controls') ||
+           el.closest('.fp-bottom') || el.closest('.fp-next-strip') || el.closest('.queue-panel-handle') ||
+           el.closest('#queue-drag-handle');
+  }
+
+  fp.addEventListener('touchstart', e => {
+    const qpOpen = qp.classList.contains('open');
+    const onQueueHandle = e.target.closest('#queue-drag-handle');
+    const onQueueBody = qp.contains(e.target) && !onQueueHandle;
+    if (qpOpen && onQueueBody) { isDragging = false; return; }
+    if (!qpOpen && !isGestureZone(e.target)) { isDragging = false; return; }
+    startY = e.touches[0].clientY;
+    startX = e.touches[0].clientX;
+    isDragging = true;
+    startTime = Date.now();
+    moved = false;
+    axisLocked = null;
+    gestureTarget = qpOpen ? 'queue' : 'player';
+    const target = gestureTarget === 'player' ? fp : qp;
+    target.style.willChange = 'transform';
+    target.style.transform = target.style.transform || 'translateZ(0)';
+    fp.classList.add('dragging');
+    qp.classList.add('dragging');
+    _pauseBlur();
+  }, { passive: true });
+
+  fp.addEventListener('touchmove', e => {
+  if (!isDragging) return;
+  const dy = e.touches[0].clientY - startY;
+  const dx = e.touches[0].clientX - startX;
+  const absDy = Math.abs(dy);
+  const absDx = Math.abs(dx);
+  
+  if (absDy > 4) {
+    moved = true;
+    
+    if (gestureTarget === 'player' && dy > 0) {
+      e.preventDefault();
+      const clamped = dy;
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        fp.style.transform = `translateY(${clamped}px)`;
+        rafId = null;
+      });
+    } else if (gestureTarget === 'queue' && dy > 0) {
+      e.preventDefault();
+      const clamped = dy;
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        qp.style.transform = `translateY(${clamped}px)`;
+        rafId = null;
+      });
+    } else if (gestureTarget === 'player' && dy < -60) {
+      e.preventDefault();
+      openQueuePanel();
+      cleanupGesture();
+      fp.style.transform = '';
+      qp.style.transform = '';
+      _resumeBlur();
+    }
+  }
+}, { passive: false });
+
+  fp.addEventListener('touchend', e => {
+    if (!isDragging) return;
+    const dy = e.changedTouches[0].clientY - startY;
+    const dt = Math.max(1, Date.now() - startTime);
+    const vel = dy / dt;
+    const wasTarget = gestureTarget;
+    const wasMoved = moved;
+    cleanupGesture();
+    _resumeBlur();
+    if (!wasMoved) {
+      wasTarget === 'player' ? snapBackFp() : snapBackQp();
+      return;
+    }
+    if (wasTarget === 'player') {
+      if (dy > 100 || (vel > 0.5 && dy > 40)) {
+        fp.style.transform = '';
+        closeFullscreen();
+      } else {
+        snapBackFp();
+      }
+    } else if (wasTarget === 'queue') {
+      if (dy > 90 || (vel > 0.5 && dy > 25)) {
+        qp.style.transform = '';
+        closeQueuePanel();
+      } else {
+        snapBackQp();
+      }
+    }
+  }, { passive: true });
+
+  fp.addEventListener('touchcancel', () => {
+    const wasTarget = gestureTarget;
+    cleanupGesture();
+    _resumeBlur();
+    snapBackFp();
+    if (wasTarget === 'queue') snapBackQp();
+  }, { passive: true });
+}
+
+// ─── GESTURE: ART SWIPE (Brave-safe) ─────────────────────────────────────────
+function _attachArtSwipe() {
+  const artWrap = document.getElementById('fp-art-wrap');
+  if (!artWrap || artWrap._swipeAttached) return;
+  artWrap._swipeAttached = true;
+
+  let startX = 0, startY = 0, isDragging = false, moved = false, startTime = 0, rafId = null;
+  let axisLocked = null;
+
+  function resetArt() {
+    artWrap.style.transition = 'transform 0.32s cubic-bezier(0.34,1.56,0.64,1), opacity 0.22s ease';
+    artWrap.style.transform = '';
+    artWrap.style.opacity = '';
+    artWrap.style.willChange = '';
+    setTimeout(() => { artWrap.style.transition = ''; }, 350);
+  }
+
+  artWrap.addEventListener('touchstart', e => {
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    isDragging = true;
+    moved = false;
+    axisLocked = null;
+    startTime = Date.now();
+    artWrap.style.transition = 'none';
+    artWrap.style.willChange = 'transform,opacity';
+    artWrap.style.transform = artWrap.style.transform || 'translateZ(0)';
+  }, { passive: true });
+
+  artWrap.addEventListener('touchmove', e => {
+    if (!isDragging) return;
+    const dx = e.touches[0].clientX - startX;
+    const dy = e.touches[0].clientY - startY;
+    const absDx = Math.abs(dx);
+    const absDy = Math.abs(dy);
+
+    if (!axisLocked && (absDx > 8 || absDy > 8)) {
+      axisLocked = absDx > absDy ? 'horizontal' : 'vertical';
+    }
+
+    if (axisLocked === 'vertical') {
+      isDragging = false;
+      artWrap.style.willChange = '';
+      resetArt();
+      return;
+    }
+
+    if (axisLocked === 'horizontal' && absDx > 8) {
+      moved = true;
+      e.preventDefault();
+      const clamped = dx * 0.72;
+      const tilt = clamped * 0.018;
+      const fade = Math.max(0.28, 1 - Math.abs(dx) / 280);
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        artWrap.style.transform = `translateX(${clamped}px) rotate(${tilt}deg)`;
+        artWrap.style.opacity = fade;
+        rafId = null;
+      });
+    }
+  }, { passive: false });
+
+  artWrap.addEventListener('touchend', e => {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    if (!isDragging) return;
+    isDragging = false;
+    artWrap.style.willChange = '';
+    const dx = e.changedTouches[0].clientX - startX;
+    const dt = Math.max(1, Date.now() - startTime);
+    const vel = dx / dt;
+    if (!moved) { resetArt(); return; }
+    if (dx < -55 || vel < -0.38) {
+      _animateArtSwipe('left', nextTrack);
+    } else if (dx > 55 || vel > 0.38) {
+      _animateArtSwipe('right', prevTrack);
+    } else {
+      resetArt();
+    }
+  }, { passive: true });
+
+  artWrap.addEventListener('touchcancel', () => {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    isDragging = false;
+    axisLocked = null;
+    artWrap.style.willChange = '';
+    resetArt();
+  }, { passive: true });
+}
+
+function setupArtSwipeGesture() {
+  _attachArtSwipe();
+  const fp = document.getElementById('fullscreen-player');
+  if (fp) {
+    fp.addEventListener('transitionend', () => _attachArtSwipe(), { passive: true });
+  }
+}
+
+function _animateArtSwipe(direction, callback) {
+  const artWrap = document.getElementById('fp-art-wrap');
+  if (!artWrap) { callback(); return; }
+  const xOut = direction === 'left' ? '-115%' : '115%';
+  const xIn = direction === 'left' ? '115%' : '-115%';
+  artWrap.style.transition = 'transform .2s cubic-bezier(0.4,0,1,1), opacity .18s ease';
+  artWrap.style.transform = `translateX(${xOut}) rotate(${direction === 'left' ? -4 : 4}deg)`;
+  artWrap.style.opacity = '0';
+  setTimeout(() => {
+    artWrap.style.transition = 'none';
+    artWrap.style.transform = `translateX(${xIn}) rotate(${direction === 'left' ? 4 : -4}deg)`;
+    artWrap.style.opacity = '0';
+    callback();
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      artWrap.style.transition = 'transform .42s cubic-bezier(0.22,1,0.36,1), opacity .3s ease';
+      artWrap.style.transform = '';
+      artWrap.style.opacity = '';
+    }));
+  }, 185);
+}
+
+// ─── GESTURE: SHAKE TO SHUFFLE ───────────────────────────────────────────────
+function setupShakeGesture() {
+  if (!window.DeviceMotionEvent) return;
+  const THRESHOLD = 18;
+  const COOLDOWN = 1500;
+  let lastShake = 0;
+  let lastX = 0, lastY = 0, lastZ = 0;
+  let initialized = false;
+  function onMotion(e) {
+    const acc = e.accelerationIncludingGravity;
+    if (!acc) return;
+    if (!initialized) {
+      lastX = acc.x || 0; lastY = acc.y || 0; lastZ = acc.z || 0;
+      initialized = true; return;
+    }
+    const dx = Math.abs((acc.x || 0) - lastX);
+    const dy = Math.abs((acc.y || 0) - lastY);
+    const dz = Math.abs((acc.z || 0) - lastZ);
+    lastX = acc.x || 0; lastY = acc.y || 0; lastZ = acc.z || 0;
+    if (dx + dy + dz > THRESHOLD) {
+      const now = Date.now();
+      if (now - lastShake < COOLDOWN) return;
+      lastShake = now;
+      if (currentQueue.length > 1) {
+        haptic([20, 50, 20]);
+        shuffleOn = true;
+        const shuffleBtn = document.getElementById('shuffle-btn');
+        if (shuffleBtn) shuffleBtn.querySelector('svg').style.stroke = 'var(--gold-l)';
+        showToast('🔀 Shuffled!');
+        nextTrack();
+      } else if (currentTrack) {
+        haptic([10, 30]);
+        audio.currentTime = 0;
+        showToast('🔀 Replaying');
+      }
+    }
+  }
+  if (typeof DeviceMotionEvent.requestPermission === 'function') {
+    document.addEventListener('touchend', function askPerm() {
+      DeviceMotionEvent.requestPermission().then(r => {
+        if (r === 'granted') window.addEventListener('devicemotion', onMotion, { passive: true });
+      }).catch(() => {});
+      document.removeEventListener('touchend', askPerm);
+    }, { once: true });
+  } else {
+    window.addEventListener('devicemotion', onMotion, { passive: true });
+  }
+}
+
+// ─── TV: D-PAD NAVIGATION ────────────────────────────────────────────────────
+function setupTVNavigation() {
+  document.addEventListener('keydown', e => {
+    switch(e.key) {
+      case 'ArrowRight': nextTrack(); e.preventDefault(); break;
+      case 'ArrowLeft': prevTrack(); e.preventDefault(); break;
+      case 'Enter': togglePlay(); e.preventDefault(); break;
+      case 'ArrowUp': setVolume(Math.min(1, audio.volume + 0.1)); e.preventDefault(); break;
+      case 'ArrowDown': setVolume(Math.max(0, audio.volume - 0.1)); e.preventDefault(); break;
+      case 'Backspace':
+      case 'GoBack': closeFullscreen(); e.preventDefault(); break;
+    }
+  });
+}
+
+// ─── PLAYER OPEN / CLOSE ─────────────────────────────────────────────────────
+function openFullscreen() {
+  const fp = document.getElementById('fullscreen-player');
+  const mp = document.getElementById('mini-player');
+  fp.style.transform = '';
+  fp.classList.add('open');
+  if (mp) {
+    mp.style.transition = 'opacity 0.2s ease, transform 0.2s ease';
+    mp.style.opacity = '0';
+    mp.style.pointerEvents = 'none';
+  }
+  updateNextStrip();
+  setTimeout(() => _attachArtSwipe(), 100);
+  if (!document.hidden && !isLowEnd) _startViz();
+  if (!isLowEnd) document.getElementById('ambient-canvas')?.classList.add('orbs-active');
+}
+
+function closeFullscreen() {
+  const fp = document.getElementById('fullscreen-player');
+  const mp = document.getElementById('mini-player');
+  if (!fp.classList.contains('open')) return;
+  fp.style.transform = '';
+  fp.classList.remove('open');
+  closeQueuePanel();
+  _stopViz();
+  document.getElementById('ambient-canvas')?.classList.remove('orbs-active');
+  if (mp) {
+    fp._closeId = (fp._closeId || 0) + 1;
+    const closeId = fp._closeId;
+    setTimeout(() => {
+      if (fp._closeId !== closeId) return;
+      mp.style.transition = '';
+      mp.style.opacity = '';
+      mp.style.pointerEvents = '';
+      if (currentTrack) showMiniPlayer();
+    }, 220);
+  }
+}
+
+// ─── QUEUE PANEL ─────────────────────────────────────────────────────────────
+function toggleQueuePanel() { queuePanelOpen ? closeQueuePanel() : openQueuePanel(); }
+function openQueuePanel() { queuePanelOpen = true; document.getElementById('queue-panel').classList.add('open'); document.getElementById('fp-queue-btn').classList.add('queue-open'); updateQueuePanel(); }
+function closeQueuePanel() { queuePanelOpen = false; document.getElementById('queue-panel').classList.remove('open'); document.getElementById('fp-queue-btn').classList.remove('queue-open'); }
+
+function updateQueuePanel() {
+  const body = document.getElementById('queue-panel-body');
+  const countEl = document.getElementById('queue-count');
+  body.innerHTML = '';
+  if (!currentQueue.length) { body.innerHTML = '<div style="padding:32px;text-align:center;color:var(--text3);font-size:12px;">Queue is empty</div>'; return; }
+  const remaining = currentQueue.length - currentIndex - 1;
+  if (countEl) countEl.textContent = remaining + ' songs';
+  if (currentTrack) {
+    const sec = document.createElement('div'); sec.className = 'queue-section-label'; sec.textContent = 'Now Playing';
+    body.appendChild(sec);
+    body.appendChild(makeQueueItem(currentTrack, currentIndex, true));
+  }
+  const nextSongs = currentQueue.slice(currentIndex + 1, currentIndex + 16);
+  if (nextSongs.length) {
+    const sec = document.createElement('div'); sec.className = 'queue-section-label'; sec.textContent = 'Up Next';
+    body.appendChild(sec);
+    nextSongs.forEach((s, i) => body.appendChild(makeQueueItem(s, currentIndex + 1 + i, false)));
+  }
+  if (currentIndex > 0) {
+    const prevSongs = currentQueue.slice(Math.max(0, currentIndex - 5), currentIndex);
+    if (prevSongs.length) {
+      const sec = document.createElement('div'); sec.className = 'queue-section-label'; sec.textContent = 'Previously Played';
+      body.appendChild(sec);
+      prevSongs.forEach((s, i) => body.appendChild(makeQueueItem(s, Math.max(0, currentIndex - prevSongs.length) + i, false)));
+    }
+  }
+  updateNextStrip();
+}
+
+function makeQueueItem(song, qIdx, isCurrent) {
+  const item = document.createElement('div');
+  item.className = 'queue-item' + (isCurrent ? ' current' : '');
+  item.dataset.trackId = song.trackId;
+  const artUrl = getArtUrl(song, '300x300');
+  const dur = song.trackTimeMillis ? formatMs(song.trackTimeMillis) : '';
+  item.dataset.dur = dur;
+  const img = document.createElement('img'); img.alt = ''; img.loading = 'lazy';
+  setImgSrc(img, artUrl);
+  item.appendChild(img);
+  const info = document.createElement('div'); info.className = 'queue-item-info';
+  info.innerHTML = `<div class="queue-item-title">${esc(song.trackName)}</div><div class="queue-item-artist">${esc(song.artistName)}</div>`;
+  item.appendChild(info);
+  if (isCurrent && isPlaying) {
+    const bar = document.createElement('div'); bar.className = 'queue-now-playing';
+    bar.innerHTML = '<span></span><span></span><span></span>'; item.appendChild(bar);
+  } else {
+    const d = document.createElement('span'); d.className = 'queue-item-dur'; d.textContent = dur; item.appendChild(d);
+  }
+  if (!isCurrent) item.onclick = () => { currentIndex = qIdx; loadTrack(currentQueue[currentIndex]); updateQueuePanel(); };
+  return item;
+}
+
+// ─── RECOMMENDATIONS ─────────────────────────────────────────────────────────
+async function fetchRecommendations(song) {
+  if (!song) return;
+  try {
+    const artist = song.artistName?.split(/[&,]|feat\.|ft\./i)[0].trim() || '';
+    const r = await fetch(`/api/songs?q=${encodeURIComponent(artist + ' songs')}`);
+    const d = await r.json();
+    const recs = (d.results || []).filter(s => s.previewUrl && String(s.trackId) !== String(song.trackId));
+    if (recs.length) {
+      const existingIds = new Set(currentQueue.map(s => String(s.trackId)));
+      const newRecs = recs.filter(s => !existingIds.has(String(s.trackId))).slice(0, 8);
+      currentQueue = [...currentQueue, ...newRecs];
+      if (queuePanelOpen) updateQueuePanel();
+    }
+  } catch(e) {}
+}
+
+// ─── RECENTLY PLAYED ─────────────────────────────────────────────────────────
+function addToRecentlyPlayed(song) {
+  recentlyPlayed = recentlyPlayed.filter(s => String(s.trackId) !== String(song.trackId));
+  recentlyPlayed.unshift(song);
+  if (recentlyPlayed.length > 20) recentlyPlayed = recentlyPlayed.slice(0, 20);
+  localStorage.setItem('aurum_recent_played', JSON.stringify(recentlyPlayed));
+  renderQuickResume();
+}
+
+// ─── HOME SECTIONS (CONDENSED) ───────────────────────────────────────────────
+const SECTION_POOL = [
+  { id:'recent', title:'Continue Listening', type:'wide', fn: getRecentlyPlayedSongs },
+  { id:'featured', title:'Made For You', type:'featured', queries:['top bollywood songs hits','best hindi songs','latest bollywood hits','top hindi songs trending','best bollywood songs playlist'] },
+  { id:'trending', title:'Trending Now', type:'cards', queries:['trending hindi songs chart','bollywood chart toppers','top hindi songs this week','most popular bollywood songs'] },
+  { id:'mood', title:'Mood: Late Night', type:'bw', queries:['sad emotional bollywood songs','heartbreak hindi songs arijit','late night slow songs hindi','emotional romantic songs hindi'] },
+  { id:'classic', title:'Golden Era', type:'bw', queries:['90s bollywood romantic classic songs','80s hindi classic songs','old is gold bollywood songs kishore kumar','retro bollywood hits lata mangeshkar'] },
+  { id:'hiphop', title:'Desi Hip-Hop', type:'cards', queries:['divine emiway bantai rap hindi','desi hip hop india rap songs','yo yo honey singh badshah rap','india rap gully boy songs'] },
+  { id:'lofi', title:'Lo-Fi Chill', type:'cards', queries:['lofi chill beats hindi songs','lofi bollywood remix chill','lo-fi hindi songs study chill','lofi beats india relaxing'] },
+  { id:'arijit', title:'Arijit Singh', type:'rows', queries:['arijit singh best romantic songs','arijit singh top hits','arijit singh soulful songs','arijit singh emotional hits'] },
+  { id:'workout', title:'Energy Boost', type:'cards', queries:['workout hindi songs gym','upbeat dance bollywood songs','party hindi songs badshah','high energy bollywood beats'] },
+  { id:'new', title:'New Releases', type:'cards', queries:['new hindi songs latest','new bollywood songs released','latest hindi songs hits','new bollywood songs trending'] },
+];
+
+const genreMap = { all:'top bollywood songs hits', bollywood:'bollywood romantic songs hits', hiphop:'desi hip hop rap india', pop:'pop hits bollywood', rock:'rock songs hindi', indie:'indie bollywood songs', rnb:'rnb soul songs india', lofi:'lofi chill beats hindi songs' };
+const genreSections = { bollywood:['featured','trending','classic','arijit'], hiphop:['hiphop','trending','featured','new'], pop:['featured','new','trending','workout'], rock:['featured','trending','classic','new'], indie:['featured','lofi','trending','new'], rnb:['featured','mood','trending','new'], lofi:['lofi','mood','featured','classic'] };
+const BOLLYWOOD_META = [{color:'#c48c28',genre:'Romance'},{color:'#b83838',genre:'Love'},{color:'#9838b8',genre:'Romantic'},{color:'#3878c8',genre:'Sad Vibes'},{color:'#5434a8',genre:'Heartbreak'},{color:'#b82858',genre:'Dance'},{color:'#286c3c',genre:'Chill'},{color:'#6c4c18',genre:'Classic'}];
+
+function getRecentlyPlayedSongs() { return Promise.resolve(recentlyPlayed); }
+function _pickQuery(sec) { return sec.queries ? sec.queries[Math.floor(Math.random() * sec.queries.length)] : sec.query; }
+
+async function loadHomeSection(sec) {
+  try {
+    if (sec.fn) return await sec.fn();
+    const q = _pickQuery(sec);
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 12000);
+    try {
+      const r = await fetch(`/api/songs?q=${encodeURIComponent(q)}`, { signal: ctrl.signal });
+      clearTimeout(to);
+      const d = await r.json();
+      let songs = (d.results || []).filter(s => s.previewUrl);
+      for (let i = songs.length - 1; i > 0; i--) { const j = Math.floor(Math.random()*(i+1)); [songs[i],songs[j]] = [songs[j],songs[i]]; }
+      return songs;
+    } catch(fe) { clearTimeout(to); if (sec.queries && sec.queries.length > 1) { const fq = sec.queries[Math.floor(Math.random() * sec.queries.length)]; const r2 = await fetch(`/api/songs?q=${encodeURIComponent(fq)}`); const d2 = await r2.json(); return (d2.results || []).filter(s => s.previewUrl); } return []; }
+  } catch(e) { return []; }
+}
+
+function refreshHomeSections() { sectionCache = {}; haptic(15); buildHomeSections(currentGenre || 'all'); showToast('Refreshed'); }
+
+function renderSkeletonSection(type, count = 4) {
+  let html = '<div class="h-scroll-row" style="padding-right:20px;">';
+  for (let i = 0; i < count; i++) {
+    if (type === 'wide') html += `<div class="wide-sk"><div class="wide-sk-cover"></div><div class="wide-sk-line" style="width:80%"></div><div class="wide-sk-line" style="width:50%;margin-top:4px;"></div></div>`;
+    else if (type === 'bw') html += `<div class="bw-sk"><div class="bw-sk-cover"></div><div class="bw-sk-line w70"></div><div class="bw-sk-line w45"></div></div>`;
+    else html += `<div class="quick-sk"><div class="quick-sk-cover"></div><div class="bw-sk-line w70" style="margin-top:8px;"></div><div class="bw-sk-line w45" style="margin-top:5px;"></div></div>`;
+  }
+  html += '</div>'; return html;
+}
+
+function renderRowSkeleton(count = 5) { let html = ''; for (let i = 0; i < count; i++) html += `<div class="sk-row"><div class="sk-art"></div><div class="sk-info"><div class="sk-line l1"></div><div class="sk-line l2"></div></div></div>`; return html; }
+
+async function buildHomeSections(genre = 'all') {
+  const container = document.getElementById('home-sections');
+  container.innerHTML = '';
+  currentGenre = genre;
+  let sections;
+  if (genre === 'all') { const pinned = [SECTION_POOL[0], SECTION_POOL[1]]; const rest = SECTION_POOL.slice(2).sort(() => Math.random() - 0.5).slice(0, 6); sections = [...pinned, ...rest]; }
+  else { const ids = genreSections[genre] || ['featured','trending','new','classic']; sections = ids.map(id => SECTION_POOL.find(s => s.id === id)).filter(Boolean); }
+  sections.forEach(sec => {
+    const wrap = document.createElement('div'); wrap.className = 'section'; wrap.id = 'sec-wrap-' + sec.id;
+    if (sec.id === 'recent' && !recentlyPlayed.length) wrap.style.display = 'none';
+    const type = sec.type === 'featured' ? 'cards' : sec.type;
+    const typeCount = type === 'bw' ? 5 : type === 'wide' ? 5 : type === 'rows' ? 0 : 5;
+    wrap.innerHTML = `<div class="section-head"><h2>${sec.title}</h2><span onclick="refreshSection('${sec.id}')">Refresh</span></div><div id="sec-${sec.id}">${type === 'rows' ? renderRowSkeleton() : renderSkeletonSection(type, typeCount)}</div>`;
+    container.appendChild(wrap);
+    _renderSection(sec, wrap);
+  });
+}
+
+async function _renderSection(sec, wrap) {
+  const songs = await loadHomeSection(sec);
+  const el = document.getElementById('sec-' + sec.id); if (!el) return;
+  if (!songs || !songs.length) { el.innerHTML = `<div style="padding:18px 4px;text-align:center;"><button onclick="refreshSection('${sec.id}')" style="background:var(--surface2);border:none;color:var(--text2);font-size:12px;padding:8px 18px;border-radius:20px;cursor:pointer;font-family:inherit;">Retry</button></div>`; return; }
+  el.innerHTML = '';
+  const type = sec.type === 'featured' ? 'cards' : sec.type;
+  if (type === 'rows') { songs.slice(0, 12).forEach((s, i) => el.appendChild(makeSongRow(s, i, songs))); }
+  else if (type === 'wide') { const row = document.createElement('div'); row.className = 'h-scroll-row'; row.style.paddingRight = '20px'; songs.slice(0, 8).forEach((s, i) => row.appendChild(makeWideCard(s, i, songs))); el.appendChild(row); }
+  else if (type === 'bw') { const row = document.createElement('div'); row.className = 'h-scroll-row'; row.style.paddingRight = '20px'; songs.slice(0, 8).forEach((s, i) => row.appendChild(makeBwCard(s, i, songs, BOLLYWOOD_META[i % BOLLYWOOD_META.length]))); el.appendChild(row); }
+  else { const row = document.createElement('div'); row.className = 'h-scroll-row'; row.style.paddingRight = '20px'; songs.slice(0, 8).forEach((s, i) => row.appendChild(makeQuickCard(s, i, songs))); el.appendChild(row); }
+}
+
+async function refreshSection(secId) {
+  const sec = SECTION_POOL.find(s => s.id === secId); if (!sec) return;
+  const wrap = document.getElementById('sec-wrap-' + secId); if (!wrap) return;
+  const el = document.getElementById('sec-' + secId); if (!el) return;
+  const type = sec.type === 'featured' ? 'cards' : sec.type;
+  el.innerHTML = type === 'rows' ? renderRowSkeleton() : renderSkeletonSection(type, 5);
+  haptic(10);
+  _renderSection(sec, wrap);
+}
+
+function renderQuickResume() {
+  const wrap = document.getElementById('sec-wrap-recent');
+  const el = document.getElementById('sec-recent');
+  if (!el) return;
+  if (!recentlyPlayed.length) { if (wrap) wrap.style.display = 'none'; return; }
+  if (wrap) wrap.style.display = '';
+  el.innerHTML = '';
+  const row = document.createElement('div'); row.className = 'h-scroll-row'; row.style.paddingRight = '20px';
+  recentlyPlayed.slice(0, 8).forEach((s, i) => row.appendChild(makeWideCard(s, i, recentlyPlayed)));
+  el.appendChild(row);
+}
+
+// ─── CARD MAKERS ─────────────────────────────────────────────────────────────
+function makeQuickCard(s, i, queue) {
+  const div = document.createElement('div'); div.className = 'quick-card anim-in';
+  div.style.animationDelay = (i * 0.05) + 's';
+  const img = document.createElement('img'); img.alt = esc(s.trackName); img.loading = 'lazy';
+  setImgSrc(img, getArtUrl(s, '400x400'));
+  div.appendChild(img);
+  const info = document.createElement('div'); info.className = 'quick-card-info';
+  info.innerHTML = `<div class="quick-card-title">${esc(s.trackName)}</div><div class="quick-card-artist">${esc(s.artistName)}</div>`;
+  div.appendChild(info);
+  if (isTV) div.tabIndex = 0;
+  div.onclick = () => playSongs(queue, i); return div;
+}
+
+function makeWideCard(s, i, queue) {
+  const div = document.createElement('div'); div.className = 'wide-card anim-in';
+  div.style.animationDelay = (i * 0.05) + 's';
+  const cover = document.createElement('div'); cover.className = 'wide-card-cover';
+  const img = document.createElement('img'); img.alt = esc(s.trackName); img.loading = 'lazy';
+  setImgSrc(img, getArtUrl(s, '400x400'));
+  const play = document.createElement('div'); play.className = 'wide-card-play';
+  play.innerHTML = '<svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3" fill="white"/></svg>';
+  cover.appendChild(img); cover.appendChild(play);
+  const info = document.createElement('div'); info.className = 'wide-card-info';
+  info.innerHTML = `<div class="wide-card-title">${esc(s.trackName)}</div><div class="wide-card-sub">${esc(s.artistName)}</div>`;
+  div.appendChild(cover); div.appendChild(info);
+  if (isTV) div.tabIndex = 0;
+  div.onclick = () => playSongs(queue, i); return div;
+}
+
+function makeBwCard(s, i, queue, meta) {
+  meta = meta || { color:'#b89640', genre:'Music' };
+  const div = document.createElement('div'); div.className = 'bw-card anim-in';
+  div.style.animationDelay = (i * 0.05) + 's';
+  const cover = document.createElement('div'); cover.className = 'bw-card-cover';
+  const img = document.createElement('img'); img.alt = esc(s.trackName); img.loading = 'lazy';
+  setImgSrc(img, getArtUrl(s, '400x400'));
+  cover.appendChild(img);
+  const overlay = document.createElement('div'); overlay.className = 'bw-card-overlay';
+  overlay.innerHTML = `<div class="bw-card-genre" style="color:${meta.color}">${meta.genre}</div><div class="bw-card-title">${esc(s.trackName)}</div><div class="bw-card-sub">${esc(s.artistName)}</div>`;
+  cover.appendChild(overlay);
+  const info = document.createElement('div'); info.className = 'bw-card-info';
+  info.innerHTML = `<div class="bw-card-name">${esc(s.trackName)}</div><div class="bw-card-artist">${esc(s.artistName)}</div>`;
+  div.appendChild(cover); div.appendChild(info);
+  if (isTV) div.tabIndex = 0;
+  div.onclick = () => playSongs(queue, i); return div;
+}
+
+function makeSongRow(s, i, queue) {
+  const row = document.createElement('div'); row.className = 'song-row anim-in';
+  row.dataset.trackId = s.trackId;
+  row.style.animationDelay = (i * 0.034) + 's';
+  const dur = s.trackTimeMillis ? formatMs(s.trackTimeMillis) : '';
+  row.dataset.dur = dur;
+  const img = document.createElement('img'); img.alt = ''; img.loading = 'lazy';
+  setImgSrc(img, getArtUrl(s, '300x300'));
+  row.appendChild(img);
+  const info = document.createElement('div'); info.className = 'song-row-info';
+  info.innerHTML = `<div class="song-row-title">${esc(s.trackName)}</div><div class="song-row-artist">${esc(s.artistName)}</div>`;
+  row.appendChild(info);
+  const right = document.createElement('div'); right.className = 'song-row-right';
+  const heartBtn = document.createElement('button');
+  heartBtn.className = 'song-row-heart' + (isSaved(s) ? ' saved' : '');
+  heartBtn.setAttribute('aria-label', 'Like');
+  heartBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>';
+  heartBtn.onclick = e => { e.stopPropagation(); toggleSave(s); heartBtn.classList.toggle('saved', isSaved(s)); haptic(10); };
+  const durSpan = document.createElement('span'); durSpan.className = 'song-row-duration'; durSpan.textContent = dur;
+  const moreBtn = document.createElement('button'); moreBtn.className = 'song-row-more';
+  moreBtn.setAttribute('aria-label', 'More options');
+  moreBtn.innerHTML = '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.2" fill="currentColor"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/><circle cx="19" cy="12" r="1.2" fill="currentColor"/></svg>';
+  moreBtn.onclick = e => { e.stopPropagation(); openSongModal(s); };
+  right.appendChild(heartBtn); right.appendChild(durSpan); right.appendChild(moreBtn);
+  row.appendChild(right);
+  if (isTV) row.tabIndex = 0;
+  row.onclick = () => { playSongs(queue, i); haptic(8); };
+  row._song = s;
+  if (!isTV) {
+    let pt;
+    row.addEventListener('pointerdown', () => { pt = setTimeout(() => { row.classList.add('long-press-active'); haptic([20,40,20]); openSongModal(s); setTimeout(() => row.classList.remove('long-press-active'), 300); }, 480); });
+    row.addEventListener('pointerup', () => clearTimeout(pt));
+    row.addEventListener('pointercancel', () => clearTimeout(pt));
+  }
+  return row;
+}
+
+// ─── GENRE FILTER ────────────────────────────────────────────────────────────
+function filterHome(genre, chip) {
+  document.querySelectorAll('#home-chips .chip').forEach(c => c.classList.remove('active'));
+  chip.classList.add('active', 'popping');
+  chip.addEventListener('animationend', () => chip.classList.remove('popping'), { once: true });
+  haptic(8); buildHomeSections(genre);
+}
+
+// ─── SEARCH ──────────────────────────────────────────────────────────────────
+const browseCategories = [
+  { label:'Pop', sub:'Charts & hits', cls:'bc-pop', genre:'pop' },
+  { label:'Hip-Hop', sub:'Trap & rap', cls:'bc-hiphop', genre:'hiphop' },
+  { label:'Rock', sub:'Classic & alternative', cls:'bc-rock', genre:'rock' },
+  { label:'Indie', sub:'Chill & discover', cls:'bc-indie', genre:'indie' },
+  { label:'R&B', sub:'Soul & vibes', cls:'bc-rnb', genre:'rnb' },
+  { label:'Electronic', sub:'Dance & beats', cls:'bc-electronic', genre:'electronic' },
+  { label:'Trending', sub:'Right now', cls:'bc-trending', genre:'trending' },
+  { label:'Chill', sub:'Relax & unwind', cls:'bc-chill', genre:'chill' },
+];
+const extraGenreMap = { electronic:'electronic music dance', trending:'top trending songs', chill:'chill lofi music' };
+
+document.getElementById('search-input').addEventListener('focus', function() { if (!this.value.trim()) renderSearchIdle(); });
+document.getElementById('search-input').addEventListener('input', function() { const v = this.value.trim(); document.getElementById('search-clear').style.display = v ? 'flex' : 'none'; clearTimeout(_searchTimeout); if (!v) { renderSearchIdle(); return; } showSearchSkeleton(); _searchTimeout = setTimeout(() => doSearch(v), 360); });
+function clearSearch() { document.getElementById('search-input').value = ''; document.getElementById('search-clear').style.display = 'none'; clearTimeout(_searchTimeout); renderSearchIdle(); }
+function _saveSearchToStorage(searches) { localStorage.setItem('aurum_recent', JSON.stringify(searches)); }
+function renderSearchIdle() {
+  let html = '';
+  if (recentSearches.length) {
+    html += `<div class="recent-section"><div class="recent-head"><h4>Recent</h4><button onclick="clearAllRecent()">Clear</button></div><div class="recent-chips-wrap">`;
+    recentSearches.forEach((q, i) => { html += `<div class="recent-chip" onclick="tapRecentSearch('${esc(q)}')">${esc(q)}<button class="rc-rm" onclick="removeRecent(event,${i})"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>`; });
+    html += `</div></div>`;
+  }
+  html += `<div class="browse-section"><div class="browse-label">Browse</div><div class="browse-grid">`;
+  browseCategories.forEach(c => { html += `<div class="browse-card ${c.cls}" onclick="browseGenre('${c.genre}')"${isTV ? ' tabindex="0"' : ''}><div class="browse-card-label">${c.label}</div><div class="browse-card-sub">${c.sub}</div></div>`; });
+  html += `</div></div>`;
+  document.getElementById('search-body').innerHTML = html;
+}
+function browseGenre(genre) { const q = genreMap[genre] || extraGenreMap[genre] || genre; document.getElementById('search-input').value = q; document.getElementById('search-clear').style.display = 'flex'; saveRecentSearch(q); doSearch(q); }
+function tapRecentSearch(q) { document.getElementById('search-input').value = q; document.getElementById('search-clear').style.display = 'flex'; doSearch(q); }
+function saveRecentSearch(q) { recentSearches = recentSearches.filter(r => r.toLowerCase() !== q.toLowerCase()); recentSearches.unshift(q); if (recentSearches.length > 6) recentSearches = recentSearches.slice(0, 6); _saveSearchToStorage(recentSearches); }
+function removeRecent(e, i) { e.stopPropagation(); recentSearches.splice(i, 1); _saveSearchToStorage(recentSearches); renderSearchIdle(); }
+function clearAllRecent() { recentSearches = []; _saveSearchToStorage(recentSearches); renderSearchIdle(); }
+function showSearchSkeleton() { let html = '<div style="padding:4px 0">'; for (let i = 0; i < 5; i++) html += `<div class="sk-row"><div class="sk-art"></div><div class="sk-info"><div class="sk-line l1"></div><div class="sk-line l2"></div></div></div>`; html += '</div>'; document.getElementById('search-body').innerHTML = html; }
+async function doSearch(q) { showSearchSkeleton(); try { const r = await fetch(`/api/songs?q=${encodeURIComponent(q)}`); const d = await r.json(); saveRecentSearch(q); const songs = (d.results || []).filter(s => s.previewUrl); renderSearchResults(songs, q); } catch(e) { document.getElementById('search-body').innerHTML = `<div class="search-placeholder"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><h3>Something went wrong</h3><p>Check your connection and try again</p></div>`; } }
+function renderSearchResults(songs, q) { const body = document.getElementById('search-body'); if (!songs.length) { body.innerHTML = `<div class="search-placeholder"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><h3>Nothing found</h3><p>Try a different name or artist</p></div>`; return; } body.innerHTML = `<div style="font-size:11px;color:var(--text3);padding:0 24px 10px;font-weight:500;">${songs.length} results for "${esc(q)}"</div><div id="search-results-list"></div>`; const list = document.getElementById('search-results-list'); songs.forEach((s, i) => list.appendChild(makeSongRow(s, i, songs))); }
+
+// ─── NAVIGATION ──────────────────────────────────────────────────────────────
+function goPage(name, btn) { document.querySelectorAll('.page').forEach(p => p.classList.remove('active')); document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active')); document.getElementById('page-' + name).classList.add('active'); btn.classList.add('active'); if (name === 'library') renderLibrary(); if (name === 'search') renderSearchIdle(); }
+
+// ─── SAVE / LIBRARY ──────────────────────────────────────────────────────────
+function isSaved(song) { return savedSongs.some(s => String(s.trackId) === String(song.trackId)); }
+function toggleSaveCurrentTrack() { if (!currentTrack) return; toggleSave(currentTrack); updateSaveBtn(); }
+function toggleSave(song) { if (isSaved(song)) { savedSongs = savedSongs.filter(s => String(s.trackId) !== String(song.trackId)); showToast('Removed from library'); } else { savedSongs.push(song); showToast('Saved to library'); } localStorage.setItem('aurum_saved', JSON.stringify(savedSongs)); renderLibrary(); updateSaveBtn(); }
+function playLikedSongs() { if (!savedSongs.length) { showToast('Save some songs first'); return; } playSongs(savedSongs, 0); openFullscreen(); }
+function switchLibTab(tab, el) { document.querySelectorAll('.lib-tab').forEach(t => t.classList.remove('active')); el.classList.add('active'); currentLibTab = tab; document.getElementById('lib-playlists').style.display = tab === 'playlists' ? '' : 'none'; document.getElementById('lib-saved').style.display = tab === 'saved' ? '' : 'none'; const dlEl = document.getElementById('lib-downloads'); if (dlEl) dlEl.style.display = tab === 'downloads' ? '' : 'none'; haptic(8); renderLibrary(); }
+function renderLibrary() { renderPlaylists(); renderSavedSongs(); renderDownloadedSongs(); const lc = document.getElementById('liked-count'); if (lc) lc.textContent = savedSongs.length ? savedSongs.length + ' song' + (savedSongs.length !== 1 ? 's' : '') : 'Nothing saved yet'; const st = document.getElementById('saved-tab'); if (st) st.textContent = 'Liked' + (savedSongs.length ? ` (${savedSongs.length})` : ''); const dlMeta = JSON.parse(localStorage.getItem('aurum_dl_meta') || '[]'); const dt = document.getElementById('dl-tab'); if (dt) dt.textContent = 'Downloads' + (dlMeta.length ? ` (${dlMeta.length})` : ''); }
+function renderPlaylists() { const grid = document.getElementById('playlist-grid'); if (!grid) return; grid.innerHTML = ''; if (!playlists.length) return; playlists.forEach((pl, i) => { const card = document.createElement('div'); card.className = 'playlist-card'; if (isTV) card.tabIndex = 0; card.onclick = () => openPlaylistDetail(i); const songs = pl.songs || []; const coverWrap = document.createElement('div'); coverWrap.className = 'playlist-card-cover'; if (songs.length >= 4) { const grid4 = document.createElement('div'); grid4.className = 'playlist-card-grid'; songs.slice(0, 4).forEach(s => { const img = document.createElement('img'); img.alt = ''; img.loading = 'lazy'; setImgSrc(img, getArtUrl(s, '300x300')); grid4.appendChild(img); }); coverWrap.appendChild(grid4); } else if (songs.length > 0) { const img = document.createElement('img'); img.alt = ''; img.loading = 'lazy'; setImgSrc(img, getArtUrl(songs[0], '300x300')); img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:12px;'; coverWrap.appendChild(img); } else { coverWrap.innerHTML = '<svg viewBox="0 0 24 24" style="width:28px;height:28px;stroke:var(--text3);fill:none;stroke-width:1.4;stroke-linecap:round;"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>'; } card.appendChild(coverWrap); const info = document.createElement('div'); info.className = 'playlist-card-info'; info.innerHTML = `<div class="playlist-card-name">${esc(pl.name)}</div><div class="playlist-card-count">${songs.length} song${songs.length !== 1 ? 's' : ''}</div>`; card.appendChild(info); const opts = document.createElement('button'); opts.className = 'playlist-card-opts'; opts.innerHTML = '<svg viewBox="0 0 24 24" style="width:14px;height:14px;fill:currentColor;"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>'; opts.onclick = e => openPlaylistOpts(e, i); card.appendChild(opts); grid.appendChild(card); }); }
+function renderSavedSongs() { const list = document.getElementById('saved-songs-list'); if (!list) return; list.innerHTML = ''; if (!savedSongs.length) { list.innerHTML = `<div class="empty-library"><svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg><h3>No liked songs yet</h3><p>Tap the heart on any song to save it here</p></div>`; return; } savedSongs.forEach((s, i) => list.appendChild(makeSongRow(s, i, savedSongs))); }
+
+// ─── DOWNLOADS (IndexedDB) ────────────────────────────────────────────────────
+const DL_DB_NAME = 'aurum_downloads'; const DL_DB_VER = 1; let _dlDb = null;
+function openDlDb() { if (_dlDb) return Promise.resolve(_dlDb); return new Promise((res, rej) => { const req = indexedDB.open(DL_DB_NAME, DL_DB_VER); req.onupgradeneeded = e => { const db = e.target.result; if (!db.objectStoreNames.contains('songs')) db.createObjectStore('songs', { keyPath:'trackId' }); }; req.onsuccess = e => { _dlDb = e.target.result; res(_dlDb); }; req.onerror = () => rej(req.error); }); }
+async function saveToDb(song, blob) { const db = await openDlDb(); return new Promise((res, rej) => { const tx = db.transaction('songs', 'readwrite'); tx.objectStore('songs').put({ ...song, _blob: blob, _savedAt: Date.now() }); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); }
+async function deleteFromDb(trackId) { const db = await openDlDb(); return new Promise((res, rej) => { const tx = db.transaction('songs', 'readwrite'); tx.objectStore('songs').delete(trackId); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); }); }
+async function requestPersistentStorage() { if (!navigator.storage?.persist) return; const already = await navigator.storage.persisted(); if (already) return; const granted = await navigator.storage.persist(); if (!granted) showToast('Tip: Add to Home Screen for permanent downloads'); }
+async function downloadSongOffline(song, customUrl, customQuality) { const url = customUrl || (_currentSaavnUrl && currentQuality === 'full' ? _currentSaavnUrl : null) || song.previewUrl; const quality = customQuality || _currentSaavnQuality || 'preview'; showToast('Saving offline…'); try { const r = await fetch(url); if (!r.ok) throw new Error('fetch failed'); const blob = await r.blob(); await saveToDb({ ...song, _quality: quality }, blob); const metas = JSON.parse(localStorage.getItem('aurum_dl_meta') || '[]').filter(s => String(s.trackId) !== String(song.trackId)); metas.unshift({ trackId:song.trackId, trackName:song.trackName, artistName:song.artistName, artworkUrl100:song.artworkUrl100, _quality:quality, _savedAt:Date.now() }); localStorage.setItem('aurum_dl_meta', JSON.stringify(metas)); haptic([20,50,20]); showToast('Saved offline ✓'); renderLibrary(); } catch(e) { showToast('Download failed — try again'); } }
+async function playDownloadedSong(trackId) { try { const db = await openDlDb(); const key = isNaN(Number(trackId)) ? trackId : Number(trackId); const tx = db.transaction('songs', 'readonly'); const req = tx.objectStore('songs').get(key); req.onsuccess = () => { const rec = req.result; if (!rec || !rec._blob) { showToast('File missing — re-download'); return; } if (_lastObjectUrl) { URL.revokeObjectURL(_lastObjectUrl); _lastObjectUrl = null; } const url = URL.createObjectURL(rec._blob); _lastObjectUrl = url; audio.pause(); audio.src = url; audio.load(); audio.play().then(() => { isPlaying = true; currentTrack = rec; currentQuality = 'full'; _dismissedTrackId = null; updatePlayerUI(); showMiniPlayer(); }).catch(() => {}); }; } catch(e) { showToast('Cannot play'); } }
+async function deleteDownload(trackId) { await deleteFromDb(trackId); const metas = JSON.parse(localStorage.getItem('aurum_dl_meta') || '[]').filter(s => String(s.trackId) !== String(trackId)); localStorage.setItem('aurum_dl_meta', JSON.stringify(metas)); haptic(15); showToast('Removed'); renderLibrary(); }
+function renderDownloadedSongs() { const list = document.getElementById('downloaded-songs-list'); if (!list) return; list.innerHTML = ''; const songs = JSON.parse(localStorage.getItem('aurum_dl_meta') || '[]'); if (!songs.length) { list.innerHTML = `<div class="empty-library"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><h3>No downloads yet</h3><p>Save songs offline from the player or song menu</p></div>`; return; } const hdr = document.createElement('div'); hdr.style.cssText = 'padding:4px 22px 10px;display:flex;align-items:center;justify-content:space-between;'; hdr.innerHTML = `<span style="font-size:11px;color:var(--text3);font-weight:600;">${songs.length} song${songs.length!==1?'s':''} saved offline</span><button style="font-size:11px;color:var(--text3);background:none;border:none;cursor:pointer;font-family:Sora,sans-serif;" onclick="confirmClearDownloads()">Clear all</button>`; list.appendChild(hdr); songs.forEach(s => { const row = document.createElement('div'); row.className = 'song-row anim-in'; row.dataset.trackId = s.trackId; if (isTV) row.tabIndex = 0; const img = document.createElement('img'); img.alt=''; img.loading='lazy'; setImgSrc(img, getArtUrl(s, '300x300')); row.appendChild(img); const info = document.createElement('div'); info.className = 'song-row-info'; const qLabel = s._quality && s._quality.includes('320') ? '320K' : s._quality && s._quality.includes('160') ? '160K' : 'OFFLINE'; info.innerHTML = `<div class="song-row-title">${esc(s.trackName)}</div><div class="song-row-artist"><span style="color:var(--gold);font-size:8px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;margin-right:5px;">${qLabel}</span>${esc(s.artistName)}</div>`; row.appendChild(info); const right = document.createElement('div'); right.className = 'song-row-right'; const delBtn = document.createElement('button'); delBtn.className = 'song-row-more'; delBtn.innerHTML = '<svg viewBox="0 0 24 24" style="stroke:var(--text3);width:15px;height:15px;fill:none;stroke-width:1.8;stroke-linecap:round;"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>'; delBtn.onclick = e => { e.stopPropagation(); deleteDownload(s.trackId); }; right.appendChild(delBtn); row.appendChild(right); row.onclick = () => playDownloadedSong(s.trackId); list.appendChild(row); }); }
+function confirmClearDownloads() { if (!confirm('Remove all downloaded songs?')) return; openDlDb().then(db => { const tx = db.transaction('songs', 'readwrite'); tx.objectStore('songs').clear(); tx.oncomplete = () => { localStorage.removeItem('aurum_dl_meta'); renderLibrary(); showToast('Downloads cleared'); }; }); }
+
+// ─── PLAYLIST DETAIL ─────────────────────────────────────────────────────────
+function openPlaylistDetail(i) { currentPlaylistIndex = i; const pl = playlists[i]; document.getElementById('pl-detail-name').textContent = pl.name; document.getElementById('pl-detail-title').textContent = pl.name; const songs = pl.songs || []; document.getElementById('pl-detail-sub').textContent = songs.length + ' songs'; const coverEl = document.getElementById('pl-big-cover'); if (!songs.length) { const emptyDiv = document.createElement('div'); emptyDiv.id = 'pl-big-cover'; emptyDiv.style.cssText = 'width:100%;max-width:248px;aspect-ratio:1;border-radius:20px;background:var(--surface2);display:flex;align-items:center;justify-content:center;'; coverEl.replaceWith(emptyDiv); } else if (songs.length < 4) { const img = document.createElement('img'); img.id = 'pl-big-cover'; img.className = 'pl-big-cover'; img.alt = ''; setImgSrc(img, getArtUrl(songs[0], '500x500')); coverEl.replaceWith(img); } else { const g = document.createElement('div'); g.id = 'pl-big-cover'; g.className = 'pl-big-cover-grid'; songs.slice(0, 4).forEach(s => { const img = document.createElement('img'); img.alt = ''; img.loading = 'lazy'; setImgSrc(img, getArtUrl(s, '300x300')); g.appendChild(img); }); coverEl.replaceWith(g); } const sl = document.getElementById('pl-songs-list'); sl.innerHTML = ''; if (!songs.length) sl.innerHTML = `<div style="text-align:center;padding:38px 22px;color:var(--text3);font-size:12px;">No songs yet — find some in Search</div>`; else songs.forEach((s, i) => sl.appendChild(makeSongRow(s, i, songs))); document.getElementById('playlist-detail').classList.add('open'); }
+function closePlaylistDetail() { document.getElementById('playlist-detail').classList.remove('open'); renderLibrary(); }
+function playPlaylist() { if (currentPlaylistIndex === null) return; const songs = playlists[currentPlaylistIndex].songs || []; if (!songs.length) { showToast('No songs in playlist'); return; } playSongs(songs, 0); closePlaylistDetail(); openFullscreen(); }
+function shufflePlaylist() { if (currentPlaylistIndex === null) return; const songs = playlists[currentPlaylistIndex].songs || []; if (!songs.length) { showToast('No songs in playlist'); return; } playSongs(songs, Math.floor(Math.random() * songs.length)); shuffleOn = true; document.getElementById('shuffle-btn').querySelector('svg').style.stroke = 'var(--gold-l)'; closePlaylistDetail(); openFullscreen(); }
+function openPlaylistOpts(e, i) { e.stopPropagation(); optsPlaylistIndex = i; document.getElementById('pl-opts-title').textContent = playlists[i]?.name || 'Playlist'; document.getElementById('playlist-opts-modal').classList.add('open'); }
+function closePlaylistOpts(e) { if (e && !e.target.closest) return; if (e && e.target.closest('.modal-sheet')) return; document.getElementById('playlist-opts-modal').classList.remove('open'); optsPlaylistIndex = null; }
+function openRenameModal() { document.getElementById('playlist-opts-modal').classList.remove('open'); if (optsPlaylistIndex === null) return; document.getElementById('rename-input').value = playlists[optsPlaylistIndex].name || ''; document.getElementById('rename-modal').classList.add('open'); setTimeout(() => document.getElementById('rename-input').focus(), 360); }
+function closeRenameModal() { document.getElementById('rename-modal').classList.remove('open'); }
+function confirmRename() { const name = document.getElementById('rename-input').value.trim(); if (!name || optsPlaylistIndex === null) { showToast('Enter a name'); return; } playlists[optsPlaylistIndex].name = name; localStorage.setItem('aurum_playlists', JSON.stringify(playlists)); closeRenameModal(); renderPlaylists(); showToast('Renamed'); }
+function confirmDeletePlaylist() { if (optsPlaylistIndex === null) return; const name = playlists[optsPlaylistIndex].name; playlists.splice(optsPlaylistIndex, 1); localStorage.setItem('aurum_playlists', JSON.stringify(playlists)); document.getElementById('playlist-opts-modal').classList.remove('open'); optsPlaylistIndex = null; renderPlaylists(); showToast(`"${name}" deleted`); }
+function openCreatePlaylist() { document.getElementById('create-playlist-modal').classList.add('open'); setTimeout(() => document.getElementById('playlist-name-input').focus(), 360); }
+function closeCreatePlaylist() { document.getElementById('create-playlist-modal').classList.remove('open'); document.getElementById('playlist-name-input').value = ''; }
+function createPlaylist() { const name = document.getElementById('playlist-name-input').value.trim(); if (!name) { showToast('Enter a playlist name'); return; } playlists.push({ name, songs:[] }); localStorage.setItem('aurum_playlists', JSON.stringify(playlists)); closeCreatePlaylist(); renderPlaylists(); showToast('"' + name + '" created'); }
+function openSongModal(song) { if (!song) return; modalTrack = song; const art = document.getElementById('modal-song-art'); if (art) setImgSrc(art, getArtUrl(song, '300x300')); document.getElementById('modal-song-title').textContent = song.trackName || 'Unknown'; document.getElementById('modal-song-artist').textContent = song.artistName || 'Unknown'; document.getElementById('modal-save-label').textContent = isSaved(song) ? 'Remove from Library' : 'Save to Library'; document.getElementById('song-modal').classList.add('open'); }
+function closeSongModal(e) { if (e && e.target.closest?.('.modal-sheet')) return; document.getElementById('song-modal').classList.remove('open'); modalTrack = null; }
+function modalSave() { if (!modalTrack) return; toggleSave(modalTrack); document.getElementById('modal-save-label').textContent = isSaved(modalTrack) ? 'Remove from Library' : 'Save to Library'; document.getElementById('song-modal').classList.remove('open'); modalTrack = null; }
+function playNext() { if (!modalTrack) return; currentQueue.splice(currentIndex + 1, 0, modalTrack); showToast('Playing next'); document.getElementById('song-modal').classList.remove('open'); modalTrack = null; updateQueuePanel(); }
+function modalDownload() { if (!modalTrack) return; const s = modalTrack; document.getElementById('song-modal').classList.remove('open'); _downloadSong = s; modalTrack = null; openDownloadModal(); }
+function openAddToPlaylistModal() { const songToAdd = modalTrack; document.getElementById('song-modal').classList.remove('open'); const opts = document.getElementById('add-playlist-options'); opts.innerHTML = ''; if (!playlists.length) { opts.innerHTML = `<div style="padding:12px 0;text-align:center;color:var(--text3);font-size:12px;">No playlists yet.</div>`; } else { playlists.forEach((pl, i) => { const div = document.createElement('div'); div.className = 'modal-option'; div.innerHTML = `<svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg><span>${esc(pl.name)} <span style="color:var(--text3);font-size:10px;">(${pl.songs.length})</span></span>`; div.onclick = () => addToPlaylist(i, songToAdd); opts.appendChild(div); }); } document.getElementById('add-playlist-modal').classList.add('open'); }
+function closeAddToPlaylistModal(e) { if (e && e.target.closest?.('.modal-sheet')) return; document.getElementById('add-playlist-modal').classList.remove('open'); }
+function addToPlaylist(i, song) { const s = song || modalTrack; if (!s) return; const pl = playlists[i]; if (pl.songs.some(x => String(x.trackId) === String(s.trackId))) { showToast('Already in "' + pl.name + '"'); } else { pl.songs.push(s); localStorage.setItem('aurum_playlists', JSON.stringify(playlists)); showToast('Added to "' + pl.name + '"'); } document.getElementById('add-playlist-modal').classList.remove('open'); modalTrack = null; }
+function openQualitySheet() { if (!currentTrack) { showToast('Play a song first'); return; } const sub = document.getElementById('qs-track-name'); if (sub) sub.textContent = `${currentTrack.trackName || 'Unknown'} · ${currentTrack.artistName || 'Unknown'}`; updateQualityLabel(); document.getElementById('quality-modal').classList.add('open'); }
+function closeQualitySheet(e) { if (e && e.target.closest?.('.quality-sheet')) return; document.getElementById('quality-modal').classList.remove('open'); }
+function selectQuality(q) { if (q === 'preview') { _fallbackToPreview(currentTrack); document.getElementById('quality-modal').classList.remove('open'); } else { if (_fullSongAbort) { _fullSongAbort.abort(); _fullSongAbort = null; } _autoFetchFullSong(currentTrack); document.getElementById('quality-modal').classList.remove('open'); } }
+function openDownloadModal() { const song = _downloadSong || currentTrack; if (!song) { showToast('Play a song first'); return; } _downloadSong = song; const sub = document.getElementById('dl-track-name'); if (sub) sub.textContent = `${song.trackName || 'Unknown'} · ${song.artistName || 'Unknown'}`; if (_currentSaavnQuality) { _updateDlSheetQuality(_currentSaavnQuality); } else { const desc = document.getElementById('dl-full-desc'); const badge = document.getElementById('dl-full-badge'); if (desc) desc.textContent = currentQuality === 'loading' ? 'Fetching stream…' : 'Play song first'; if (badge) { badge.textContent = '—'; badge.className = 'dl-kbps-badge b128'; } } document.getElementById('download-modal').classList.add('open'); }
+function closeDownloadModal(e) { if (e && e.target.closest?.('.dl-sheet')) return; document.getElementById('download-modal').classList.remove('open'); _downloadSong = null; }
+async function triggerDownload(quality) { const song = _downloadSong || currentTrack; _downloadSong = null; if (!song) { showToast('No track selected'); return; } document.getElementById('download-modal').classList.remove('open'); if (quality === 'preview' || quality === 'ringtone') { try { showToast(quality === 'ringtone' ? 'Saving ringtone…' : 'Saving preview…'); const res = await fetch(song.previewUrl); if (!res.ok) throw new Error(); const blob = await res.blob(); const objUrl = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = objUrl; a.download = (song.trackName||'audio').replace(/[/\?%*:|"<>]/g,'-') + (quality === 'ringtone' ? '_ringtone' : '_preview') + '.m4a'; document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(() => URL.revokeObjectURL(objUrl), 5000); showToast(quality === 'ringtone' ? 'Ringtone saved ✓' : 'Preview saved ✓'); haptic([10,30,10]); } catch(e) { showToast('Download failed'); } } else if (quality === 'full') { if (!_currentSaavnUrl) { showToast('Play full song first'); return; } await downloadSongOffline(song, _currentSaavnUrl); } else if (quality === 'gift') { showToast('Fetching 320 kbps…'); try { const cleanTitle = (song.trackName || '').replace(/\(.*?\)/g,'').trim(); const cleanArtist = (song.artistName || '').split(/[&,]/)[0].trim(); const q = encodeURIComponent(`${cleanTitle} ${cleanArtist}`); const r = await fetch(`/api/saavn?q=${q}&artist=${encodeURIComponent(cleanArtist)}`); const d = await r.json(); if (!d.success || !d.url) { showToast('320 kbps not available'); if (_currentSaavnUrl) await downloadSongOffline(song, _currentSaavnUrl); return; } if (!_titleMatches(d.title, song.trackName)) { showToast('Song mismatch — aborted'); return; } const proxyUrl = `/api/stream?url=${encodeURIComponent(d.url)}`; await downloadSongOffline(song, proxyUrl, d.quality); } catch(e) { showToast('Owner Gift failed'); } } }
+
+// ─── TOAST ────────────────────────────────────────────────────────────────────
+let _toastTimer = null;
+function showToast(msg) { const t = document.getElementById('toast'); if (!t) return; t.textContent = msg; t.classList.add('show'); clearTimeout(_toastTimer); _toastTimer = setTimeout(() => t.classList.remove('show'), 2200); }
+
+// ─── UTILS ────────────────────────────────────────────────────────────────────
+function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function formatMs(ms) { const s = Math.floor((ms||0)/1000); return `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`; }
+function formatSec(s) { s = Math.floor(s||0); return `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`; }
+function haptic(pat) { try { if (navigator.vibrate && (typeof appSettings === 'undefined' || appSettings.hapticFeedback !== false)) navigator.vibrate(pat); } catch(e) {} }
+
+if (!isTV) { document.addEventListener('keydown', e => { if (e.code === 'Space' && e.target.tagName !== 'INPUT') { e.preventDefault(); togglePlay(); } }); }
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+window.addEventListener('DOMContentLoaded', () => {
+  setVh();
+  initViz();
+  buildHomeSections('all');
+  renderLibrary();
+  renderSearchIdle();
+  setupMiniGesture();
+  setupFullPlayerGesture();
+  setupArtSwipeGesture();
+  setupShakeGesture();
+  if (isTV) setupTVNavigation();
+  requestPersistentStorage();
+});
