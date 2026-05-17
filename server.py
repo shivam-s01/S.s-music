@@ -52,7 +52,6 @@ limiter = Limiter(get_real_ip, app=app, default_limits=[], storage_uri="memory:/
 # CONSTANTS
 # ═══════════════════════════════════════════════════════════════
 SAAVN_MIRRORS = [
-    'https://saavn.dev',
     'https://jiosaavn-api-privatecvc2.vercel.app',
     'https://saavn-api-sigma.vercel.app',
     'https://jiosaavn-api2.vercel.app',
