@@ -201,86 +201,149 @@ def mark_mirror_ok(mirror):
     _mirror_failures.pop(mirror, None)
 
 # ═══════════════════════════════════════════════════════════════
-# ITUNES SEARCH — FIX: raise_for_status hata diya,
-#   safe JSON parsing, aur recursion-safe year filter
+# DEEZER SEARCH — iTunes replace kiya (Railway gevent conflict)
+# No API key needed. Returns iTunes-compatible format.
 # ═══════════════════════════════════════════════════════════════
+
+DEEZER_QUERY_MAP = {
+    'top bollywood songs hits':          'bollywood hits',
+    'best hindi songs':                   'hindi songs',
+    'latest bollywood hits':              'bollywood 2024',
+    'top hindi songs trending':           'hindi trending',
+    'best bollywood songs playlist':      'bollywood popular',
+    'trending hindi songs chart':         'hindi chart',
+    'bollywood chart toppers':            'bollywood top',
+    'top hindi songs this week':          'hindi new songs',
+    'most popular bollywood songs':       'bollywood popular',
+    'sad emotional bollywood songs':      'hindi sad songs',
+    'heartbreak hindi songs arijit':      'arijit singh sad',
+    'late night slow songs hindi':        'hindi slow songs',
+    'emotional romantic songs hindi':     'hindi romantic',
+    '90s bollywood romantic classic songs':'90s bollywood',
+    '80s hindi classic songs':            'hindi classic',
+    'old is gold bollywood songs kishore kumar':'kishore kumar',
+    'retro bollywood hits lata mangeshkar':'lata mangeshkar',
+    'divine emiway bantai rap hindi':     'hindi rap',
+    'desi hip hop india rap songs':       'desi hip hop',
+    'yo yo honey singh badshah rap':      'honey singh',
+    'india rap gully boy songs':          'gully boy',
+    'lofi chill beats hindi songs':       'lofi hindi',
+    'lofi bollywood remix chill':         'bollywood lofi',
+    'lo-fi hindi songs study chill':      'lofi study',
+    'lofi beats india relaxing':          'indian lofi',
+    'arijit singh best romantic songs':   'arijit singh',
+    'arijit singh top hits':              'arijit singh hits',
+    'arijit singh soulful songs':         'arijit singh soulful',
+    'arijit singh emotional hits':        'arijit singh emotional',
+    'workout hindi songs gym':            'hindi workout',
+    'upbeat dance bollywood songs':       'bollywood dance',
+    'party hindi songs badshah':          'badshah songs',
+    'high energy bollywood beats':        'bollywood energy',
+    'new hindi songs latest':             'hindi new 2024',
+    'new bollywood songs released':       'bollywood new',
+    'latest hindi songs hits':            'hindi latest',
+    'new bollywood songs trending':       'bollywood trending',
+    'Kumar Sanu hits':                    'kumar sanu',
+    'Udit Narayan 90s':                   'udit narayan',
+    'Alka Yagnik 90s':                    'alka yagnik',
+    'Lata Mangeshkar 90s':                'lata mangeshkar',
+    'Sonu Nigam 90s hits':                'sonu nigam',
+    'Kavita Krishnamurthy songs':         'kavita krishnamurthy',
+    'Asha Bhosle 90s':                    'asha bhosle',
+    'Abhijeet Bhattacharya hits':         'abhijeet bhattacharya',
+    'Shankar Mahadevan 90s':              'shankar mahadevan',
+    'AR Rahman 90s':                      'ar rahman',
+    'Anu Malik 90s hits':                 'anu malik',
+    'Nadeem Shravan songs':               'nadeem shravan',
+    'Jatin Lalit songs':                  'jatin lalit',
+    'Kumar Sanu Alka Yagnik duets':       'kumar sanu alka yagnik',
+    '90s Bollywood superhits':            '90s bollywood superhits',
+}
+
+# Deezer response → iTunes-compatible dict
+def _deezer_to_itunes(track):
+    try:
+        preview = track.get('preview', '')
+        if not preview:
+            return None
+        album   = track.get('album') or {}
+        artist  = track.get('artist') or {}
+        cover   = album.get('cover_big') or album.get('cover_medium') or album.get('cover') or ''
+        # artworkUrl100 format — app.js uses this
+        art100  = cover.replace('500x500', '100x100') if cover else ''
+        return {
+            'trackId':          track.get('id', 0),
+            'trackName':        track.get('title', ''),
+            'artistName':       artist.get('name', ''),
+            'collectionName':   album.get('title', ''),
+            'artworkUrl100':    art100,
+            'artworkUrl600':    cover,
+            'previewUrl':       preview,
+            'trackTimeMillis':  (track.get('duration') or 30) * 1000,
+            'releaseDate':      album.get('release_date', ''),
+            'primaryGenreName': 'Bollywood',
+        }
+    except Exception:
+        return None
+
+def _deezer_fetch(query, limit=50):
+    """Fetch songs from Deezer — no API key, Railway pe safe."""
+    dz_query = DEEZER_QUERY_MAP.get(query, query)
+    try:
+        r = requests.get(
+            'https://api.deezer.com/search',
+            params={'q': dz_query, 'limit': limit, 'output': 'json'},
+            timeout=8,
+            headers={'User-Agent': 'Mozilla/5.0'}
+        )
+        if r.status_code != 200:
+            log.warning(f"[Deezer] HTTP {r.status_code} for '{query}'")
+            return []
+        data = r.json()
+        if not isinstance(data, dict):
+            return []
+        raw = data.get('data', [])
+        if not isinstance(raw, list):
+            return []
+        results = []
+        for t in raw:
+            converted = _deezer_to_itunes(t)
+            if converted:
+                results.append(converted)
+        log.info(f"[Deezer] '{query}' → {len(results)} tracks")
+        return results
+    except requests.Timeout:
+        log.warning(f"[Deezer] Timeout for '{query}'")
+        return []
+    except Exception as e:
+        log.error(f"[Deezer] Error for '{query}': {e}")
+        return []
+
 def _safe_year(date_str):
-    """Safely extract year from ISO date string — no recursion."""
     try:
         return int(str(date_str or '')[:4])
     except (ValueError, TypeError):
         return 0
 
-def _itunes_fetch(search_term):
-    """
-    Isolated iTunes HTTP call — returns list of results or [].
-    Exceptions fully caught here so callers never crash.
-    """
-    try:
-        r = requests.get(
-            'https://itunes.apple.com/search',
-            params={
-                'term':    search_term,
-                'media':   'music',
-                'entity':  'song',
-                'limit':   50,
-                'country': 'IN',
-            },
-            timeout=8
-        )
-        # Don't raise_for_status — parse defensively instead
-        if r.status_code != 200:
-            log.warning(f"[iTunes] HTTP {r.status_code} for '{search_term}'")
-            return []
-
-        data = r.json()
-        if not isinstance(data, dict):
-            return []
-
-        results = data.get('results', [])
-        if not isinstance(results, list):
-            return []
-
-        return results
-
-    except requests.Timeout:
-        log.warning(f"[iTunes] Timeout for '{search_term}'")
-        return []
-    except ValueError as e:
-        log.warning(f"[iTunes] JSON parse error for '{search_term}': {e}")
-        return []
-    except Exception as e:
-        log.error(f"[iTunes] Unexpected error for '{search_term}': {e}")
-        return []
-
 @app.route('/api/songs')
 @limiter.limit("60 per minute")
 def get_songs():
-    q   = request.args.get('q', 'top songs').strip()
+    q   = request.args.get('q', 'bollywood hits').strip()
     era = request.args.get('era', '').strip()
 
     is_90s      = (era == '90s') or any(t in q.lower() for t in NINETIES_TRIGGERS)
     search_term = random.choice(NINETIES_SEEDS) if is_90s else q
 
-    results = _itunes_fetch(search_term)
+    results = _deezer_fetch(search_term)
+    random.shuffle(results)
 
     if is_90s:
-        # Iterative filter — no recursion risk
-        filtered = []
-        for s in results:
-            if not s.get('previewUrl'):
-                continue
-            year = _safe_year(s.get('releaseDate'))
-            if 1990 <= year <= 1999:
-                filtered.append(s)
-
+        filtered = [s for s in results if 1990 <= _safe_year(s.get('releaseDate')) <= 1999]
         if len(filtered) < 5:
-            filtered = [s for s in results if s.get('previewUrl')]
-
-        random.shuffle(filtered)
+            filtered = results
         return jsonify({'results': filtered[:30]})
 
-    return jsonify({'results': [s for s in results if s.get('previewUrl')]})
+    return jsonify({'results': results[:30]})
 
 # ═══════════════════════════════════════════════════════════════
 # 90s ENDPOINT
@@ -289,19 +352,10 @@ def get_songs():
 @limiter.limit("60 per minute")
 def get_90s_songs():
     seed    = random.choice(NINETIES_SEEDS)
-    results = _itunes_fetch(seed)
-
-    filtered = []
-    for s in results:
-        if not s.get('previewUrl'):
-            continue
-        year = _safe_year(s.get('releaseDate'))
-        if 1990 <= year <= 1999:
-            filtered.append(s)
-
+    results = _deezer_fetch(seed)
+    filtered = [s for s in results if 1990 <= _safe_year(s.get('releaseDate')) <= 1999]
     if len(filtered) < 5:
-        filtered = [s for s in results if s.get('previewUrl')]
-
+        filtered = results
     random.shuffle(filtered)
     return jsonify({'results': filtered[:30], 'seed': seed})
 
