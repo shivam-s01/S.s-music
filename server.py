@@ -7,11 +7,15 @@ import logging
 import random
 import time
 import threading
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 from urllib.parse import urlparse, quote
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 import atexit
+
+# ── Recursion limit fix — Railway default bahut low hai ──────
+sys.setrecursionlimit(10000)
 
 # ── yt-dlp optional import ────────────────────────────────────
 try:
@@ -110,20 +114,18 @@ NINETIES_TRIGGERS = [
 ]
 
 # ── Mirror health cache ────────────────────────────────────────
-# Failed mirrors 5 min ke liye skip honge
-_mirror_failures = {}          # mirror_url -> fail_timestamp
-_MIRROR_COOLDOWN = 300         # 5 minutes
+_mirror_failures = {}
+_MIRROR_COOLDOWN = 300
 
 # ── YT-DLP concurrent limit ────────────────────────────────────
-_yt_semaphore  = threading.Semaphore(3)   # max 3 simultaneous yt-dlp calls
-_yt_url_cache  = {}                       # query -> (url, ts)
-_YT_CACHE_TTL  = 3600                     # 1 hour cache
+_yt_semaphore  = threading.Semaphore(3)
+_yt_url_cache  = {}
+_YT_CACHE_TTL  = 3600
 
 # ── Thread pools ───────────────────────────────────────────────
 _saavn_executor = ThreadPoolExecutor(max_workers=len(SAAVN_MIRRORS), thread_name_prefix='saavn')
 _yt_executor    = ThreadPoolExecutor(max_workers=3, thread_name_prefix='ytdlp')
 
-# Cleanup on exit
 atexit.register(_saavn_executor.shutdown, wait=False)
 atexit.register(_yt_executor.shutdown,    wait=False)
 
@@ -175,7 +177,6 @@ def service_worker():
 def assetlinks():
     return app.send_static_file('assetlinks.json')
 
-# ── Catch-all static files (405 fix) ──────────────────────────
 @app.route('/<path:filename>')
 def serve_static(filename):
     file_path = os.path.join(BASE_DIR, filename)
@@ -221,7 +222,7 @@ def get_songs():
                 'limit':   50,
                 'country': 'IN',
             },
-            timeout=15
+            timeout=8
         )
         r.raise_for_status()
         results = r.json().get('results', [])
@@ -260,7 +261,7 @@ def get_90s_songs():
                 'limit':   50,
                 'country': 'IN',
             },
-            timeout=15
+            timeout=8
         )
         r.raise_for_status()
         results = r.json().get('results', [])
@@ -321,16 +322,17 @@ def normalize(text):
     text = re.sub(r'[^a-z0-9\s]', '', text)
     return re.sub(r'\s+', ' ', text).strip()
 
+# ── FIX: Iterative levenshtein — recursion bilkul nahi ────────
 def levenshtein(s1, s2):
     if len(s1) < len(s2):
-        return levenshtein(s2, s1)
+        s1, s2 = s2, s1
     if not s2:
         return len(s1)
-    prev = range(len(s2) + 1)
-    for i, c1 in enumerate(s1):
-        curr = [i + 1]
+    prev = list(range(len(s2) + 1))
+    for c1 in s1:
+        curr = [prev[0] + 1]
         for j, c2 in enumerate(s2):
-            curr.append(min(prev[j+1]+1, curr[j]+1, prev[j]+(c1 != c2)))
+            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (c1 != c2)))
         prev = curr
     return prev[-1]
 
@@ -426,7 +428,6 @@ def pick_image(song):
 
 # ═══════════════════════════════════════════════════════════════
 # YT-DLP — Full song fetch
-# Supports: Bollywood, Bhojpuri, Hollywood, Japanese, English — sab
 # ═══════════════════════════════════════════════════════════════
 def _yt_cache_get(key):
     entry = _yt_url_cache.get(key)
@@ -438,19 +439,12 @@ def _yt_cache_get(key):
     return None
 
 def _yt_cache_set(key, url):
-    # Cache size limit — max 200 entries
     if len(_yt_url_cache) >= 200:
         oldest = min(_yt_url_cache, key=lambda k: _yt_url_cache[k][1])
         del _yt_url_cache[oldest]
     _yt_url_cache[key] = (url, time.time())
 
 def fetch_yt_url(title, artist=''):
-    """
-    yt-dlp se full song stream URL nikalo.
-    - Semaphore se max 3 concurrent calls
-    - 1 hour cache
-    - Server load control: timeout 25s
-    """
     if not YT_DLP_AVAILABLE:
         return None
 
@@ -460,31 +454,25 @@ def fetch_yt_url(title, artist=''):
         log.info(f"[YT] Cache hit: {title}")
         return cached
 
-    # Semaphore — server pe load control
     if not _yt_semaphore.acquire(blocking=True, timeout=2):
         log.warning("[YT] Semaphore busy — skipping yt-dlp")
         return None
 
     try:
-        # Search query build — title + artist dono
         search_q = f"{title} {artist} official audio".strip() if artist else f"{title} official audio"
 
         ydl_opts = {
-            'format':            'bestaudio[ext=m4a]/bestaudio/best',
-            'quiet':             True,
-            'no_warnings':       True,
-            'noplaylist':        True,
-            'extract_flat':      False,
-            'skip_download':     True,
-            'socket_timeout':    10,
-            # Restrict to first result only — server load kam karo
-            'playlist_items':    '1',
-            # No geo-bypass needed for most songs
-            'geo_bypass':        True,
-            # Throttle: wait between requests
-            'sleep_interval':    1,
+            'format':             'bestaudio[ext=m4a]/bestaudio/best',
+            'quiet':              True,
+            'no_warnings':        True,
+            'noplaylist':         True,
+            'extract_flat':       False,
+            'skip_download':      True,
+            'socket_timeout':     10,
+            'playlist_items':     '1',
+            'geo_bypass':         True,
+            'sleep_interval':     1,
             'max_sleep_interval': 2,
-            # User agent — avoid bot detection
             'http_headers': {
                 'User-Agent': (
                     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -495,38 +483,27 @@ def fetch_yt_url(title, artist=''):
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(
-                f"ytsearch1:{search_q}",
-                download=False
-            )
-
+            info = ydl.extract_info(f"ytsearch1:{search_q}", download=False)
             if not info:
                 return None
-
             entries = info.get('entries') or [info]
             if not entries:
                 return None
-
             entry = entries[0]
             if not entry:
                 return None
 
-            # Best audio URL nikalo
             url = None
             requested = entry.get('requested_formats') or entry.get('formats') or []
-
-            # Direct URL check
             direct = entry.get('url')
             if direct and direct.startswith('http'):
                 url = direct
             elif requested:
-                # Best audio format pick karo
                 audio_formats = [
                     f for f in requested
                     if f.get('acodec') != 'none' and f.get('url', '').startswith('http')
                 ]
                 if audio_formats:
-                    # Highest quality audio
                     audio_formats.sort(key=lambda f: f.get('abr', 0) or 0, reverse=True)
                     url = audio_formats[0]['url']
 
@@ -534,7 +511,6 @@ def fetch_yt_url(title, artist=''):
                 _yt_cache_set(cache_key, url)
                 log.info(f"[YT] ✓ Found: {entry.get('title', title)[:50]}")
                 return url
-
             return None
 
     except Exception as e:
@@ -709,20 +685,11 @@ def get_saavn_song():
     return jsonify({'success': False, 'url': None, 'token': token})
 
 # ═══════════════════════════════════════════════════════════════
-# YT-DLP ENDPOINT — Full songs (Bollywood, Bhojpuri, Hollywood,
-#                               Japanese, English — sab)
-# Rate limit: 30/min — server load control
+# YT-DLP ENDPOINT
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/yt')
 @limiter.limit("30 per minute")
 def get_yt_song():
-    """
-    Full song URL via yt-dlp.
-    Query params:
-      q      — song title (required)
-      artist — artist name (optional, improves accuracy)
-      token  — pass-through token (optional)
-    """
     q      = request.args.get('q', '').strip()
     artist = request.args.get('artist', '').strip()
     token  = request.args.get('token', '').strip()
@@ -738,9 +705,8 @@ def get_yt_song():
         }), 503
 
     try:
-        # Run in thread pool — non-blocking
         future = _yt_executor.submit(fetch_yt_url, q, artist)
-        url    = future.result(timeout=25)   # max 25s wait
+        url    = future.result(timeout=25)
 
         if url:
             log.info(f"[YT API] ✓ '{q}' by '{artist}'")
@@ -765,18 +731,10 @@ def get_yt_song():
 
 # ═══════════════════════════════════════════════════════════════
 # SMART SONG ENDPOINT — Saavn first, YT fallback
-# Frontend ke liye single endpoint — best of both worlds
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/song')
 @limiter.limit("60 per minute")
 def get_song_smart():
-    """
-    Smart endpoint:
-    1. JioSaavn mirrors try karo (fastest, best quality for Indian songs)
-    2. Agar nahi mila → yt-dlp se full song (global songs ke liye)
-
-    Supports: Bollywood, Bhojpuri, Hollywood, Japanese, K-pop, English — sab
-    """
     q           = request.args.get('q', '').strip()
     artist      = request.args.get('artist', '').strip()
     fallback    = request.args.get('fallback', '').strip()
@@ -789,7 +747,6 @@ def get_song_smart():
 
     saavn_result = None
 
-    # ── Step 1: Saavn (skip agar force_yt=true) ───────────────
     if not force_yt:
         for query in build_query_variants(q, artist, fallback):
             saavn_result = fetch_saavn_parallel(query)
@@ -808,7 +765,6 @@ def get_song_smart():
         log.info(f"[Smart] Saavn ✓ '{q}'")
         return jsonify({'success': True, 'token': token, **saavn_result})
 
-    # ── Step 2: yt-dlp fallback ───────────────────────────────
     if YT_DLP_AVAILABLE:
         log.info(f"[Smart] Saavn miss — trying YT for '{q}'")
         try:
@@ -834,8 +790,7 @@ def get_song_smart():
     return jsonify({'success': False, 'url': None, 'token': token})
 
 # ═══════════════════════════════════════════════════════════════
-# STREAM PROXY — Cloudflare + PWABuilder APK safe
-# Supports both Saavn CDN and YouTube stream URLs
+# STREAM PROXY
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/stream')
 @limiter.limit("120 per minute")
@@ -850,8 +805,7 @@ def stream_audio():
         if parsed.scheme not in ('http', 'https'):
             return jsonify({'error': 'Invalid URL scheme'}), 400
 
-        domain  = parsed.netloc.lower().split(':')[0]
-        # YouTube googlevideo domains allow karo (dynamic subdomains hain)
+        domain         = parsed.netloc.lower().split(':')[0]
         is_googlevideo = domain.endswith('.googlevideo.com')
         allowed = is_googlevideo or any(
             domain == d or domain.endswith('.' + d)
@@ -880,7 +834,7 @@ def stream_audio():
             url,
             headers=req_headers,
             stream=True,
-            timeout=30,           # 30s — Render free tier safe
+            timeout=30,
             allow_redirects=True
         )
 
@@ -918,7 +872,7 @@ def stream_audio():
         return jsonify({'error': str(e)}), 500
 
 # ═══════════════════════════════════════════════════════════════
-# HEALTH — Cloudflare uptime check ke liye
+# HEALTH
 # ═══════════════════════════════════════════════════════════════
 @app.route('/health')
 def health():
