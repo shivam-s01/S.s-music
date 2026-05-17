@@ -788,9 +788,9 @@ function setupMiniGesture() {
     const absDy = Math.abs(dy);
     const absDx = Math.abs(dx);
 
-    if (!axisLocked && (absDx > 6 || absDy > 6)) {
-      axisLocked = absDx > absDy ? 'horizontal' : 'vertical';
-    }
+    if (!axisLocked && (absDx > 8 || absDy > 8)) {
+  axisLocked = absDx > absDy + 10 ? 'horizontal' : 'vertical';
+}
 
     if (axisLocked === 'horizontal') {
       isDragging = false;
