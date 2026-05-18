@@ -1,8 +1,10 @@
 [{
-      "relation": ["delegate_permission/common.handle_all_urls"],
-      "target": {
-        "namespace": "android_app",
-        "package_name": "com.onrender.s_s_music.twa",
-        "sha256_cert_fingerprints": ["FA:95:30:7A:2B:AB:AC:BD:58:95:47:A3:9C:CB:53:50:2A:F0:DE:4C:67:5C:4E:85:A2:E7:34:3A:AE:46:C1:83"]
-      }
-    }]
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "com.aurum.music",
+    "sha256_cert_fingerprints": [
+      "A9:E5:C6:31:35:10:66:21:E9:C7:72:76:DD:5E:53:00:C3:E5:55:05:90:83:D7:FC:8B:47:BA:DF:16:5A:2A:79"
+    ]
+  }
+}]
