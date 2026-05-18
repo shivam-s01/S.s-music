@@ -85,6 +85,7 @@ QUALITY_RANK = {
     '12kbps':  1, '12':  1,
 }
 
+# ── 90s Seeds ─────────────────────────────────────────────────
 NINETIES_SEEDS = [
     "Kumar Sanu hits", "Udit Narayan 90s", "Alka Yagnik 90s",
     "Lata Mangeshkar 90s", "Sonu Nigam 90s hits",
@@ -105,7 +106,7 @@ _executor = ThreadPoolExecutor(max_workers=len(SAAVN_MIRRORS))
 
 
 # ═══════════════════════════════════════════════════════════════
-# CORS  (Cloudflare ke saath bhi kaam karega)
+# CORS  (Cloudflare + PWABuilder ke saath bhi kaam karega)
 # ═══════════════════════════════════════════════════════════════
 def add_cors(resp):
     resp.headers['Access-Control-Allow-Origin']   = '*'
@@ -150,7 +151,7 @@ def service_worker():
         mimetype='application/javascript'
     )
     # SW ko cache mat karo — PWABuilder requirement
-    resp.headers['Cache-Control']        = 'no-cache, no-store, must-revalidate'
+    resp.headers['Cache-Control']          = 'no-cache, no-store, must-revalidate'
     resp.headers['Service-Worker-Allowed'] = '/'
     return resp
 
@@ -173,7 +174,7 @@ def serve_static(filename):
 
 
 # ═══════════════════════════════════════════════════════════════
-# ITUNES SEARCH
+# ITUNES SEARCH  — Bollywood / English / Japanese / Bhojpuri
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/songs')
 @limiter.limit("60 per minute")
@@ -266,41 +267,77 @@ def _safe_year(date_str):
 
 
 # ═══════════════════════════════════════════════════════════════
-# HELPERS
+# HELPERS — Pro-level matching engine
 # ═══════════════════════════════════════════════════════════════
+
 def clean_query(text):
+    """
+    iTunes titles se extra garbage hata do.
+    Bollywood: "(From "Aashiqui 2")" → ""
+    English:   "(Official Audio)" → ""
+    Japanese:  "[OST]" → ""
+    Bhojpuri:  "(Full Song)" → ""
+    """
+    # (From "Movie Name") patterns
     text = re.sub(
         r'\(From\s+["\u201c\u201d\u2018\u2019]?[^)]*["\u201c\u201d\u2018\u2019]?\)',
         '', text, flags=re.IGNORECASE
     )
+    # Square brackets — Japanese OST etc
+    text = re.sub(r'\[.*?\]', '', text)
+    # Common suffixes in round brackets
     text = re.sub(
-        r'\((OST|official|audio|video|lyrics|full\s*song|feat\.?.*?|ft\.?.*?)\)',
+        r'\(\s*(OST|official|audio|video|lyrics|full\s*song|feat\.?.*?|ft\.?.*?|'
+        r'Hindi|English|Japanese|Bhojpuri|Version|Remix|Cover|HD|HQ|'
+        r'Original|Soundtrack|Motion\s*Picture|Remastered|Extended|Radio\s*Edit)\s*\)',
         '', text, flags=re.IGNORECASE
     )
+    # Trailing dash suffixes: "Song - Official Video"
+    text = re.sub(
+        r'\s*[-–]\s*(official|audio|video|lyrics|full\s*song|hd|hq|remastered).*$',
+        '', text, flags=re.IGNORECASE
+    )
+    # Quotes aur brackets hata do
     text = re.sub(r'["\u201c\u201d\u2018\u2019\'()]', '', text)
     return re.sub(r'\s+', ' ', text).strip()
 
 
 def build_query_variants(title, artist='', fallback=''):
+    """
+    Multiple query variants banao — simple se complex order mein.
+    Jitna simple query, utna better Saavn match.
+    """
     title_c  = clean_query(title)
     artist_c = clean_query(artist) if artist else ''
     fb_c     = clean_query(fallback) if fallback else ''
+
+    # Artist ka sirf pehla word (e.g. "Arijit" from "Arijit Singh")
+    artist_first = artist_c.split()[0] if artist_c else ''
+
     seen, variants = set(), []
 
     def add(v):
-        v = v.strip()
+        v = re.sub(r'\s+', ' ', v).strip()
         if v and v not in seen:
-            seen.add(v); variants.append(v)
+            seen.add(v)
+            variants.append(v)
 
-    add(title_c)
+    # Priority order — simple pehle, Saavn isko best match karta hai
+    add(title_c)                              # "Tum Hi Ho"
+    if artist_first:
+        add(f"{title_c} {artist_first}")      # "Tum Hi Ho Arijit"
     if artist_c:
-        add(f"{title_c} {artist_c}")
-    if fb_c:
-        add(fb_c)
+        add(f"{title_c} {artist_c}")          # "Tum Hi Ho Arijit Singh"
+    if fb_c and fb_c != title_c:
+        add(fb_c)                             # full fallback query
+    if artist_c and fb_c:
+        add(f"{artist_c} {title_c}")          # "Arijit Singh Tum Hi Ho"
+
     return variants
 
 
 def normalize(text):
+    """Lowercase, only alphanumeric + spaces."""
     text = text.lower()
     text = re.sub(r'[^a-z0-9\s]', '', text)
     return re.sub(r'\s+', ' ', text).strip()
@@ -326,44 +363,75 @@ def fuzzy_word_match(qw, tw):
     max_len = max(len(qw), len(tw))
     if max_len == 0:      return 0.0
     ratio = 1.0 - (levenshtein(qw, tw) / max_len)
-    return ratio if ratio >= 0.65 else 0.0
+    return ratio if ratio >= 0.60 else 0.0
 
 
 def title_score(query, song_title, song_artist=''):
     q, t, a = normalize(query), normalize(song_title), normalize(song_artist)
-    if not q:   return 0.0
-    if q == t:  return 3.0
-    q_words, t_words, a_words = q.split(), t.split(), a.split()
-    score = 0.0
+    if not q:  return 0.0
+    if q == t: return 3.0
+
+    q_words = q.split()
+    t_words = t.split()
+    a_words = a.split() if a else []
+    score   = 0.0
+
     if t.startswith(q): score += 2.0
+
     title_match = sum(
         max((fuzzy_word_match(qw, tw) for tw in t_words), default=0.0)
         for qw in q_words
     )
     if q_words: score += (title_match / len(q_words)) * 1.5
-    artist_match = sum(
-        max((fuzzy_word_match(qw, aw) for aw in a_words), default=0.0)
-        for qw in q_words
-    )
-    if q_words: score += (artist_match / len(q_words)) * 0.5
+
+    if a_words:
+        artist_match = sum(
+            max((fuzzy_word_match(qw, aw) for aw in a_words), default=0.0)
+            for qw in q_words
+        )
+        if q_words: score += (artist_match / len(q_words)) * 0.5
+
     return score
 
 
 def dynamic_min_score(query):
+    """
+    Query length ke hisaab se threshold.
+    Short queries (1-2 words) ke liye loose, long ke liye thoda strict.
+    """
     length = len(normalize(query).replace(' ', ''))
-    if length <= 2:  return 0.25
-    elif length <= 5: return 0.45
-    else:            return 0.60
+    if length <= 2:  return 0.20
+    elif length <= 5: return 0.35
+    elif length <= 10: return 0.50
+    else:             return 0.55
 
 
 def has_word_match(query, song_title):
+    """
+    Relaxed word match — pehla meaningful word match kaafi hai.
+    English, Japanese romanji, Bhojpuri, Bollywood sab handle karta hai.
+    """
     q_words = normalize(query).split()
     t_words = normalize(song_title).split()
-    if not q_words or not t_words: return False
-    for qw in q_words:
-        for tw in t_words:
-            if fuzzy_word_match(qw, tw) >= 0.60:
+    if not q_words or not t_words: return True
+
+    # Meaningful words only (len >= 3)
+    q_main = [w for w in q_words if len(w) >= 3]
+    t_main = [w for w in t_words if len(w) >= 3]
+
+    # Agar koi meaningful word nahi toh accept karo
+    if not q_main: return True
+
+    # Pehla meaningful word exact match → direct accept
+    if t_main and q_main[0] == t_main[0]:
+        return True
+
+    # Fuzzy match across all words
+    for qw in q_main:
+        for tw in t_main:
+            if fuzzy_word_match(qw, tw) >= 0.55:
                 return True
+
     return False
 
 
@@ -399,7 +467,6 @@ def pick_image(song):
 # DATA SAVER — LOW QUALITY PICKER
 # ═══════════════════════════════════════════════════════════════
 def _pick_low_quality(urls):
-    """Data Saver mode ke liye lowest acceptable quality URL."""
     if not urls:
         return None, None
 
@@ -413,7 +480,6 @@ def _pick_low_quality(urls):
                 if url.startswith('http'):
                     return url, item.get('quality', preferred)
 
-    # Fallback: lowest available
     def rank(item):
         q = (item.get('quality') or '').lower().strip()
         if q in QUALITY_RANK:
@@ -430,7 +496,7 @@ def _pick_low_quality(urls):
 
 
 # ═══════════════════════════════════════════════════════════════
-# MIRROR FETCH
+# MIRROR FETCH  — Pro matching with multi-language support
 # ═══════════════════════════════════════════════════════════════
 def fetch_from_mirror(mirror, query, min_score=0.4):
     endpoints = ['/api/search/songs', '/api/search', '/search/songs']
@@ -488,7 +554,7 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
                 ),
                 'image':     pick_image(best_song),
                 'score':     round(best_score, 3),
-                '_raw_urls': raw_urls,  # Data Saver ke liye
+                '_raw_urls': raw_urls,
             }
 
         except Exception as e:
@@ -533,7 +599,8 @@ def fetch_saavn_parallel(query):
 
 
 # ═══════════════════════════════════════════════════════════════
-# JIOSAAVN ENDPOINT  ← low_quality param support added
+# JIOSAAVN ENDPOINT
+# Bollywood / English / Japanese / Bhojpuri — sab support
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/saavn')
 @limiter.limit("80 per minute")
@@ -550,12 +617,20 @@ def get_saavn_song():
     for query in build_query_variants(q, artist, fallback):
         result = fetch_saavn_parallel(query)
 
+        # ── Final reject guard — relaxed ─────────────────────────
+        # Sirf tab reject karo jab word match nahi aur score bhi low ho
         if result and not has_word_match(q, result['title']):
-            log.warning(
-                f"[Saavn] Final reject — query='{q}' "
-                f"returned '{result['title']}' (no word match)"
-            )
-            result = None
+            if result.get('score', 0) < 0.8:
+                log.warning(
+                    f"[Saavn] Final reject — query='{q}' "
+                    f"returned '{result['title']}' score={result.get('score')}"
+                )
+                result = None
+            else:
+                log.info(
+                    f"[Saavn] High-score accept despite mismatch — "
+                    f"query='{q}' title='{result['title']}' score={result.get('score')}"
+                )
 
         if result:
             # ── DATA SAVER: low quality URL switch ───────────────
@@ -577,7 +652,7 @@ def get_saavn_song():
 
 
 # ═══════════════════════════════════════════════════════════════
-# STREAM PROXY  ← Cloudflare + full song ke liye improved
+# STREAM PROXY  ← Cloudflare + PWABuilder + full song support
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/stream')
 @limiter.limit("120 per minute")
@@ -630,13 +705,12 @@ def stream_audio():
             if k.lower() not in excluded
         }
 
-        # ── Cloudflare + browser audio ke liye important headers ──
+        # ── Cloudflare + browser audio + PWABuilder headers ──────
         resp_headers['Access-Control-Allow-Origin']  = '*'
         resp_headers['Accept-Ranges']                = 'bytes'
         resp_headers['Cache-Control']                = 'no-store'
         resp_headers['X-Content-Type-Options']       = 'nosniff'
 
-        # Content-Type audio set karo agar missing hai
         if 'content-type' not in {k.lower() for k in resp_headers}:
             resp_headers['Content-Type'] = 'audio/mpeg'
 
