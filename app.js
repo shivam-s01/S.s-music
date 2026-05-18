@@ -218,7 +218,7 @@ async function _autoFetchFullSong(song) {
     const fallbackQ = encodeURIComponent(`${cleanTitle} ${cleanArtist}`);
     const artistQ   = encodeURIComponent(cleanArtist);
 
-    const r = await fetch(`/api/song?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`, { signal: ctrl.signal });
+const r = await fetch(`/api/saavn?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`, { signal: ctrl.signal });
     if (!r.ok) throw new Error('api-err');
     const d = await r.json();
 
