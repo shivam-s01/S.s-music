@@ -59,6 +59,11 @@ jobs:
           }
           EOF
 
+          cat > gradle.properties << 'EOF'
+          android.useAndroidX=true
+          android.enableJetifier=true
+          EOF
+
           cat > app/build.gradle << 'EOF'
           plugins {
               id 'com.android.application'
@@ -158,7 +163,6 @@ jobs:
 
       - name: Build APK
         run: gradle assembleRelease
-        working-directory: .
         env:
           STORE_PASSWORD: aurum2025
           KEY_PASSWORD: aurum2025
