@@ -1118,23 +1118,55 @@ def get_songs():
 
     results = []
 
-    # ── Primary: JioSaavn Direct ─────────────────────────────────
-    direct_songs = fetch_from_jiosaavn_direct(search_term, limit=40)
-    results.extend(direct_songs)
-    log.info(f"[Songs] Direct got {len(direct_songs)} songs for '{search_term}'")
+    # ── PRIMARY: Deezer (instant, always works) ──────────────────
+    try:
+        r = requests.get(
+            'https://api.deezer.com/search',
+            params={'q': search_term, 'limit': 30},
+            timeout=6,
+            headers={'User-Agent': 'Mozilla/5.0'}
+        )
+        for song in r.json().get('data', []):
+            preview = song.get('preview', '')
+            if not preview:
+                continue
+            artwork = (song.get('album') or {}).get('cover_xl') or \
+                      (song.get('album') or {}).get('cover_big') or ''
+            year = str((song.get('album') or {}).get('release_date', ''))[:4]
+            results.append({
+                'trackId':          song.get('id'),
+                'trackName':        song.get('title', ''),
+                'artistName':       (song.get('artist') or {}).get('name', ''),
+                'artworkUrl100':    artwork,
+                'artworkUrl600':    artwork,
+                'previewUrl':       preview,
+                'url':              preview,
+                'quality':          'preview',
+                'releaseDate':      year,
+                'primaryGenreName': 'Bollywood',
+                'source':           'deezer',
+            })
+        log.info(f"[Deezer] {len(results)} songs for '{search_term}'")
+    except Exception as e:
+        log.warning(f"[Deezer] Error: {e}")
 
-    # ── Backup: Mirrors (if direct gave less than 10) ─────────────
+    # ── BACKUP: JioSaavn Direct ───────────────────────────────────
+    if len(results) < 10:
+        direct_songs = fetch_from_jiosaavn_direct(search_term, limit=40)
+        results.extend(direct_songs)
+        log.info(f"[Songs] Direct got {len(direct_songs)} songs for '{search_term}'")
+
+    # ── BACKUP: Mirrors ───────────────────────────────────────────
     if len(results) < 10:
         alive_mirrors = [m for m in SAAVN_MIRRORS if is_mirror_alive(m)]
         if not alive_mirrors:
             alive_mirrors = SAAVN_MIRRORS[:]
-
-        for mirror in alive_mirrors[:3]:
+        for mirror in alive_mirrors[:2]:
             try:
                 r = requests.get(
                     f'{mirror}/api/search/songs',
-                    params={'query': search_term, 'limit': 40},
-                    timeout=8,
+                    params={'query': search_term, 'limit': 30},
+                    timeout=6,
                     headers={'User-Agent': 'Mozilla/5.0'}
                 )
                 if r.status_code != 200:
@@ -1149,33 +1181,33 @@ def get_songs():
                     raw_urls = song.get('downloadUrl') or song.get('download_url') or []
                     if not raw_urls:
                         continue
-                    best_url, quality = pick_best_quality(raw_urls if isinstance(raw_urls, list) else [{'url': raw_urls, 'quality': 'unknown'}])
+                    best_url, quality = pick_best_quality(
+                        raw_urls if isinstance(raw_urls, list)
+                        else [{'url': raw_urls, 'quality': 'unknown'}]
+                    )
                     if not best_url:
                         continue
-
                     title  = song.get('name') or song.get('title', '')
                     artist = song.get('primaryArtists') or song.get('primary_artists') or ''
                     image  = pick_image(song)
                     year   = _safe_year(song.get('releaseDate') or song.get('year', ''))
-
                     results.append({
                         'trackId':          song.get('id', random.randint(10000, 99999)),
                         'trackName':        title,
                         'artistName':       artist,
                         'artworkUrl100':    image,
                         'artworkUrl600':    image,
-                        'url':              best_url,
                         'previewUrl':       best_url,
+                        'url':              best_url,
                         'quality':          quality,
                         'releaseDate':      str(year),
                         'primaryGenreName': 'Bollywood',
                         'source':           'saavn',
                     })
-                if results:
+                if len(results) >= 10:
                     break
             except Exception as e:
                 log.warning(f"[Songs] Mirror {mirror} failed: {e}")
-                continue
 
     if is_90s and results:
         filtered = [s for s in results if 1990 <= int(s.get('releaseDate') or 0) <= 1999]
