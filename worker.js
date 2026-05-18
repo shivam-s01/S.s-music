@@ -1,26 +1,37 @@
 // ═══════════════════════════════════════════════════════════════
-// AURUM STREAM — Cloudflare Worker
-// Railway origin: https://aurum-waves.up.railway.app
-// 1000+ users handle karega — caching + rate limit + CORS
+// AURUM STREAM — Cloudflare Worker v2.1.0
+// Primary  : https://s-s-music-0uxa.onrender.com
+// Fallback : https://aurum-waves.up.railway.app
 // ═══════════════════════════════════════════════════════════════
 
-const ORIGIN = 'https://aurum-waves.up.railway.app';
+const ORIGINS = [
+  'https://s-s-music-0uxa.onrender.com',  // Primary
+  'https://aurum-waves.up.railway.app',   // Fallback
+];
 
-// Cache TTL settings
+const WORKER_VERSION = '2.1.0';
+
+// ── Cache TTL ──────────────────────────────────────────────────
 const CACHE_TTL = {
-  stream:  3600,   // Audio stream — 1 hour cache
-  song:    300,    // Song URL — 5 min cache
-  songs:   120,    // Song list — 2 min cache
-  static:  86400,  // HTML/CSS/JS — 1 day cache
+  stream:  3600,   // Audio stream  — 1 hour
+  song:    300,    // Song URL      — 5 min
+  songs:   120,    // Song list     — 2 min
+  static:  86400,  // HTML/CSS/JS   — 1 day
   default: 60,
 };
 
-// Ye routes cache NAHI honge (har baar fresh)
+// ── No-cache routes ───────────────────────────────────────────
 const NO_CACHE_ROUTES = [
   '/health',
-  '/api/yt',       // YT URLs expire hoti hain
-  '/api/download', // Download seedha stream ho
+  '/api/yt',
+  '/api/download',
 ];
+
+// ── Rate limit config ─────────────────────────────────────────
+const RATE_LIMIT = {
+  requests: 100,  // per window
+  window:   60,   // seconds
+};
 
 // ═══════════════════════════════════════════════════════════════
 // MAIN HANDLER
@@ -30,58 +41,79 @@ export default {
     const url      = new URL(request.url);
     const pathname = url.pathname;
 
-    // OPTIONS preflight — seedha return karo
+    // ── CORS Preflight ───────────────────────────────────────
     if (request.method === 'OPTIONS') {
       return corsResponse();
     }
 
-    // Cache skip routes
-    const skipCache = NO_CACHE_ROUTES.some(r => pathname.startsWith(r));
+    // ── Method check ─────────────────────────────────────────
+    if (!['GET', 'POST', 'HEAD'].includes(request.method)) {
+      return errorResponse(405, 'Method Not Allowed');
+    }
 
-    // Cache check karo (skip routes ke alawa)
-    if (!skipCache && request.method === 'GET') {
-      const cache     = caches.default;
-      const cacheKey  = new Request(request.url, request);
-      const cached    = await cache.match(cacheKey);
+    // ── Rate Limiting (KV chahiye — optional) ─────────────────
+    if (env.RATE_LIMIT_KV) {
+      const rateLimitResult = await checkRateLimit(request, env);
+      if (!rateLimitResult.allowed) {
+        return new Response(
+          JSON.stringify({ error: 'Too Many Requests', retryAfter: rateLimitResult.retryAfter }),
+          {
+            status: 429,
+            headers: {
+              'Content-Type':                'application/json',
+              'Access-Control-Allow-Origin': '*',
+              'Retry-After':                 String(rateLimitResult.retryAfter),
+              'X-RateLimit-Limit':           String(RATE_LIMIT.requests),
+              'X-RateLimit-Remaining':       '0',
+            },
+          }
+        );
+      }
+    }
+
+    const skipCache = NO_CACHE_ROUTES.some(r => pathname.startsWith(r));
+    const isStream  = pathname.startsWith('/api/stream');
+    const hasRange  = request.headers.has('Range');
+
+    // ── Cache check (GET only, no stream, no range) ───────────
+    if (!skipCache && !hasRange && !isStream && request.method === 'GET') {
+      const cache    = caches.default;
+      const cacheKey = new Request(request.url, { method: 'GET' });
+      const cached   = await cache.match(cacheKey);
 
       if (cached) {
         const resp = new Response(cached.body, cached);
-        resp.headers.set('X-Cache', 'HIT');
+        resp.headers.set('X-Cache',                    'HIT');
         resp.headers.set('Access-Control-Allow-Origin', '*');
+        addSecurityHeaders(resp.headers);
         return resp;
       }
     }
 
-    // Railway pe forward karo
+    // ── Forward to Origin (with fallback) ────────────────────
     try {
-      const originUrl = new URL(request.url);
-      originUrl.hostname = new URL(ORIGIN).hostname;
-      originUrl.protocol = 'https:';
-      originUrl.port     = '';
+      const originResp = await fetchWithFallback(request, pathname, hasRange);
 
-      const originRequest = new Request(originUrl.toString(), {
-        method:  request.method,
-        headers: buildHeaders(request),
-        body:    request.method !== 'GET' && request.method !== 'HEAD'
-                   ? request.body
-                   : undefined,
-      });
-
-      const originResp = await fetch(originRequest);
-
-      // Response headers fix karo
+      // ── Build response headers ───────────────────────────
       const respHeaders = new Headers(originResp.headers);
-      respHeaders.set('Access-Control-Allow-Origin',   '*');
-      respHeaders.set('Access-Control-Allow-Methods',  'GET, OPTIONS');
-      respHeaders.set('Access-Control-Allow-Headers',  '*');
-      respHeaders.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range');
-      respHeaders.set('X-Cache', 'MISS');
-      respHeaders.set('X-Worker', 'aurum-stream');
+      setCORSHeaders(respHeaders);
+      addSecurityHeaders(respHeaders);
+      respHeaders.set('X-Cache',          'MISS');
+      respHeaders.set('X-Worker',         'aurum-stream');
+      respHeaders.set('X-Worker-Version', WORKER_VERSION);
 
-      // Audio streaming ke liye
-      if (pathname.startsWith('/api/stream')) {
-        respHeaders.set('Accept-Ranges',  'bytes');
-        respHeaders.set('Cache-Control',  `public, max-age=${CACHE_TTL.stream}`);
+      // Stream-specific headers
+      if (isStream) {
+        respHeaders.set('Accept-Ranges', 'bytes');
+        respHeaders.set('Cache-Control', `public, max-age=${CACHE_TTL.stream}`);
+
+        // Range request — pass through as-is (audio seek support)
+        if (hasRange) {
+          return new Response(originResp.body, {
+            status:  originResp.status,
+            headers: respHeaders,
+          });
+        }
       }
 
       const response = new Response(originResp.body, {
@@ -90,89 +122,179 @@ export default {
         headers:    respHeaders,
       });
 
-      // Cache mein store karo (success responses)
+      // ── Cache store ──────────────────────────────────────
       if (
         !skipCache &&
+        !isStream &&
+        !hasRange &&
         request.method === 'GET' &&
-        originResp.status === 200 &&
-        !pathname.startsWith('/api/stream') // Audio stream cache mat karo (too large)
+        originResp.status === 200
       ) {
-        const ttl      = getTTL(pathname);
-        const toCache  = response.clone();
-        const cacheKey = new Request(request.url, request);
-
-        // Cache TTL header set karo
+        const ttl     = getTTL(pathname);
+        const toCache = response.clone();
         toCache.headers.set('Cache-Control', `public, max-age=${ttl}`);
-
-        ctx.waitUntil(caches.default.put(cacheKey, toCache));
+        ctx.waitUntil(
+          caches.default.put(new Request(request.url, { method: 'GET' }), toCache)
+        );
       }
 
       return response;
 
     } catch (err) {
-      // Railway down hai — error return karo
-      return new Response(
-        JSON.stringify({ error: 'Origin unreachable', detail: err.message }),
-        {
-          status:  502,
-          headers: {
-            'Content-Type':                'application/json',
-            'Access-Control-Allow-Origin': '*',
-          },
-        }
+      const isTimeout = err.message?.includes('timeout');
+      return errorResponse(
+        isTimeout ? 504 : 502,
+        isTimeout ? 'Gateway Timeout' : 'Origin Unreachable',
+        err.message
       );
     }
   },
 };
 
 // ═══════════════════════════════════════════════════════════════
+// DUAL ORIGIN FAILOVER
+// ═══════════════════════════════════════════════════════════════
+async function fetchWithFallback(request, pathname, hasRange) {
+  let lastErr;
+
+  for (const origin of ORIGINS) {
+    try {
+      const originUrl     = buildOriginUrl(request.url, origin);
+      const originRequest = new Request(originUrl, {
+        method:  request.method,
+        headers: buildHeaders(request, origin),
+        body:    ['GET', 'HEAD'].includes(request.method) ? undefined : request.body,
+      });
+
+      const resp = await fetchWithTimeout(originRequest, 30000);
+
+      // 5xx aaya toh next origin try karo
+      if (resp.status >= 500) {
+        lastErr = new Error(`Origin ${origin} returned ${resp.status}`);
+        continue;
+      }
+
+      // Konsa origin use hua — header mein dikhao
+      resp.headers.set('X-Origin-Used', origin);
+      return resp;
+
+    } catch (err) {
+      lastErr = err;
+      // Timeout ya network error — next origin try karo
+    }
+  }
+
+  throw lastErr;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// RATE LIMITER (Cloudflare KV based — optional)
+// Setup: Dashboard → Workers → KV → namespace banao → bind karo
+// ═══════════════════════════════════════════════════════════════
+async function checkRateLimit(request, env) {
+  const ip      = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const key     = `rl:${ip}:${Math.floor(Date.now() / 1000 / RATE_LIMIT.window)}`;
+  const current = await env.RATE_LIMIT_KV.get(key);
+  const count   = current ? parseInt(current) : 0;
+
+  if (count >= RATE_LIMIT.requests) {
+    return { allowed: false, retryAfter: RATE_LIMIT.window };
+  }
+
+  await env.RATE_LIMIT_KV.put(key, String(count + 1), {
+    expirationTtl: RATE_LIMIT.window * 2,
+  });
+
+  return { allowed: true };
+}
+
+// ═══════════════════════════════════════════════════════════════
 // HELPERS
 // ═══════════════════════════════════════════════════════════════
 
-// Route ke hisaab se cache TTL decide karo
-function getTTL(pathname) {
-  if (pathname.startsWith('/api/stream'))  return CACHE_TTL.stream;
-  if (pathname.startsWith('/api/song'))    return CACHE_TTL.song;
-  if (pathname.startsWith('/api/songs'))   return CACHE_TTL.songs;
-  if (pathname.startsWith('/api/saavn'))   return CACHE_TTL.song;
-  if (
-    pathname.endsWith('.js')   ||
-    pathname.endsWith('.css')  ||
-    pathname.endsWith('.html') ||
-    pathname.endsWith('.json') ||
-    pathname.endsWith('.png')  ||
-    pathname.endsWith('.ico')
-  ) return CACHE_TTL.static;
-  return CACHE_TTL.default;
+function buildOriginUrl(requestUrl, origin) {
+  const url    = new URL(requestUrl);
+  const org    = new URL(origin);
+  url.hostname = org.hostname;
+  url.protocol = 'https:';
+  url.port     = '';
+  return url.toString();
 }
 
-// Request headers Railway ke liye banao
-function buildHeaders(request) {
-  const headers = new Headers(request.headers);
-
-  // Real IP Railway ko bhejo
+function buildHeaders(request, origin) {
+  const headers  = new Headers(request.headers);
   const clientIP =
     request.headers.get('CF-Connecting-IP') ||
     request.headers.get('X-Forwarded-For')  ||
     '127.0.0.1';
 
-  headers.set('X-Forwarded-For',  clientIP);
-  headers.set('X-Real-IP',        clientIP);
-  headers.set('X-Forwarded-Proto','https');
+  headers.set('X-Forwarded-For',   clientIP);
+  headers.set('X-Real-IP',         clientIP);
+  headers.set('X-Forwarded-Proto', 'https');
+  headers.set('Host',              new URL(origin).hostname);
 
-  // Host header Railway ka set karo
-  headers.set('Host', new URL(ORIGIN).hostname);
+  // CF internal headers remove karo
+  headers.delete('CF-Ray');
+  headers.delete('CF-Visitor');
+  headers.delete('CF-Worker');
 
   return headers;
 }
 
-// CORS preflight response
+function setCORSHeaders(headers) {
+  headers.set('Access-Control-Allow-Origin',   '*');
+  headers.set('Access-Control-Allow-Methods',  'GET, POST, OPTIONS');
+  headers.set('Access-Control-Allow-Headers',  '*');
+  headers.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, X-Cache, X-Worker, X-Origin-Used');
+}
+
+function addSecurityHeaders(headers) {
+  headers.set('X-Content-Type-Options', 'nosniff');
+  headers.set('X-Frame-Options',        'SAMEORIGIN');
+  headers.set('Referrer-Policy',        'strict-origin-when-cross-origin');
+}
+
+function getTTL(pathname) {
+  if (pathname.startsWith('/api/stream')) return CACHE_TTL.stream;
+  if (pathname.startsWith('/api/songs'))  return CACHE_TTL.songs;   // songs pehle (longer prefix)
+  if (pathname.startsWith('/api/song'))   return CACHE_TTL.song;
+  if (pathname.startsWith('/api/saavn'))  return CACHE_TTL.song;
+  if (/\.(js|css|html|json|png|ico|webp|woff2?)$/.test(pathname)) return CACHE_TTL.static;
+  return CACHE_TTL.default;
+}
+
+async function fetchWithTimeout(request, ms) {
+  const controller = new AbortController();
+  const timer      = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(request, { signal: controller.signal });
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error(`Request timeout after ${ms}ms`);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function errorResponse(status, message, detail = null) {
+  return new Response(
+    JSON.stringify({ error: message, ...(detail && { detail }) }),
+    {
+      status,
+      headers: {
+        'Content-Type':                'application/json',
+        'Access-Control-Allow-Origin': '*',
+      },
+    }
+  );
+}
+
 function corsResponse() {
   return new Response(null, {
     status: 204,
     headers: {
       'Access-Control-Allow-Origin':  '*',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
       'Access-Control-Allow-Headers': '*',
       'Access-Control-Max-Age':       '86400',
     },
