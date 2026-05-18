@@ -10,25 +10,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
+
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+
       - uses: android-actions/setup-android@v3
+
       - name: Install Bubblewrap
         run: npm install -g @bubblewrap/cli
+
       - name: Configure Bubblewrap
         run: |
           mkdir -p ~/.bubblewrap
-          cat > ~/.bubblewrap/config.json << 'EOF'
-          {
-            "jdkPath": "$JAVA_HOME",
-            "androidSdkPath": "$ANDROID_SDK_ROOT"
-          }
-          EOF
+          echo "{\"jdkPath\": \"$JAVA_HOME\", \"androidSdkPath\": \"$ANDROID_HOME\"}" > ~/.bubblewrap/config.json
+          cat ~/.bubblewrap/config.json
+
       - name: Create Manifest
         run: |
           cat > twa-manifest.json << 'EOF'
@@ -70,6 +72,7 @@ jobs:
             "shortcuts": []
           }
           EOF
+
       - name: Generate Keystore
         run: |
           keytool -genkeypair -v \
@@ -80,16 +83,19 @@ jobs:
             -storepass aurum2025 \
             -keypass aurum2025 \
             -dname "CN=Aurum,OU=Dev,O=Aurum,L=India,ST=UP,C=IN"
+
       - name: Build APK
         run: bubblewrap build --manifest twa-manifest.json --skipPwaValidation
         env:
           BUBBLEWRAP_KEYSTORE_PASSWORD: aurum2025
           BUBBLEWRAP_KEY_PASSWORD: aurum2025
+
       - name: Get Fingerprint
         run: |
           keytool -list -v -keystore aurum-keystore.jks \
             -alias aurum -storepass aurum2025 \
             | grep "SHA256"
+
       - uses: actions/upload-artifact@v4
         with:
           name: Aurum-APK
