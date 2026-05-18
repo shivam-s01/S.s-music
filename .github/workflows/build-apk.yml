@@ -28,12 +28,7 @@ jobs:
       - name: Configure Bubblewrap
         run: |
           mkdir -p ~/.bubblewrap
-          cat > ~/.bubblewrap/config.json << 'EOF'
-          {
-            "jdkPath": "$JAVA_HOME",
-            "androidSdkPath": "$ANDROID_SDK_ROOT"
-          }
-          EOF
+          echo "{\"jdkPath\": \"$JAVA_HOME\", \"androidSdkPath\": \"/usr/local/lib/android/sdk\"}" > ~/.bubblewrap/config.json
 
       - name: Create Manifest
         run: |
