@@ -28,8 +28,12 @@ jobs:
       - name: Configure Bubblewrap
         run: |
           mkdir -p ~/.bubblewrap
-          echo "{\"jdkPath\": \"$JAVA_HOME\", \"androidSdkPath\": \"$ANDROID_HOME\"}" > ~/.bubblewrap/config.json
-          cat ~/.bubblewrap/config.json
+          cat > ~/.bubblewrap/config.json << 'EOF'
+          {
+            "jdkPath": "$JAVA_HOME",
+            "androidSdkPath": "$ANDROID_SDK_ROOT"
+          }
+          EOF
 
       - name: Create Manifest
         run: |
@@ -85,7 +89,7 @@ jobs:
             -dname "CN=Aurum,OU=Dev,O=Aurum,L=India,ST=UP,C=IN"
 
       - name: Build APK
-        run: bubblewrap build --manifest twa-manifest.json --skipPwaValidation
+        run: echo "no" | bubblewrap build --manifest twa-manifest.json --skipPwaValidation
         env:
           BUBBLEWRAP_KEYSTORE_PASSWORD: aurum2025
           BUBBLEWRAP_KEY_PASSWORD: aurum2025
