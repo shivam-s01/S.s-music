@@ -1,0 +1,100 @@
+name: Build Aurum APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: android-actions/setup-android@v3
+      - name: Install Bubblewrap
+        run: npm install -g @bubblewrap/cli
+      - name: Configure Bubblewrap
+        run: |
+          mkdir -p ~/.bubblewrap
+          cat > ~/.bubblewrap/config.json << 'EOF'
+          {
+            "jdkPath": "$JAVA_HOME",
+            "androidSdkPath": "$ANDROID_SDK_ROOT"
+          }
+          EOF
+      - name: Create Manifest
+        run: |
+          cat > twa-manifest.json << 'EOF'
+          {
+            "packageId": "com.aurum.music",
+            "host": "aurum-waves.up.railway.app",
+            "name": "Aurum",
+            "launcherName": "Aurum",
+            "display": "standalone",
+            "themeColor": "#000000",
+            "navigationColor": "#000000",
+            "navigationColorDark": "#000000",
+            "navigationDividerColor": "#000000",
+            "navigationDividerColorDark": "#000000",
+            "backgroundColor": "#050508",
+            "enableNotifications": false,
+            "startUrl": "/",
+            "iconUrl": "https://aurum-waves.up.railway.app/static/icon-512.png",
+            "maskableIconUrl": "https://aurum-waves.up.railway.app/static/icon-512.png",
+            "monochromeIconUrl": "https://aurum-waves.up.railway.app/static/icon-512.png",
+            "appVersion": "1.0.0",
+            "appVersionCode": 1,
+            "signingKey": {
+              "path": "aurum-keystore.jks",
+              "alias": "aurum"
+            },
+            "splashScreenFadeOutDuration": 300,
+            "enableSiteSettingsShortcut": true,
+            "isChromeOSOnly": false,
+            "isMetaQuest": false,
+            "fullScopeUrl": "https://aurum-waves.up.railway.app/",
+            "minSdkVersion": 21,
+            "orientation": "portrait",
+            "fingerprints": [],
+            "generatorApp": "bubblewrap-cli",
+            "webManifestUrl": "https://aurum-waves.up.railway.app/manifest.json",
+            "serviceAccountJsonFile": "",
+            "features": {},
+            "shortcuts": []
+          }
+          EOF
+      - name: Generate Keystore
+        run: |
+          keytool -genkeypair -v \
+            -keystore aurum-keystore.jks \
+            -alias aurum \
+            -keyalg RSA -keysize 2048 \
+            -validity 10000 \
+            -storepass aurum2025 \
+            -keypass aurum2025 \
+            -dname "CN=Aurum,OU=Dev,O=Aurum,L=India,ST=UP,C=IN"
+      - name: Build APK
+        run: bubblewrap build --manifest twa-manifest.json --skipPwaValidation
+        env:
+          BUBBLEWRAP_KEYSTORE_PASSWORD: aurum2025
+          BUBBLEWRAP_KEY_PASSWORD: aurum2025
+      - name: Get Fingerprint
+        run: |
+          keytool -list -v -keystore aurum-keystore.jks \
+            -alias aurum -storepass aurum2025 \
+            | grep "SHA256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Aurum-APK
+          path: |
+            app-release-signed.apk
+            app/build/outputs/apk/release/*.apk
+          if-no-files-found: warn
+          retention-days: 30
