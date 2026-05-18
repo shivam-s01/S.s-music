@@ -195,6 +195,9 @@ function loadTrack(song, autoplay = true) {
   _autoFetchFullSong(song);
   clearTimeout(_recFetchTimeout);
   _recFetchTimeout = setTimeout(() => fetchRecommendations(song), 800);
+
+  // ── CHANGE 1: Fetch lyrics on every track load ──
+  fetchLyrics(song);
 }
 
 function playSongs(queue, index) {
@@ -218,7 +221,7 @@ async function _autoFetchFullSong(song) {
     const fallbackQ = encodeURIComponent(`${cleanTitle} ${cleanArtist}`);
     const artistQ   = encodeURIComponent(cleanArtist);
 
-const r = await fetch(`/api/saavn?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`, { signal: ctrl.signal });
+    const r = await fetch(`/api/saavn?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`, { signal: ctrl.signal });
     if (!r.ok) throw new Error('api-err');
     const d = await r.json();
 
@@ -513,10 +516,41 @@ function updateNextStrip() {
     : (currentIndex + 1) % currentQueue.length;
   const nextSong = currentQueue[nextIdx];
   if (!nextSong) { strip.style.display = 'none'; return; }
+
+  // ── Smooth reveal animation ──
+  const wasHidden = strip.style.display === 'none' || strip.style.display === '';
   strip.style.display = '';
-  setImgSrc(document.getElementById('fp-next-art'), getArtUrl(nextSong, '300x300'));
-  const nt = document.getElementById('fp-next-title'); if (nt) nt.textContent = nextSong.trackName || 'Unknown';
-  const na = document.getElementById('fp-next-artist'); if (na) na.textContent = nextSong.artistName || 'Unknown';
+  if (wasHidden) {
+    strip.style.opacity = '0';
+    strip.style.transform = 'translateY(8px)';
+    strip.style.transition = 'opacity 0.35s cubic-bezier(0.22,1,0.36,1), transform 0.35s cubic-bezier(0.22,1,0.36,1)';
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      strip.style.opacity = '';
+      strip.style.transform = '';
+      setTimeout(() => { strip.style.transition = ''; }, 380);
+    }));
+  }
+
+  const nextArtEl   = document.getElementById('fp-next-art');
+  const nextTitleEl = document.getElementById('fp-next-title');
+  const nextArtistEl = document.getElementById('fp-next-artist');
+
+  // ── Cross-fade art when song changes ──
+  if (nextArtEl) {
+    const newSrc = getArtUrl(nextSong, '300x300');
+    if (nextArtEl.dataset.currentSrc !== newSrc) {
+      nextArtEl.dataset.currentSrc = newSrc;
+      nextArtEl.style.transition = 'opacity 0.25s ease';
+      nextArtEl.style.opacity = '0';
+      setTimeout(() => {
+        setImgSrc(nextArtEl, newSrc);
+        nextArtEl.style.opacity = '';
+      }, 180);
+    }
+  }
+
+  if (nextTitleEl)  nextTitleEl.textContent  = nextSong.trackName  || 'Unknown';
+  if (nextArtistEl) nextArtistEl.textContent = nextSong.artistName || 'Unknown';
 }
 
 function updateMediaSession() {
@@ -1301,6 +1335,8 @@ async function fetchRecommendations(song) {
       const newRecs = recs.filter(s => !existingIds.has(String(s.trackId))).slice(0, 8);
       currentQueue = [...currentQueue, ...newRecs];
       if (queuePanelOpen) updateQueuePanel();
+      // ── CHANGE 2: Refresh next strip after recs load ──
+      updateNextStrip();
     }
   } catch(e) {}
 }
@@ -2096,7 +2132,7 @@ function closeQualitySheet(e) {
 }
 function selectQuality(q) { if (q === 'preview') { _fallbackToPreview(currentTrack); closeQualitySheet(); } else { if (_fullSongAbort) { _fullSongAbort.abort(); _fullSongAbort = null; } _autoFetchFullSong(currentTrack); closeQualitySheet(); } }
 
-// ─── DOWNLOAD MODAL — FIXED ───────────────────────────────────────────────────
+// ─── DOWNLOAD MODAL ───────────────────────────────────────────────────────────
 function openDownloadModal() {
   const song = _downloadSong || currentTrack;
   if (!song) { showToast('Play a song first'); return; }
@@ -2114,7 +2150,6 @@ function openDownloadModal() {
     if (badge) { badge.textContent = '—'; badge.className = 'dl-kbps-badge b128'; }
   }
 
-  // ✅ KEY FIX: inline display:none hata do pehle, phir class add karo
   const modal = document.getElementById('download-modal');
   modal.style.display = '';
   modal.classList.add('open');
@@ -2133,7 +2168,6 @@ async function triggerDownload(quality) {
   _downloadSong = null;
   if (!song) { showToast('No track selected'); return; }
 
-  // Modal band karo
   const modal = document.getElementById('download-modal');
   modal.classList.remove('open');
   modal.style.display = 'none';
@@ -2141,7 +2175,6 @@ async function triggerDownload(quality) {
   const cleanTitle  = (song.trackName  || 'audio').replace(/[/\?%*:|"<>]/g, '-');
   const cleanArtist = (song.artistName || '').replace(/[/\?%*:|"<>]/g, '-');
 
-  // ── 30s Preview ──────────────────────────────────────────────────────────
   if (quality === 'preview') {
     try {
       showToast('Downloading preview…');
@@ -2160,7 +2193,6 @@ async function triggerDownload(quality) {
     return;
   }
 
-  // ── Ringtone (30s trim) ───────────────────────────────────────────────────
   if (quality === 'ringtone') {
     try {
       showToast('Saving ringtone…');
@@ -2179,7 +2211,6 @@ async function triggerDownload(quality) {
     return;
   }
 
-  // ── Full Song — /api/download endpoint use karo ───────────────────────────
   if (quality === 'full') {
     showToast('Downloading full song…');
     try {
@@ -2196,7 +2227,6 @@ async function triggerDownload(quality) {
     return;
   }
 
-  // ── Owner Gift — 320 kbps guaranteed ─────────────────────────────────────
   if (quality === 'gift') {
     showToast('Fetching 320 kbps…');
     try {
@@ -2213,6 +2243,44 @@ async function triggerDownload(quality) {
       showToast('320 kbps download started ✓');
     } catch(e) { showToast('Owner Gift failed'); }
     return;
+  }
+}
+
+// ─── LYRICS ───────────────────────────────────────────────────────────────────
+// ── CHANGE 3: fetchLyrics — auto-shows/hides the lyrics section ──
+async function fetchLyrics(song) {
+  const wrap = document.getElementById('fp-lyrics-wrap');
+  const el   = document.getElementById('fp-lyrics');
+  if (!wrap || !el) return;
+
+  // Hide + clear while loading
+  wrap.style.opacity   = '0';
+  wrap.style.transform = 'translateY(6px)';
+  wrap.style.display   = '';
+  el.textContent       = '';
+
+  try {
+    const artist = encodeURIComponent((song.artistName || '').split(/[&,]/)[0].trim());
+    const title  = encodeURIComponent(song.trackName || '');
+    const r = await fetch(`https://api.lyrics.ovh/v1/${artist}/${title}`);
+    if (!r.ok) throw new Error('not found');
+    const d = await r.json();
+    if (!d.lyrics || !d.lyrics.trim()) throw new Error('empty');
+
+    el.textContent = d.lyrics.trim();
+
+    // Smooth reveal
+    requestAnimationFrame(() => {
+      wrap.style.transition = 'opacity 0.4s cubic-bezier(0.22,1,0.36,1), transform 0.4s cubic-bezier(0.22,1,0.36,1)';
+      wrap.style.opacity    = '1';
+      wrap.style.transform  = 'translateY(0)';
+      setTimeout(() => { wrap.style.transition = ''; }, 420);
+    });
+  } catch(e) {
+    // No lyrics available — hide cleanly
+    wrap.style.display = 'none';
+    wrap.style.opacity = '';
+    wrap.style.transform = '';
   }
 }
 
@@ -2242,12 +2310,4 @@ window.addEventListener('DOMContentLoaded', () => {
   setVh();
   initViz();
   buildHomeSections('all');
-  renderLibrary();
-  renderSearchIdle();
-  setupMiniGesture();
-  setupFullPlayerGesture();
-  setupArtSwipeGesture();
-  setupShakeGesture();
-  if (isTV) setupTVNavigation();
-  requestPersistentStorage();
-});
+  rende
