@@ -8,6 +8,7 @@ import random
 import time
 import threading
 import sys
+import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 from urllib.parse import urlparse, urlencode, quote
 from flask_limiter import Limiter
@@ -15,6 +16,17 @@ from flask_limiter.util import get_remote_address
 import atexit
 
 sys.setrecursionlimit(10000)
+
+# ── DES Decrypt (JioSaavn 320kbps) ──────────────────────────────────────────
+try:
+    from Crypto.Cipher import DES
+    DES_AVAILABLE = True
+except ImportError:
+    try:
+        from Cryptodome.Cipher import DES
+        DES_AVAILABLE = True
+    except ImportError:
+        DES_AVAILABLE = False
 
 try:
     import yt_dlp
@@ -60,7 +72,6 @@ SAAVN_MIRRORS = [
     'https://saavn-api-eight.vercel.app',
 ]
 
-# ── Invidious public instances — bot-free YT audio ─────────────
 INVIDIOUS_INSTANCES = [
     'https://invidious.io.lol',
     'https://inv.nadeko.net',
@@ -72,7 +83,6 @@ INVIDIOUS_INSTANCES = [
     'https://invidious.perennialte.ch',
 ]
 
-# ── Piped API instances — extra fallback ────────────────────────
 PIPED_INSTANCES = [
     'https://pipedapi.kavin.rocks',
     'https://piped-api.garudalinux.org',
@@ -81,29 +91,15 @@ PIPED_INSTANCES = [
 ]
 
 ALLOWED_STREAM_DOMAINS = [
-    'akamaized.net',
-    'jiocdn.com',
-    'saavncdn.com',
-    'cf.saavncdn.com',
-    'aac.saavncdn.com',
-    'static.saavncdn.com',
-    'c.saavncdn.com',
-    'h.saavncdn.com',
-    'googlevideo.com',
-    'youtube.com',
-    'ytimg.com',
-    'invidious.io.lol',
-    'inv.nadeko.net',
-    'invidious.privacydev.net',
-    'iv.datura.network',
-    'invidious.fdn.fr',
-    'invidious.lunar.icu',
-    'yt.drgnz.club',
-    'invidious.perennialte.ch',
-    'pipedapi.kavin.rocks',
-    'piped-api.garudalinux.org',
-    'api.piped.yt',
-    'pipedapi.adminforge.de',
+    'akamaized.net', 'jiocdn.com', 'saavncdn.com',
+    'cf.saavncdn.com', 'aac.saavncdn.com', 'static.saavncdn.com',
+    'c.saavncdn.com', 'h.saavncdn.com', 'googlevideo.com',
+    'youtube.com', 'ytimg.com',
+    'invidious.io.lol', 'inv.nadeko.net', 'invidious.privacydev.net',
+    'iv.datura.network', 'invidious.fdn.fr', 'invidious.lunar.icu',
+    'yt.drgnz.club', 'invidious.perennialte.ch',
+    'pipedapi.kavin.rocks', 'piped-api.garudalinux.org',
+    'api.piped.yt', 'pipedapi.adminforge.de',
 ]
 
 QUALITY_RANK = {
@@ -114,69 +110,200 @@ QUALITY_RANK = {
     '12kbps':  1, '12':  1,
 }
 
-# ── 90s seeds ───────────────────────────────────────────────────
-NINETIES_SEEDS = [
-    "Kumar Sanu hits", "Udit Narayan 90s", "Alka Yagnik 90s",
-    "Lata Mangeshkar 90s", "Sonu Nigam 90s hits",
-    "Kavita Krishnamurthy songs", "Asha Bhosle 90s",
-    "Abhijeet Bhattacharya hits", "Shankar Mahadevan 90s",
-    "AR Rahman 90s", "Anu Malik 90s hits",
-    "Nadeem Shravan songs", "Jatin Lalit songs",
-    "Kumar Sanu Alka Yagnik duets", "90s Bollywood superhits",
-    "Kishore Kumar hits", "Mohammed Rafi songs",
-    "Dilwale Dulhania Le Jayenge songs", "Hum Aapke Hain Koun songs",
-    "Raja Hindustani songs", "Dil To Pagal Hai songs",
-]
-
-NINETIES_TRIGGERS = [
-    '90', 'purane', 'purana', 'purani', 'old', 'retro',
-    'classic', 'nineties', 'throwback', 'evergreen', 'gaane',
-    'vintage', 'purani yaadein',
-]
-
-# ── Category → smart YT search query builder ────────────────────
-CATEGORY_QUERY_TEMPLATES = {
-    'bhojpuri':    '{title} {artist} bhojpuri full song audio',
-    'dj':          '{title} {artist} dj remix full song',
-    'remix':       '{title} {artist} remix full audio',
-    'nepali':      '{title} {artist} nepali full song',
-    'haryanvi':    '{title} {artist} haryanvi full song',
-    'maithili':    '{title} {artist} maithili full audio',
-    'awadhi':      '{title} {artist} awadhi full song',
-    'pahadi':      '{title} {artist} pahadi full song',
-    'chhattisgarhi': '{title} {artist} chhattisgarhi full song',
-    'odia':        '{title} {artist} odia full song audio',
-    'assamese':    '{title} {artist} assamese full song',
-    'punjabi':     '{title} {artist} punjabi full song audio',
-    '90s':         '{title} {artist} 90s bollywood full song audio',
-    'default':     '{title} {artist} full song audio official',
+# ═══════════════════════════════════════════════════════════════
+# PREMIUM HOME SECTION QUERIES
+# Har section ke liye curated Bollywood/Hindi queries
+# ═══════════════════════════════════════════════════════════════
+SECTION_QUERIES = {
+    'featured': [
+        'arijit singh best songs', 'bollywood superhits 2024',
+        'atif aslam romantic songs', 'jubin nautiyal hits',
+        'shreya ghoshal songs', 'armaan malik songs',
+    ],
+    'trending': [
+        'trending bollywood songs 2024', 'new hindi songs hits',
+        'latest bollywood chartbusters', 'top hindi songs right now',
+        'viral bollywood songs', 'bollywood top 10 hits',
+    ],
+    'mood': [
+        'arijit singh sad songs', 'heartbreak hindi songs',
+        'emotional bollywood songs', 'sad hindi songs midnight',
+        'breakup songs hindi', 'tere bina songs',
+    ],
+    'classic': [
+        'kumar sanu 90s hits', 'udit narayan romantic songs',
+        'lata mangeshkar classics', 'kishore kumar hits',
+        '90s bollywood superhits', 'mohammad rafi songs',
+        'asha bhosle hits', 'old is gold bollywood',
+    ],
+    'hiphop': [
+        'divine rap songs', 'emiway bantai songs',
+        'badshah rap hits', 'yo yo honey singh songs',
+        'desi hip hop india', 'gully boy songs',
+        'divine gully gang', 'rap songs hindi',
+    ],
+    'lofi': [
+        'lofi hindi songs chill', 'bollywood lofi remix',
+        'hindi lofi beats study', 'arijit singh lofi',
+        'lofi indian songs relaxing', 'chill hindi songs night',
+    ],
+    'arijit': [
+        'arijit singh romantic hits', 'arijit singh top songs',
+        'arijit singh soulful songs', 'arijit singh tum hi ho',
+        'arijit singh best 2024',
+    ],
+    'workout': [
+        'badshah party songs', 'yo yo honey singh party',
+        'bollywood gym songs', 'workout hindi songs energetic',
+        'punjabi party songs dhol', 'dance hindi songs upbeat',
+    ],
+    'new': [
+        'new hindi songs 2024', 'latest bollywood releases',
+        'new songs this week hindi', 'fresh bollywood hits 2024',
+        'new romantic hindi songs', 'latest arijit jubin shreya',
+    ],
+    'punjabi': [
+        'sidhu moosewala songs', 'diljit dosanjh hits',
+        'punjabi superhits songs', 'ap dhillon songs',
+        'karan aujla songs', 'punjabi romantic songs',
+    ],
+    'romantic': [
+        'romantic hindi songs evergreen', 'love songs bollywood',
+        'tere bina bollywood', 'pyaar songs hindi',
+        'romantic arijit shreya duets', 'love bollywood songs 2024',
+    ],
+    'indie': [
+        'prateek kuhad songs', 'when we were young hindi',
+        'the local train songs', 'zaeden songs',
+        'ritviz songs', 'indian indie songs',
+        'seedhe maut songs', 'parvaaz songs',
+    ],
 }
 
-# ── Keywords that force YT (Saavn pe nahi milta) ────────────────
-FORCE_YT_KEYWORDS = [
-    'nepali', 'nepal', 'bhojpuri', 'maithili', 'awadhi',
-    'pahadi', 'haryanvi', 'chhattisgarhi', 'garhwali',
-    'kumaoni', 'dogri', 'odia', 'assamese',
-    'dj remix', 'dj mix', 'remix', 'dj version',
-]
+# Homepage ke liye genre-wise primary queries
+GENRE_HOMEPAGE_QUERIES = {
+    'all':       'arijit singh bollywood hits',
+    'bollywood': 'bollywood romantic songs hits',
+    'hiphop':    'divine emiway bantai desi rap',
+    'pop':       'pop hits bollywood jubin armaan',
+    'rock':      'indian rock songs hindi',
+    'indie':     'prateek kuhad ritviz indie hindi',
+    'rnb':       'bollywood rnb soul songs',
+    'lofi':      'lofi hindi chill bollywood remix',
+}
 
-# ── Mirror + Invidious health tracking ──────────────────────────
+# ═══════════════════════════════════════════════════════════════
+# JIOSAAVN DES DECRYPT — 320kbps magic
+# ═══════════════════════════════════════════════════════════════
+SAAVN_DES_KEY = b'38346591'
+
+def _decrypt_saavn_url(enc_url: str) -> str:
+    """
+    JioSaavn encrypted_media_url → real CDN URL
+    Same algo as official app uses internally
+    """
+    if not DES_AVAILABLE:
+        return ''
+    try:
+        # Base64 decode
+        enc_bytes = base64.b64decode(enc_url)
+
+        # DES ECB decrypt
+        cipher    = DES.new(SAAVN_DES_KEY, DES.MODE_ECB)
+        decrypted = cipher.decrypt(enc_bytes)
+
+        # Remove PKCS5 padding
+        pad_len = decrypted[-1]
+        if isinstance(pad_len, int) and 1 <= pad_len <= 8:
+            decrypted = decrypted[:-pad_len]
+
+        url = decrypted.decode('utf-8', errors='ignore').strip()
+
+        # Quality upgrade — always try 320kbps first
+        url = url.replace('_96.mp4',  '_320.mp4')
+        url = url.replace('_160.mp4', '_320.mp4')
+        url = url.replace('_48.mp4',  '_320.mp4')
+        url = url.replace('_12.mp4',  '_320.mp4')
+        url = url.replace('_96.mp3',  '_320.mp3')
+        url = url.replace('_160.mp3', '_320.mp3')
+
+        return url if url.startswith('http') else ''
+    except Exception as e:
+        log.warning(f"[DES] Decrypt failed: {e}")
+        return ''
+
+def _get_quality_from_url(url: str) -> str:
+    """URL se quality detect karo"""
+    if '_320' in url: return '320kbps'
+    if '_160' in url: return '160kbps'
+    if '_96'  in url: return '96kbps'
+    if '_48'  in url: return '48kbps'
+    return 'unknown'
+
+# ─── JioSaavn ke naye API format se URLs extract karo ───────────────────────
+def _extract_download_urls(song: dict) -> list:
+    """
+    Multiple formats try karo:
+    1. downloadUrl array (mirror API format)
+    2. download_url string
+    3. more_info.encrypted_media_url → DES decrypt
+    4. more_info.media_preview_url
+    """
+    urls = []
+
+    # Format 1: downloadUrl array (mirror format)
+    raw = song.get('downloadUrl') or song.get('download_url') or []
+    if isinstance(raw, list) and raw:
+        return raw  # Already in correct format
+
+    if isinstance(raw, str) and raw.startswith('http'):
+        return [{'url': raw, 'quality': _get_quality_from_url(raw)}]
+
+    # Format 2: more_info.encrypted_media_url (direct JioSaavn API)
+    more_info = song.get('more_info', {})
+    if isinstance(more_info, dict):
+        enc_url = more_info.get('encrypted_media_url', '')
+        if enc_url and DES_AVAILABLE:
+            decrypted = _decrypt_saavn_url(enc_url)
+            if decrypted:
+                urls.append({'url': decrypted, 'quality': '320kbps'})
+                log.info(f"[DES] ✓ Decrypted 320kbps URL")
+
+        # Also try 160kbps and 96kbps as fallbacks
+        enc_160 = more_info.get('encrypted_media_url_160', '')
+        if enc_160 and DES_AVAILABLE:
+            d160 = _decrypt_saavn_url(enc_160)
+            if d160:
+                urls.append({'url': d160, 'quality': '160kbps'})
+
+        # Preview URL as last resort
+        preview = more_info.get('media_preview_url', '')
+        if preview and preview.startswith('http'):
+            urls.append({'url': preview, 'quality': '96kbps'})
+
+    # Format 3: vlink (sometimes direct)
+    vlink = song.get('vlink', '')
+    if vlink and vlink.startswith('http'):
+        urls.append({'url': vlink, 'quality': _get_quality_from_url(vlink)})
+
+    return urls
+
+# ═══════════════════════════════════════════════════════════════
+# HEALTH TRACKING
+# ═══════════════════════════════════════════════════════════════
 _mirror_failures    = {}
 _invidious_failures = {}
 _piped_failures     = {}
-_MIRROR_COOLDOWN    = 300   # 5 min
-_INV_COOLDOWN       = 120   # 2 min (faster recovery)
+_MIRROR_COOLDOWN    = 300
+_INV_COOLDOWN       = 120
 
-# ── YT cache ────────────────────────────────────────────────────
 _yt_url_cache  = {}
 _YT_CACHE_TTL  = 3600
 _inv_url_cache = {}
 _INV_CACHE_TTL = 1800
 
-# ── Semaphores ──────────────────────────────────────────────────
 _yt_semaphore = threading.Semaphore(3)
 
-# ── Thread pools ────────────────────────────────────────────────
 _saavn_executor = ThreadPoolExecutor(max_workers=len(SAAVN_MIRRORS), thread_name_prefix='saavn')
 _yt_executor    = ThreadPoolExecutor(max_workers=3, thread_name_prefix='ytdlp')
 _inv_executor   = ThreadPoolExecutor(max_workers=4, thread_name_prefix='invidious')
@@ -184,6 +311,29 @@ _inv_executor   = ThreadPoolExecutor(max_workers=4, thread_name_prefix='invidiou
 atexit.register(_saavn_executor.shutdown, wait=False)
 atexit.register(_yt_executor.shutdown,    wait=False)
 atexit.register(_inv_executor.shutdown,   wait=False)
+
+def _is_alive(store, key, cooldown):
+    ts = store.get(key)
+    return not ts or (time.time() - ts) >= cooldown
+
+def _mark_failed(store, key):
+    store[key] = time.time()
+    log.warning(f"[Health] Dead: {key}")
+
+def _mark_ok(store, key):
+    store.pop(key, None)
+
+def is_mirror_alive(m):    return _is_alive(_mirror_failures, m, _MIRROR_COOLDOWN)
+def mark_mirror_failed(m): _mark_failed(_mirror_failures, m)
+def mark_mirror_ok(m):     _mark_ok(_mirror_failures, m)
+
+def is_inv_alive(i):    return _is_alive(_invidious_failures, i, _INV_COOLDOWN)
+def mark_inv_failed(i): _mark_failed(_invidious_failures, i)
+def mark_inv_ok(i):     _mark_ok(_invidious_failures, i)
+
+def is_piped_alive(p):    return _is_alive(_piped_failures, p, _INV_COOLDOWN)
+def mark_piped_failed(p): _mark_failed(_piped_failures, p)
+def mark_piped_ok(p):     _mark_ok(_piped_failures, p)
 
 # ═══════════════════════════════════════════════════════════════
 # CORS
@@ -235,32 +385,6 @@ def serve_static(filename):
     return jsonify({'error': 'Not found'}), 404
 
 # ═══════════════════════════════════════════════════════════════
-# HEALTH TRACKING
-# ═══════════════════════════════════════════════════════════════
-def _is_alive(store, key, cooldown):
-    ts = store.get(key)
-    return not ts or (time.time() - ts) >= cooldown
-
-def _mark_failed(store, key, cooldown_label=''):
-    store[key] = time.time()
-    log.warning(f"[Health] Dead: {key}")
-
-def _mark_ok(store, key):
-    store.pop(key, None)
-
-def is_mirror_alive(m):    return _is_alive(_mirror_failures, m, _MIRROR_COOLDOWN)
-def mark_mirror_failed(m): _mark_failed(_mirror_failures, m)
-def mark_mirror_ok(m):     _mark_ok(_mirror_failures, m)
-
-def is_inv_alive(i):    return _is_alive(_invidious_failures, i, _INV_COOLDOWN)
-def mark_inv_failed(i): _mark_failed(_invidious_failures, i)
-def mark_inv_ok(i):     _mark_ok(_invidious_failures, i)
-
-def is_piped_alive(p):    return _is_alive(_piped_failures, p, _INV_COOLDOWN)
-def mark_piped_failed(p): _mark_failed(_piped_failures, p)
-def mark_piped_ok(p):     _mark_ok(_piped_failures, p)
-
-# ═══════════════════════════════════════════════════════════════
 # HELPERS
 # ═══════════════════════════════════════════════════════════════
 def clean_query(text):
@@ -299,11 +423,10 @@ def _safe_year(date_str):
         return 0
 
 def detect_genre(q, artist=''):
-    """Detect genre/category from query string"""
     text = (q + ' ' + artist).lower()
     if any(k in text for k in ['bhojpuri', 'pawan singh', 'khesari', 'nirahua']):
         return 'bhojpuri'
-    if any(k in text for k in ['dj remix', 'dj mix', ' dj ', 'remix', 'mix']):
+    if any(k in text for k in ['dj remix', 'dj mix', ' dj ', 'remix']):
         return 'dj'
     if any(k in text for k in ['nepali', 'nepal']):
         return 'nepali'
@@ -317,9 +440,24 @@ def detect_genre(q, artist=''):
         return 'odia'
     if any(k in text for k in ['assamese', 'assam']):
         return 'assamese'
-    if any(k in text for k in NINETIES_TRIGGERS):
-        return '90s'
     return 'default'
+
+FORCE_YT_KEYWORDS = [
+    'nepali', 'nepal', 'bhojpuri', 'maithili', 'awadhi',
+    'pahadi', 'haryanvi', 'chhattisgarhi', 'garhwali',
+    'kumaoni', 'dogri', 'odia', 'assamese',
+    'dj remix', 'dj mix', 'remix', 'dj version',
+]
+
+CATEGORY_QUERY_TEMPLATES = {
+    'bhojpuri':    '{title} {artist} bhojpuri full song audio',
+    'dj':          '{title} {artist} dj remix full song',
+    'remix':       '{title} {artist} remix full audio',
+    'nepali':      '{title} {artist} nepali full song',
+    'haryanvi':    '{title} {artist} haryanvi full song',
+    'punjabi':     '{title} {artist} punjabi full song audio',
+    'default':     '{title} {artist} full song audio official',
+}
 
 def build_yt_query(title, artist='', genre='default'):
     template = CATEGORY_QUERY_TEMPLATES.get(genre, CATEGORY_QUERY_TEMPLATES['default'])
@@ -330,10 +468,8 @@ def build_yt_query(title, artist='', genre='default'):
 # SEARCH MATCHING
 # ═══════════════════════════════════════════════════════════════
 def levenshtein(s1, s2):
-    if len(s1) < len(s2):
-        s1, s2 = s2, s1
-    if not s2:
-        return len(s1)
+    if len(s1) < len(s2): s1, s2 = s2, s1
+    if not s2: return len(s1)
     prev = list(range(len(s2) + 1))
     for c1 in s1:
         curr = [prev[0] + 1]
@@ -375,7 +511,7 @@ def dynamic_min_score(query):
     length = len(normalize(query).replace(' ', ''))
     if length <= 3:   return 0.10
     elif length <= 6: return 0.30
-    else:             return 0.45
+    else:             return 0.40
 
 def has_word_match(query, song_title):
     q_words = normalize(query).split()
@@ -384,12 +520,10 @@ def has_word_match(query, song_title):
     for qw in q_words:
         if len(qw) <= 3:
             for tw in t_words:
-                if tw.startswith(qw):
-                    return True
+                if tw.startswith(qw): return True
             continue
         for tw in t_words:
-            if fuzzy_word_match(qw, tw) >= 0.50:
-                return True
+            if fuzzy_word_match(qw, tw) >= 0.50: return True
     return False
 
 # ═══════════════════════════════════════════════════════════════
@@ -443,440 +577,31 @@ def pick_image(song):
     return ''
 
 # ═══════════════════════════════════════════════════════════════
-# INVIDIOUS — Bot-free YT audio (PRIMARY YT METHOD)
-# ═══════════════════════════════════════════════════════════════
-def _inv_cache_get(key):
-    entry = _inv_url_cache.get(key)
-    if entry:
-        url, ts = entry
-        if time.time() - ts < _INV_CACHE_TTL:
-            return url
-        del _inv_url_cache[key]
-    return None
-
-def _inv_cache_set(key, url):
-    if len(_inv_url_cache) >= 300:
-        oldest = min(_inv_url_cache, key=lambda k: _inv_url_cache[k][1])
-        del _inv_url_cache[oldest]
-    _inv_url_cache[key] = (url, time.time())
-
-def _fetch_from_invidious_instance(instance, query, genre='default'):
-    """Single Invidious instance try"""
-    try:
-        # Step 1: Search
-        r = requests.get(
-            f'{instance}/api/v1/search',
-            params={'q': query, 'type': 'video', 'fields': 'videoId,title,lengthSeconds,author'},
-            timeout=8,
-            headers={'User-Agent': 'Mozilla/5.0'}
-        )
-        if r.status_code != 200:
-            mark_inv_failed(instance)
-            return None
-
-        results = r.json()
-        if not results or not isinstance(results, list):
-            return None
-
-        # Duration filter — pick first result with >60s
-        video_id = None
-        for item in results[:5]:
-            duration = item.get('lengthSeconds', 0)
-            if duration >= 60:
-                video_id = item.get('videoId')
-                break
-
-        if not video_id:
-            return None
-
-        # Step 2: Get audio stream URL
-        v = requests.get(
-            f'{instance}/api/v1/videos/{video_id}',
-            params={'fields': 'adaptiveFormats,formatStreams,title,lengthSeconds'},
-            timeout=10,
-            headers={'User-Agent': 'Mozilla/5.0'}
-        )
-        if v.status_code != 200:
-            mark_inv_failed(instance)
-            return None
-
-        vdata = v.json()
-
-        # Try adaptiveFormats first (audio only streams)
-        adaptive = vdata.get('adaptiveFormats', [])
-        audio_streams = [
-            f for f in adaptive
-            if f.get('type', '').startswith('audio/')
-            and f.get('url', '').startswith('http')
-        ]
-
-        if audio_streams:
-            # Sort by bitrate descending
-            audio_streams.sort(key=lambda f: f.get('bitrate', 0), reverse=True)
-            url = audio_streams[0].get('url')
-            if url:
-                mark_inv_ok(instance)
-                log.info(f"[Invidious] ✓ {instance} | {query[:40]}")
-                return url
-
-        # Fallback to formatStreams (muxed video+audio, still works for audio playback)
-        format_streams = vdata.get('formatStreams', [])
-        for fmt in format_streams:
-            url = fmt.get('url', '')
-            if url.startswith('http'):
-                mark_inv_ok(instance)
-                log.info(f"[Invidious] ✓ formatStream {instance} | {query[:40]}")
-                return url
-
-        return None
-
-    except requests.Timeout:
-        mark_inv_failed(instance)
-        log.warning(f"[Invidious] Timeout: {instance}")
-        return None
-    except Exception as e:
-        log.warning(f"[Invidious] {instance} error: {e}")
-        return None
-
-def fetch_via_invidious(title, artist='', genre='default'):
-    """Try all Invidious instances in parallel"""
-    cache_key = f"inv|{normalize(title)}|{normalize(artist)}|{genre}"
-    cached = _inv_cache_get(cache_key)
-    if cached:
-        log.info(f"[Invidious] Cache hit: {title}")
-        return cached
-
-    query = build_yt_query(title, artist, genre)
-    alive = [i for i in INVIDIOUS_INSTANCES if is_inv_alive(i)]
-
-    if not alive:
-        log.warning("[Invidious] All instances dead — resetting")
-        _invidious_failures.clear()
-        alive = INVIDIOUS_INSTANCES[:]
-
-    futures = {
-        _inv_executor.submit(_fetch_from_invidious_instance, inst, query, genre): inst
-        for inst in alive[:5]  # Parallel top 5
-    }
-
-    try:
-        for future in as_completed(futures, timeout=15):
-            try:
-                result = future.result()
-                if result:
-                    _inv_cache_set(cache_key, result)
-                    # Cancel remaining
-                    for f in futures:
-                        f.cancel()
-                    return result
-            except Exception as e:
-                log.warning(f"[Invidious] Future error: {e}")
-    except FuturesTimeout:
-        log.warning("[Invidious] All instances timed out")
-
-    return None
-
-# ═══════════════════════════════════════════════════════════════
-# PIPED API — Second YT fallback
-# ═══════════════════════════════════════════════════════════════
-def fetch_via_piped(title, artist='', genre='default'):
-    """Piped API — another bot-free YT frontend"""
-    query = build_yt_query(title, artist, genre)
-    alive = [p for p in PIPED_INSTANCES if is_piped_alive(p)]
-
-    if not alive:
-        _piped_failures.clear()
-        alive = PIPED_INSTANCES[:]
-
-    for instance in alive:
-        try:
-            # Search
-            r = requests.get(
-                f'{instance}/search',
-                params={'q': query, 'filter': 'music_songs'},
-                timeout=8,
-                headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://piped.video'}
-            )
-            if r.status_code != 200:
-                mark_piped_failed(instance)
-                continue
-
-            data = r.json()
-            items = data.get('items', [])
-            if not items:
-                continue
-
-            # First valid item
-            for item in items[:3]:
-                video_url = item.get('url', '')
-                if not video_url:
-                    continue
-                vid_id = video_url.split('?v=')[-1] if '?v=' in video_url else video_url.split('/')[-1]
-                duration = item.get('duration', 0)
-                if duration < 60:
-                    continue
-
-                # Get streams
-                streams_r = requests.get(
-                    f'{instance}/streams/{vid_id}',
-                    timeout=10,
-                    headers={'User-Agent': 'Mozilla/5.0'}
-                )
-                if streams_r.status_code != 200:
-                    continue
-
-                sdata = streams_r.json()
-                audio_streams = sdata.get('audioStreams', [])
-
-                if audio_streams:
-                    # Highest quality
-                    audio_streams.sort(key=lambda x: x.get('bitrate', 0), reverse=True)
-                    url = audio_streams[0].get('url', '')
-                    if url.startswith('http'):
-                        mark_piped_ok(instance)
-                        log.info(f"[Piped] ✓ {instance} | {title[:40]}")
-                        return url
-
-        except requests.Timeout:
-            mark_piped_failed(instance)
-        except Exception as e:
-            log.warning(f"[Piped] {instance}: {e}")
-
-    return None
-
-# ═══════════════════════════════════════════════════════════════
-# YT-DLP — Last resort (cookies-free attempt)
-# ═══════════════════════════════════════════════════════════════
-def _yt_cache_get(key):
-    entry = _yt_url_cache.get(key)
-    if entry:
-        url, ts = entry
-        if time.time() - ts < _YT_CACHE_TTL:
-            return url
-        del _yt_url_cache[key]
-    return None
-
-def _yt_cache_set(key, url):
-    if len(_yt_url_cache) >= 200:
-        oldest = min(_yt_url_cache, key=lambda k: _yt_url_cache[k][1])
-        del _yt_url_cache[oldest]
-    _yt_url_cache[key] = (url, time.time())
-
-def fetch_yt_url(title, artist='', genre='default'):
-    if not YT_DLP_AVAILABLE:
-        return None
-
-    cache_key = f"yt|{normalize(title)}|{normalize(artist)}|{genre}"
-    cached = _yt_cache_get(cache_key)
-    if cached:
-        log.info(f"[YT-dlp] Cache hit: {title}")
-        return cached
-
-    if not _yt_semaphore.acquire(blocking=True, timeout=3):
-        log.warning("[YT-dlp] Semaphore busy — skipping")
-        return None
-
-    try:
-        search_q = build_yt_query(title, artist, genre)
-
-        ydl_opts = {
-            'format':         'bestaudio[ext=m4a]/bestaudio/best',
-            'quiet':          True,
-            'no_warnings':    True,
-            'noplaylist':     True,
-            'extract_flat':   False,
-            'skip_download':  True,
-            'socket_timeout': 10,
-            'playlist_items': '1',
-            'geo_bypass':     True,
-            # Try without cookies first — bot detection bypass via extractor args
-            'extractor_args': {
-                'youtube': {
-                    'skip': ['dash', 'hls'],
-                    'player_skip': ['webpage', 'configs'],
-                }
-            },
-            'http_headers': {
-                'User-Agent': (
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                    'AppleWebKit/537.36 (KHTML, like Gecko) '
-                    'Chrome/124.0.0.0 Safari/537.36'
-                )
-            },
-        }
-
-        # Use cookies.txt if available
-        cookies_path = os.path.join(BASE_DIR, 'cookies.txt')
-        if os.path.isfile(cookies_path):
-            ydl_opts['cookiefile'] = cookies_path
-            log.info("[YT-dlp] Using cookies.txt")
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"ytsearch1:{search_q}", download=False)
-            if not info: return None
-            entries = info.get('entries') or [info]
-            if not entries: return None
-            entry = entries[0]
-            if not entry: return None
-
-            duration = entry.get('duration') or 0
-            if duration < 60:
-                log.warning(f"[YT-dlp] Too short ({duration}s), skipping: {title}")
-                return None
-
-            url = entry.get('url')
-            if not url or not url.startswith('http'):
-                requested = entry.get('requested_formats') or entry.get('formats') or []
-                audio_formats = [
-                    f for f in requested
-                    if f.get('acodec') != 'none' and f.get('url', '').startswith('http')
-                ]
-                if audio_formats:
-                    audio_formats.sort(key=lambda f: f.get('abr', 0) or 0, reverse=True)
-                    url = audio_formats[0]['url']
-
-            if url and url.startswith('http'):
-                _yt_cache_set(cache_key, url)
-                log.info(f"[YT-dlp] ✓ {entry.get('title', title)[:50]} ({duration}s)")
-                return url
-            return None
-
-    except Exception as e:
-        log.warning(f"[YT-dlp] Failed '{title}': {type(e).__name__}: {e}")
-        return None
-    finally:
-        _yt_semaphore.release()
-
-# ═══════════════════════════════════════════════════════════════
-# GODMODE FETCH — Full waterfall chain
-# Saavn → Invidious (parallel) → Piped → yt-dlp
-# ═══════════════════════════════════════════════════════════════
-def godmode_fetch(title, artist='', fallback='', force_yt=False, low_quality=False, token=''):
-    """
-    The ultimate fetch chain. Nothing should fall through.
-    Returns dict with url, source, quality etc.
-    """
-    genre = detect_genre(title, artist)
-
-    # Auto force YT for genres Saavn doesn't have
-    if not force_yt:
-        text = (title + ' ' + artist).lower()
-        for kw in FORCE_YT_KEYWORDS:
-            if kw in text:
-                force_yt = True
-                log.info(f"[Godmode] Auto force_yt: {kw}")
-                break
-
-    saavn_result = None
-
-    # ── STEP 1: Saavn (fast, 320kbps, best for Bollywood) ───────
-    if not force_yt:
-        for query in build_query_variants(title, artist, fallback):
-            saavn_result = fetch_saavn_parallel(query)
-            if saavn_result and not has_word_match(title, saavn_result['title']):
-                log.warning(f"[Godmode] Saavn reject: '{saavn_result['title']}' for '{title}'")
-                saavn_result = None
-            if saavn_result:
-                break
-
-    if saavn_result:
-        if low_quality:
-            low_url, low_q = _pick_low_quality(saavn_result.get('_raw_urls', []))
-            if low_url:
-                saavn_result['url']     = low_url
-                saavn_result['quality'] = low_q
-        saavn_result.pop('_raw_urls', None)
-        saavn_result['token'] = token
-        log.info(f"[Godmode] Saavn ✓ '{title}'")
-        return saavn_result
-
-    # ── STEP 2: Invidious (bot-free, parallel, primary YT) ──────
-    log.info(f"[Godmode] Saavn miss — trying Invidious for '{title}'")
-    inv_url = fetch_via_invidious(title, artist, genre)
-    if inv_url:
-        log.info(f"[Godmode] Invidious ✓ '{title}'")
-        return {
-            'success': True,
-            'url':     inv_url,
-            'source':  'invidious',
-            'title':   title,
-            'artist':  artist,
-            'quality': 'full',
-            'image':   '',
-            'token':   token,
-        }
-
-    # ── STEP 3: Piped API ───────────────────────────────────────
-    log.info(f"[Godmode] Invidious miss — trying Piped for '{title}'")
-    piped_url = fetch_via_piped(title, artist, genre)
-    if piped_url:
-        log.info(f"[Godmode] Piped ✓ '{title}'")
-        return {
-            'success': True,
-            'url':     piped_url,
-            'source':  'piped',
-            'title':   title,
-            'artist':  artist,
-            'quality': 'full',
-            'image':   '',
-            'token':   token,
-        }
-
-    # ── STEP 4: yt-dlp (last resort, slower) ───────────────────
-    if YT_DLP_AVAILABLE:
-        log.info(f"[Godmode] Piped miss — trying yt-dlp for '{title}'")
-        try:
-            future = _yt_executor.submit(fetch_yt_url, title, artist, genre)
-            yt_url = future.result(timeout=25)
-            if yt_url:
-                log.info(f"[Godmode] yt-dlp ✓ '{title}'")
-                return {
-                    'success': True,
-                    'url':     yt_url,
-                    'source':  'youtube',
-                    'title':   title,
-                    'artist':  artist,
-                    'quality': 'full',
-                    'image':   '',
-                    'token':   token,
-                }
-        except FuturesTimeout:
-            log.warning(f"[Godmode] yt-dlp timeout for '{title}'")
-        except Exception as e:
-            log.error(f"[Godmode] yt-dlp error: {e}")
-
-    # ── STEP 5: Nothing worked ──────────────────────────────────
-    log.warning(f"[Godmode] ✗ All sources failed for '{title}'")
-    return {'success': False, 'url': None, 'token': token}
-
-# ═══════════════════════════════════════════════════════════════
-# JIOSAAVN DIRECT API — Primary source, never goes down
+# JIOSAAVN DIRECT API — Primary source with DES decrypt
 # ═══════════════════════════════════════════════════════════════
 JIOSAAVN_DIRECT = 'https://www.jiosaavn.com/api.php'
 
+JIOSAAVN_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Referer':    'https://www.jiosaavn.com/',
+    'Origin':     'https://www.jiosaavn.com',
+    'Accept':     'application/json, text/plain, */*',
+}
+
 def _parse_jiosaavn_image(song):
-    """Extract best image from JioSaavn direct API response"""
     img = song.get('image', '')
     if isinstance(img, str) and img.startswith('http'):
         return img.replace('150x150', '500x500').replace('50x50', '500x500')
     return ''
 
-def _parse_jiosaavn_url(song):
-    """Extract encrypted_media_url from JioSaavn direct API"""
-    # Direct API returns encrypted_media_url — we need to decrypt
-    # But also returns media_preview_url as fallback
-    enc = song.get('more_info', {}).get('encrypted_media_url', '')
-    prev = song.get('more_info', {}).get('media_preview_url', '')
-    # Return preview URL directly — it's a working MP3
-    if prev and prev.startswith('http'):
-        return prev, 'preview'
-    return None, None
-
 def fetch_from_jiosaavn_direct(query, limit=20):
     """
-    Fetch songs directly from JioSaavn's internal API.
-    Returns list of normalized song dicts.
+    JioSaavn direct API se songs fetch karo.
+    DES decrypt karke 320kbps URLs nikalo.
     """
+    results = []
+
+    # ── Method 1: search.getResults ──────────────────────────────
     try:
         params = {
             '__call':      'search.getResults',
@@ -888,85 +613,137 @@ def fetch_from_jiosaavn_direct(query, limit=20):
             'n':           str(limit),
             'p':           '1',
         }
-        r = requests.get(
-            JIOSAAVN_DIRECT,
-            params=params,
-            timeout=10,
-            headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer':    'https://www.jiosaavn.com/',
-                'Origin':     'https://www.jiosaavn.com',
-            }
-        )
-        if r.status_code != 200:
-            log.warning(f"[JioSaavn Direct] HTTP {r.status_code}")
-            return []
+        r = requests.get(JIOSAAVN_DIRECT, params=params, timeout=10, headers=JIOSAAVN_HEADERS)
+        if r.status_code == 200:
+            data      = r.json()
+            songs_raw = data.get('results', [])
 
-        data = r.json()
-        songs_raw = data.get('results', [])
-        if not songs_raw:
-            return []
+            for song in songs_raw:
+                more_info = song.get('more_info', {})
 
-        results = []
-        for song in songs_raw:
-            more_info = song.get('more_info', {})
+                # DES decrypt try karo
+                best_url, quality = None, 'unknown'
 
-            # Multiple URL sources — pick best available
-            # 1. encrypted_media_url (320kbps but needs decryption — skip for now)
-            # 2. media_preview_url (128kbps, directly playable)
-            preview_url = more_info.get('media_preview_url', '')
-            vlink       = song.get('vlink', '')  # sometimes has direct url
+                if DES_AVAILABLE:
+                    enc_url = more_info.get('encrypted_media_url', '')
+                    if enc_url:
+                        decrypted = _decrypt_saavn_url(enc_url)
+                        if decrypted:
+                            best_url = decrypted
+                            quality  = _get_quality_from_url(decrypted)
 
-            # Pick working URL
-            best_url = None
-            quality  = 'unknown'
+                # Fallback: preview URL
+                if not best_url:
+                    preview = more_info.get('media_preview_url', '')
+                    if preview and preview.startswith('http'):
+                        best_url = preview
+                        quality  = '96kbps'
 
-            if preview_url and preview_url.startswith('http'):
-                best_url = preview_url
-                quality  = '128kbps'
+                if not best_url:
+                    continue
 
-            if not best_url:
-                continue
+                title   = song.get('title', '') or song.get('song', '')
+                artist  = song.get('primary_artists', '') or song.get('singers', '')
+                image   = _parse_jiosaavn_image(song)
+                year    = _safe_year(song.get('year', ''))
+                song_id = song.get('id', random.randint(10000, 99999))
 
-            title  = song.get('title', '') or song.get('song', '')
-            artist = song.get('primary_artists', '') or song.get('singers', '')
-            image  = _parse_jiosaavn_image(song)
-            year   = _safe_year(song.get('year', ''))
-            song_id = song.get('id', random.randint(10000, 99999))
+                results.append({
+                    'trackId':          song_id,
+                    'trackName':        title,
+                    'artistName':       artist,
+                    'artworkUrl100':    image,
+                    'artworkUrl600':    image,
+                    'url':              best_url,
+                    'previewUrl':       best_url,
+                    'quality':          quality,
+                    'releaseDate':      str(year),
+                    'primaryGenreName': 'Bollywood',
+                    'source':           'jiosaavn_direct',
+                    'title':            title,
+                    'artist':           artist,
+                    'image':            image,
+                    'score':            1.0,
+                    '_raw_urls':        [{'url': best_url, 'quality': quality}],
+                    'success':          True,
+                })
 
-            results.append({
-                'trackId':          song_id,
-                'trackName':        title,
-                'artistName':       artist,
-                'artworkUrl100':    image,
-                'artworkUrl600':    image,
-                'url':              best_url,
-                'previewUrl':       best_url,
-                'quality':          quality,
-                'releaseDate':      str(year),
-                'primaryGenreName': 'Bollywood',
-                'source':           'jiosaavn_direct',
-                # For fetch_saavn_parallel compat
-                'title':            title,
-                'artist':           artist,
-                'image':            image,
-                'score':            1.0,
-                '_raw_urls':        [{'url': best_url, 'quality': quality}],
-                'success':          True,
-            })
-
-        log.info(f"[JioSaavn Direct] ✓ {len(results)} songs for '{query}'")
-        return results
-
+            log.info(f"[JioSaavn Direct] ✓ {len(results)} songs for '{query}'")
     except Exception as e:
-        log.warning(f"[JioSaavn Direct] Error: {e}")
-        return []
+        log.warning(f"[JioSaavn Direct] Method1 error: {e}")
+
+    # ── Method 2: autocomplete.get (more results) ────────────────
+    if len(results) < 5:
+        try:
+            params2 = {
+                '__call':      'autocomplete.get',
+                'query':       query,
+                '_format':     'json',
+                '_marker':     '0',
+                'api_version': '4',
+                'ctx':         'web6dot0',
+                'n':           '10',
+                'p':           '1',
+            }
+            r2 = requests.get(JIOSAAVN_DIRECT, params=params2, timeout=8, headers=JIOSAAVN_HEADERS)
+            if r2.status_code == 200:
+                data2  = r2.json()
+                songs2 = data2.get('songs', {}).get('data', [])
+                for song in songs2:
+                    more_info = song.get('more_info', {})
+                    enc_url   = more_info.get('encrypted_media_url', '')
+                    best_url, quality = None, 'unknown'
+
+                    if enc_url and DES_AVAILABLE:
+                        decrypted = _decrypt_saavn_url(enc_url)
+                        if decrypted:
+                            best_url = decrypted
+                            quality  = _get_quality_from_url(decrypted)
+
+                    if not best_url:
+                        preview = more_info.get('media_preview_url', '')
+                        if preview and preview.startswith('http'):
+                            best_url = preview
+                            quality  = '96kbps'
+
+                    if not best_url: continue
+
+                    title   = song.get('title', '') or song.get('song', '')
+                    artist  = song.get('primary_artists', '') or song.get('more_info', {}).get('singers', '')
+                    image   = _parse_jiosaavn_image(song)
+                    song_id = song.get('id', random.randint(10000, 99999))
+
+                    # Duplicate check
+                    if any(str(r.get('trackId')) == str(song_id) for r in results):
+                        continue
+
+                    results.append({
+                        'trackId':          song_id,
+                        'trackName':        title,
+                        'artistName':       artist,
+                        'artworkUrl100':    image,
+                        'artworkUrl600':    image,
+                        'url':              best_url,
+                        'previewUrl':       best_url,
+                        'quality':          quality,
+                        'releaseDate':      '',
+                        'primaryGenreName': 'Bollywood',
+                        'source':           'jiosaavn_direct',
+                        'title':            title,
+                        'artist':           artist,
+                        'image':            image,
+                        'score':            1.0,
+                        '_raw_urls':        [{'url': best_url, 'quality': quality}],
+                        'success':          True,
+                    })
+        except Exception as e:
+            log.warning(f"[JioSaavn Direct] Method2 error: {e}")
+
+    return results
 
 def fetch_from_jiosaavn_direct_single(query, min_score=0.3):
-    """Single song fetch from JioSaavn direct — for godmode chain"""
     songs = fetch_from_jiosaavn_direct(query, limit=10)
-    if not songs:
-        return None
+    if not songs: return None
 
     best_song, best_score = None, -1
     for song in songs:
@@ -982,11 +759,10 @@ def fetch_from_jiosaavn_direct_single(query, min_score=0.3):
     return best_song
 
 # ═══════════════════════════════════════════════════════════════
-# SAAVN MIRROR FETCH (unchanged core logic)
+# SAAVN MIRROR FETCH
 # ═══════════════════════════════════════════════════════════════
 def fetch_from_mirror(mirror, query, min_score=0.4):
-    if not is_mirror_alive(mirror):
-        return None
+    if not is_mirror_alive(mirror): return None
 
     endpoints = ['/api/search/songs', '/api/search', '/search/songs']
 
@@ -998,8 +774,7 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
                 timeout=8,
                 headers={'User-Agent': 'Mozilla/5.0'}
             )
-            if r.status_code != 200:
-                continue
+            if r.status_code != 200: continue
 
             data = r.json()
             results = (
@@ -1013,23 +788,23 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
             for song in results:
                 song_title  = song.get('name') or song.get('title', '')
                 song_artist = song.get('primaryArtists') or song.get('primary_artists') or ''
-                if not has_word_match(query, song_title):
-                    continue
+                if not has_word_match(query, song_title): continue
                 score = title_score(query, song_title, song_artist)
                 if score > best_score:
                     best_score = score
                     best_song  = song
 
-            if not best_song or best_score < min_score:
-                continue
+            if not best_song or best_score < min_score: continue
 
-            raw_urls = best_song.get('downloadUrl') or best_song.get('download_url') or []
+            # Try DES decrypt on mirror results too
+            raw_urls = _extract_download_urls(best_song)
+            if not raw_urls:
+                raw_urls = best_song.get('downloadUrl') or best_song.get('download_url') or []
             if isinstance(raw_urls, str):
                 raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
 
             best_url, quality = pick_best_quality(raw_urls)
-            if not best_url:
-                continue
+            if not best_url: continue
 
             mark_mirror_ok(mirror)
             return {
@@ -1058,10 +833,8 @@ def fetch_saavn_parallel(query):
     threshold   = dynamic_min_score(query)
     all_results = []
 
-    # ── STEP A: JioSaavn Direct (primary) ───────────────────────
     direct_future = _saavn_executor.submit(fetch_from_jiosaavn_direct_single, query, threshold)
 
-    # ── STEP B: Mirrors in parallel (backup) ────────────────────
     alive_mirrors = [m for m in SAAVN_MIRRORS if is_mirror_alive(m)]
     if not alive_mirrors:
         _mirror_failures.clear()
@@ -1084,20 +857,19 @@ def fetch_saavn_parallel(query):
         for future in as_completed(mirror_futures, timeout=12):
             try:
                 result = future.result()
-                if result:
-                    all_results.append(result)
+                if result: all_results.append(result)
             except Exception as e:
                 log.warning(f"[Parallel] Future error: {e}")
     except FuturesTimeout:
         log.warning("[Parallel] Some mirrors timed out")
 
-    if not all_results:
-        return None
+    if not all_results: return None
 
     def result_rank(r):
         score   = r.get('score', 0)
         quality = r.get('quality', '')
-        return score + (0.05 if '320' in str(quality) else 0)
+        q_bonus = 0.15 if '320' in str(quality) else 0.08 if '160' in str(quality) else 0
+        return score + q_bonus
 
     all_results.sort(key=result_rank, reverse=True)
     best = all_results[0]
@@ -1105,94 +877,417 @@ def fetch_saavn_parallel(query):
     return best
 
 # ═══════════════════════════════════════════════════════════════
-# /api/songs — Homepage song listing
+# INVIDIOUS — Bot-free YT audio
+# ═══════════════════════════════════════════════════════════════
+def _inv_cache_get(key):
+    entry = _inv_url_cache.get(key)
+    if entry:
+        url, ts = entry
+        if time.time() - ts < _INV_CACHE_TTL: return url
+        del _inv_url_cache[key]
+    return None
+
+def _inv_cache_set(key, url):
+    if len(_inv_url_cache) >= 300:
+        oldest = min(_inv_url_cache, key=lambda k: _inv_url_cache[k][1])
+        del _inv_url_cache[oldest]
+    _inv_url_cache[key] = (url, time.time())
+
+def _fetch_from_invidious_instance(instance, query, genre='default'):
+    try:
+        r = requests.get(
+            f'{instance}/api/v1/search',
+            params={'q': query, 'type': 'video', 'fields': 'videoId,title,lengthSeconds,author'},
+            timeout=8,
+            headers={'User-Agent': 'Mozilla/5.0'}
+        )
+        if r.status_code != 200:
+            mark_inv_failed(instance); return None
+
+        results = r.json()
+        if not results or not isinstance(results, list): return None
+
+        video_id = None
+        for item in results[:5]:
+            duration = item.get('lengthSeconds', 0)
+            if duration >= 30:  # 30s+ accept karo (60 too strict tha)
+                video_id = item.get('videoId')
+                break
+
+        if not video_id: return None
+
+        v = requests.get(
+            f'{instance}/api/v1/videos/{video_id}',
+            params={'fields': 'adaptiveFormats,formatStreams,title,lengthSeconds'},
+            timeout=10,
+            headers={'User-Agent': 'Mozilla/5.0'}
+        )
+        if v.status_code != 200:
+            mark_inv_failed(instance); return None
+
+        vdata = v.json()
+        adaptive = vdata.get('adaptiveFormats', [])
+        audio_streams = [
+            f for f in adaptive
+            if f.get('type', '').startswith('audio/')
+            and f.get('url', '').startswith('http')
+        ]
+
+        if audio_streams:
+            audio_streams.sort(key=lambda f: f.get('bitrate', 0), reverse=True)
+            url = audio_streams[0].get('url')
+            if url:
+                mark_inv_ok(instance)
+                log.info(f"[Invidious] ✓ {instance} | {query[:40]}")
+                return url
+
+        for fmt in vdata.get('formatStreams', []):
+            url = fmt.get('url', '')
+            if url.startswith('http'):
+                mark_inv_ok(instance)
+                return url
+
+        return None
+
+    except requests.Timeout:
+        mark_inv_failed(instance)
+        return None
+    except Exception as e:
+        log.warning(f"[Invidious] {instance} error: {e}")
+        return None
+
+def fetch_via_invidious(title, artist='', genre='default'):
+    cache_key = f"inv|{normalize(title)}|{normalize(artist)}|{genre}"
+    cached = _inv_cache_get(cache_key)
+    if cached:
+        log.info(f"[Invidious] Cache hit: {title}")
+        return cached
+
+    query = build_yt_query(title, artist, genre)
+    alive = [i for i in INVIDIOUS_INSTANCES if is_inv_alive(i)]
+
+    if not alive:
+        _invidious_failures.clear()
+        alive = INVIDIOUS_INSTANCES[:]
+
+    futures = {
+        _inv_executor.submit(_fetch_from_invidious_instance, inst, query, genre): inst
+        for inst in alive[:5]
+    }
+
+    try:
+        for future in as_completed(futures, timeout=15):
+            try:
+                result = future.result()
+                if result:
+                    _inv_cache_set(cache_key, result)
+                    for f in futures: f.cancel()
+                    return result
+            except Exception as e:
+                log.warning(f"[Invidious] Future error: {e}")
+    except FuturesTimeout:
+        log.warning("[Invidious] All instances timed out")
+
+    return None
+
+# ═══════════════════════════════════════════════════════════════
+# PIPED API
+# ═══════════════════════════════════════════════════════════════
+def fetch_via_piped(title, artist='', genre='default'):
+    query = build_yt_query(title, artist, genre)
+    alive = [p for p in PIPED_INSTANCES if is_piped_alive(p)]
+    if not alive:
+        _piped_failures.clear()
+        alive = PIPED_INSTANCES[:]
+
+    for instance in alive:
+        try:
+            r = requests.get(
+                f'{instance}/search',
+                params={'q': query, 'filter': 'music_songs'},
+                timeout=8,
+                headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://piped.video'}
+            )
+            if r.status_code != 200:
+                mark_piped_failed(instance); continue
+
+            data  = r.json()
+            items = data.get('items', [])
+            if not items: continue
+
+            for item in items[:3]:
+                video_url = item.get('url', '')
+                if not video_url: continue
+                vid_id   = video_url.split('?v=')[-1] if '?v=' in video_url else video_url.split('/')[-1]
+                duration = item.get('duration', 0)
+                if duration < 30: continue
+
+                streams_r = requests.get(f'{instance}/streams/{vid_id}', timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
+                if streams_r.status_code != 200: continue
+
+                sdata         = streams_r.json()
+                audio_streams = sdata.get('audioStreams', [])
+
+                if audio_streams:
+                    audio_streams.sort(key=lambda x: x.get('bitrate', 0), reverse=True)
+                    url = audio_streams[0].get('url', '')
+                    if url.startswith('http'):
+                        mark_piped_ok(instance)
+                        log.info(f"[Piped] ✓ {instance} | {title[:40]}")
+                        return url
+
+        except requests.Timeout:
+            mark_piped_failed(instance)
+        except Exception as e:
+            log.warning(f"[Piped] {instance}: {e}")
+
+    return None
+
+# ═══════════════════════════════════════════════════════════════
+# YT-DLP — Last resort
+# ═══════════════════════════════════════════════════════════════
+def _yt_cache_get(key):
+    entry = _yt_url_cache.get(key)
+    if entry:
+        url, ts = entry
+        if time.time() - ts < _YT_CACHE_TTL: return url
+        del _yt_url_cache[key]
+    return None
+
+def _yt_cache_set(key, url):
+    if len(_yt_url_cache) >= 200:
+        oldest = min(_yt_url_cache, key=lambda k: _yt_url_cache[k][1])
+        del _yt_url_cache[oldest]
+    _yt_url_cache[key] = (url, time.time())
+
+def fetch_yt_url(title, artist='', genre='default'):
+    if not YT_DLP_AVAILABLE: return None
+
+    cache_key = f"yt|{normalize(title)}|{normalize(artist)}|{genre}"
+    cached = _yt_cache_get(cache_key)
+    if cached: return cached
+
+    if not _yt_semaphore.acquire(blocking=True, timeout=3):
+        log.warning("[YT-dlp] Semaphore busy")
+        return None
+
+    try:
+        search_q  = build_yt_query(title, artist, genre)
+        ydl_opts  = {
+            'format':         'bestaudio[ext=m4a]/bestaudio/best',
+            'quiet':          True,
+            'no_warnings':    True,
+            'noplaylist':     True,
+            'extract_flat':   False,
+            'skip_download':  True,
+            'socket_timeout': 10,
+            'playlist_items': '1',
+            'geo_bypass':     True,
+            'extractor_args': {
+                'youtube': {
+                    'skip': ['dash', 'hls'],
+                    'player_skip': ['webpage', 'configs'],
+                }
+            },
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36'
+            },
+        }
+
+        cookies_path = os.path.join(BASE_DIR, 'cookies.txt')
+        if os.path.isfile(cookies_path):
+            ydl_opts['cookiefile'] = cookies_path
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info    = ydl.extract_info(f"ytsearch1:{search_q}", download=False)
+            if not info: return None
+            entries = info.get('entries') or [info]
+            if not entries: return None
+            entry   = entries[0]
+            if not entry: return None
+
+            duration = entry.get('duration') or 0
+            if duration < 30: return None
+
+            url = entry.get('url')
+            if not url or not url.startswith('http'):
+                requested = entry.get('requested_formats') or entry.get('formats') or []
+                audio_formats = [
+                    f for f in requested
+                    if f.get('acodec') != 'none' and f.get('url', '').startswith('http')
+                ]
+                if audio_formats:
+                    audio_formats.sort(key=lambda f: f.get('abr', 0) or 0, reverse=True)
+                    url = audio_formats[0]['url']
+
+            if url and url.startswith('http'):
+                _yt_cache_set(cache_key, url)
+                log.info(f"[YT-dlp] ✓ {entry.get('title', title)[:50]} ({duration}s)")
+                return url
+            return None
+
+    except Exception as e:
+        log.warning(f"[YT-dlp] Failed '{title}': {type(e).__name__}: {e}")
+        return None
+    finally:
+        _yt_semaphore.release()
+
+# ═══════════════════════════════════════════════════════════════
+# GODMODE FETCH — Full waterfall
+# JioSaavn Direct (DES) → Mirrors → Invidious → Piped → yt-dlp
+# ═══════════════════════════════════════════════════════════════
+def godmode_fetch(title, artist='', fallback='', force_yt=False, low_quality=False, token=''):
+    genre = detect_genre(title, artist)
+
+    if not force_yt:
+        text = (title + ' ' + artist).lower()
+        for kw in FORCE_YT_KEYWORDS:
+            if kw in text:
+                force_yt = True
+                log.info(f"[Godmode] Auto force_yt: {kw}")
+                break
+
+    saavn_result = None
+
+    # ── STEP 1: JioSaavn (DES 320kbps) ──────────────────────────
+    if not force_yt:
+        for query in build_query_variants(title, artist, fallback):
+            saavn_result = fetch_saavn_parallel(query)
+            if saavn_result and not has_word_match(title, saavn_result['title']):
+                log.warning(f"[Godmode] Saavn reject: '{saavn_result['title']}' for '{title}'")
+                saavn_result = None
+            if saavn_result:
+                break
+
+    if saavn_result:
+        if low_quality:
+            low_url, low_q = _pick_low_quality(saavn_result.get('_raw_urls', []))
+            if low_url:
+                saavn_result['url']     = low_url
+                saavn_result['quality'] = low_q
+        saavn_result.pop('_raw_urls', None)
+        saavn_result['token'] = token
+        log.info(f"[Godmode] Saavn ✓ '{title}' @ {saavn_result.get('quality')}")
+        return saavn_result
+
+    # ── STEP 2: Invidious ───────────────────────────────────────
+    log.info(f"[Godmode] Saavn miss — Invidious for '{title}'")
+    inv_url = fetch_via_invidious(title, artist, genre)
+    if inv_url:
+        log.info(f"[Godmode] Invidious ✓ '{title}'")
+        return {
+            'success': True, 'url': inv_url, 'source': 'invidious',
+            'title': title, 'artist': artist, 'quality': 'full',
+            'image': '', 'token': token,
+        }
+
+    # ── STEP 3: Piped ───────────────────────────────────────────
+    log.info(f"[Godmode] Invidious miss — Piped for '{title}'")
+    piped_url = fetch_via_piped(title, artist, genre)
+    if piped_url:
+        log.info(f"[Godmode] Piped ✓ '{title}'")
+        return {
+            'success': True, 'url': piped_url, 'source': 'piped',
+            'title': title, 'artist': artist, 'quality': 'full',
+            'image': '', 'token': token,
+        }
+
+    # ── STEP 4: yt-dlp ─────────────────────────────────────────
+    if YT_DLP_AVAILABLE:
+        log.info(f"[Godmode] Piped miss — yt-dlp for '{title}'")
+        try:
+            future = _yt_executor.submit(fetch_yt_url, title, artist, genre)
+            yt_url = future.result(timeout=25)
+            if yt_url:
+                log.info(f"[Godmode] yt-dlp ✓ '{title}'")
+                return {
+                    'success': True, 'url': yt_url, 'source': 'youtube',
+                    'title': title, 'artist': artist, 'quality': 'full',
+                    'image': '', 'token': token,
+                }
+        except FuturesTimeout:
+            log.warning(f"[Godmode] yt-dlp timeout for '{title}'")
+        except Exception as e:
+            log.error(f"[Godmode] yt-dlp error: {e}")
+
+    log.warning(f"[Godmode] ✗ All sources failed for '{title}'")
+    return {'success': False, 'url': None, 'token': token}
+
+# ═══════════════════════════════════════════════════════════════
+# /api/songs — Homepage — JioSaavn Direct PRIMARY
+# Deezer completely removed — garbage tha
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/songs')
 @limiter.limit("60 per minute")
 def get_songs():
-    q   = request.args.get('q', 'bollywood hits').strip()
-    era = request.args.get('era', '').strip()
+    q       = request.args.get('q', '').strip()
+    section = request.args.get('section', '').strip()  # section-specific query
+    era     = request.args.get('era', '').strip()
 
-    is_90s      = (era == '90s') or any(t in q.lower() for t in NINETIES_TRIGGERS)
-    search_term = random.choice(NINETIES_SEEDS) if is_90s else q
+    # Section-wise curated query
+    if section and section in SECTION_QUERIES:
+        queries = SECTION_QUERIES[section]
+        search_term = random.choice(queries)
+    elif q:
+        search_term = q
+    else:
+        search_term = random.choice(SECTION_QUERIES['featured'])
 
     results = []
 
-    # ── PRIMARY: Deezer (instant, always works) ──────────────────
+    # ── PRIMARY: JioSaavn Direct (320kbps, best) ─────────────────
     try:
-        r = requests.get(
-            'https://api.deezer.com/search',
-            params={'q': search_term, 'limit': 30},
-            timeout=6,
-            headers={'User-Agent': 'Mozilla/5.0'}
-        )
-        for song in r.json().get('data', []):
-            preview = song.get('preview', '')
-            if not preview:
-                continue
-            artwork = (song.get('album') or {}).get('cover_xl') or \
-                      (song.get('album') or {}).get('cover_big') or ''
-            year = str((song.get('album') or {}).get('release_date', ''))[:4]
-            results.append({
-                'trackId':          song.get('id'),
-                'trackName':        song.get('title', ''),
-                'artistName':       (song.get('artist') or {}).get('name', ''),
-                'artworkUrl100':    artwork,
-                'artworkUrl600':    artwork,
-                'previewUrl':       preview,
-                'url':              preview,
-                'quality':          'preview',
-                'releaseDate':      year,
-                'primaryGenreName': 'Bollywood',
-                'source':           'deezer',
-            })
-        log.info(f"[Deezer] {len(results)} songs for '{search_term}'")
-    except Exception as e:
-        log.warning(f"[Deezer] Error: {e}")
-
-    # ── BACKUP: JioSaavn Direct ───────────────────────────────────
-    if len(results) < 10:
-        direct_songs = fetch_from_jiosaavn_direct(search_term, limit=40)
+        direct_songs = fetch_from_jiosaavn_direct(search_term, limit=30)
         results.extend(direct_songs)
-        log.info(f"[Songs] Direct got {len(direct_songs)} songs for '{search_term}'")
+        log.info(f"[Songs] Direct: {len(direct_songs)} songs for '{search_term}'")
+    except Exception as e:
+        log.warning(f"[Songs] Direct error: {e}")
 
-    # ── BACKUP: Mirrors ───────────────────────────────────────────
-    if len(results) < 10:
+    # ── BACKUP: Mirrors (agar direct < 8 songs) ──────────────────
+    if len(results) < 8:
         alive_mirrors = [m for m in SAAVN_MIRRORS if is_mirror_alive(m)]
         if not alive_mirrors:
             alive_mirrors = SAAVN_MIRRORS[:]
-        for mirror in alive_mirrors[:2]:
+
+        for mirror in alive_mirrors[:3]:
             try:
                 r = requests.get(
                     f'{mirror}/api/search/songs',
                     params={'query': search_term, 'limit': 30},
-                    timeout=6,
+                    timeout=7,
                     headers={'User-Agent': 'Mozilla/5.0'}
                 )
-                if r.status_code != 200:
-                    continue
-                data = r.json()
+                if r.status_code != 200: continue
+                data  = r.json()
                 songs = (
                     data.get('data', {}).get('results') or
                     data.get('results') or
                     data.get('songs', {}).get('results') or []
                 )
                 for song in songs:
-                    raw_urls = song.get('downloadUrl') or song.get('download_url') or []
+                    raw_urls = _extract_download_urls(song)
                     if not raw_urls:
+                        raw_urls = song.get('downloadUrl') or song.get('download_url') or []
+                    if not raw_urls: continue
+
+                    if isinstance(raw_urls, str):
+                        raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
+
+                    best_url, quality = pick_best_quality(raw_urls)
+                    if not best_url: continue
+
+                    title   = song.get('name') or song.get('title', '')
+                    artist  = song.get('primaryArtists') or song.get('primary_artists') or ''
+                    image   = pick_image(song)
+                    year    = _safe_year(song.get('releaseDate') or song.get('year', ''))
+                    song_id = song.get('id', random.randint(10000, 99999))
+
+                    # Duplicate check
+                    if any(str(r2.get('trackId')) == str(song_id) for r2 in results):
                         continue
-                    best_url, quality = pick_best_quality(
-                        raw_urls if isinstance(raw_urls, list)
-                        else [{'url': raw_urls, 'quality': 'unknown'}]
-                    )
-                    if not best_url:
-                        continue
-                    title  = song.get('name') or song.get('title', '')
-                    artist = song.get('primaryArtists') or song.get('primary_artists') or ''
-                    image  = pick_image(song)
-                    year   = _safe_year(song.get('releaseDate') or song.get('year', ''))
+
                     results.append({
-                        'trackId':          song.get('id', random.randint(10000, 99999)),
+                        'trackId':          song_id,
                         'trackName':        title,
                         'artistName':       artist,
                         'artworkUrl100':    image,
@@ -1202,107 +1297,35 @@ def get_songs():
                         'quality':          quality,
                         'releaseDate':      str(year),
                         'primaryGenreName': 'Bollywood',
-                        'source':           'saavn',
+                        'source':           'saavn_mirror',
                     })
-                if len(results) >= 10:
-                    break
+
+                mark_mirror_ok(mirror)
+                if len(results) >= 15: break
+
             except Exception as e:
                 log.warning(f"[Songs] Mirror {mirror} failed: {e}")
+                mark_mirror_failed(mirror)
 
-    if is_90s and results:
-        filtered = [s for s in results if 1990 <= int(s.get('releaseDate') or 0) <= 1999]
-        if len(filtered) >= 5:
-            random.shuffle(filtered)
-            return jsonify({'results': filtered[:30]})
+    # ── LAST RESORT: Try alternate query ──────────────────────────
+    if len(results) < 5 and section and section in SECTION_QUERIES:
+        alt_query = random.choice(SECTION_QUERIES[section])
+        try:
+            alt_songs = fetch_from_jiosaavn_direct(alt_query, limit=15)
+            for s in alt_songs:
+                if not any(str(r2.get('trackId')) == str(s.get('trackId')) for r2 in results):
+                    results.append(s)
+        except Exception as e:
+            log.warning(f"[Songs] Alt query failed: {e}")
+
+    # Filter: sirf valid previewUrl wale songs
+    results = [s for s in results if s.get('previewUrl') or s.get('url')]
 
     random.shuffle(results)
     return jsonify({'results': results[:30]})
 
 # ═══════════════════════════════════════════════════════════════
-# /api/songs/90s
-# ═══════════════════════════════════════════════════════════════
-@app.route('/api/songs/90s')
-@limiter.limit("60 per minute")
-def get_90s_songs():
-    seed    = random.choice(NINETIES_SEEDS)
-    results = []
-
-    alive_mirrors = [m for m in SAAVN_MIRRORS if is_mirror_alive(m)]
-    if not alive_mirrors:
-        alive_mirrors = SAAVN_MIRRORS[:]
-
-    for mirror in alive_mirrors[:3]:
-        try:
-            r = requests.get(
-                f'{mirror}/api/search/songs',
-                params={'query': seed, 'limit': 40},
-                timeout=8,
-                headers={'User-Agent': 'Mozilla/5.0'}
-            )
-            if r.status_code != 200:
-                continue
-            data = r.json()
-            songs = (
-                data.get('data', {}).get('results') or
-                data.get('results') or
-                data.get('songs', {}).get('results') or []
-            )
-            for song in songs:
-                raw_urls = song.get('downloadUrl') or song.get('download_url') or []
-                if not raw_urls:
-                    continue
-                best_url, quality = pick_best_quality(raw_urls if isinstance(raw_urls, list) else [{'url': raw_urls, 'quality': 'unknown'}])
-                if not best_url:
-                    continue
-
-                title  = song.get('name') or song.get('title', '')
-                artist = song.get('primaryArtists') or song.get('primary_artists') or ''
-                image  = pick_image(song)
-                year   = _safe_year(song.get('releaseDate') or song.get('year', ''))
-
-                results.append({
-                    'trackId':       song.get('id', random.randint(10000, 99999)),
-                    'trackName':     title,
-                    'artistName':    artist,
-                    'artworkUrl100': image,
-                    'artworkUrl600': image,
-                    'url':           best_url,
-                    'previewUrl':    best_url,
-                    'quality':       quality,
-                    'releaseDate':   str(year),
-                    'source':        'saavn',
-                })
-            if results:
-                break
-        except Exception as e:
-            log.warning(f"[90s] Mirror {mirror} failed: {e}")
-            continue
-
-    # YT fallback for 90s if Saavn thin
-    if len(results) < 5:
-        log.info("[90s] Saavn thin — Invidious try")
-        inv_url = fetch_via_invidious(seed, '', '90s')
-        if inv_url:
-            results.append({
-                'trackId':       random.randint(10000, 99999),
-                'trackName':     seed,
-                'artistName':    '90s Bollywood',
-                'artworkUrl100': '',
-                'artworkUrl600': '',
-                'url':           inv_url,
-                'quality':       'full',
-                'releaseDate':   '1995',
-                'source':        'invidious',
-            })
-
-    filtered = [s for s in results if 1990 <= int(s.get('releaseDate') or 0) <= 1999]
-    if len(filtered) < 5:
-        filtered = results
-    random.shuffle(filtered)
-    return jsonify({'results': filtered[:30], 'seed': seed})
-
-# ═══════════════════════════════════════════════════════════════
-# /api/song — GODMODE MAIN ENDPOINT
+# /api/song — GODMODE MAIN
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/song')
 @limiter.limit("60 per minute")
@@ -1321,7 +1344,7 @@ def get_song_smart():
     return jsonify(result)
 
 # ═══════════════════════════════════════════════════════════════
-# /api/saavn — Direct Saavn (kept for frontend compat)
+# /api/saavn — Direct Saavn
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/saavn')
 @limiter.limit("80 per minute")
@@ -1337,30 +1360,26 @@ def get_saavn_song():
 
     for query in build_query_variants(q, artist, fallback):
         result = fetch_saavn_parallel(query)
-
         if result and not has_word_match(q, result['title']):
             log.warning(f"[Saavn] Final reject — '{result['title']}' for '{q}'")
             result = None
-
         if result:
             if low_quality:
                 low_url, low_q = _pick_low_quality(result.get('_raw_urls', []))
                 if low_url:
                     result['url']     = low_url
                     result['quality'] = low_q
-
             result.pop('_raw_urls', None)
             result['token'] = token
             log.info(f"[Saavn] ✓ '{q}' → '{result['title']}' quality={result['quality']}")
             return jsonify(result)
 
-    # Saavn miss — godmode fallback
     log.info(f"[Saavn] Miss — godmode fallback for '{q}'")
     result = godmode_fetch(q, artist, fallback, True, low_quality, token)
     return jsonify(result)
 
 # ═══════════════════════════════════════════════════════════════
-# /api/yt — Direct YT endpoint (now uses Invidious first)
+# /api/yt — Direct YT
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/yt')
 @limiter.limit("30 per minute")
@@ -1374,17 +1393,14 @@ def get_yt_song():
 
     genre = detect_genre(q, artist)
 
-    # Invidious first
     inv_url = fetch_via_invidious(q, artist, genre)
     if inv_url:
         return jsonify({'success': True, 'url': inv_url, 'source': 'invidious', 'title': q, 'artist': artist, 'token': token})
 
-    # Piped second
     piped_url = fetch_via_piped(q, artist, genre)
     if piped_url:
         return jsonify({'success': True, 'url': piped_url, 'source': 'piped', 'title': q, 'artist': artist, 'token': token})
 
-    # yt-dlp last
     if not YT_DLP_AVAILABLE:
         return jsonify({'success': False, 'error': 'All YT sources failed', 'token': token}), 503
 
@@ -1406,7 +1422,6 @@ def get_yt_song():
 @limiter.limit("120 per minute")
 def stream_audio():
     url = request.args.get('url', '').strip()
-
     if not url:
         return jsonify({'error': 'Missing URL'}), 400
 
@@ -1443,7 +1458,6 @@ def stream_audio():
 
         excluded = {'content-encoding', 'transfer-encoding', 'connection'}
         resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in excluded}
-
         resp_headers['Access-Control-Allow-Origin'] = '*'
         resp_headers['Accept-Ranges']               = 'bytes'
         resp_headers['Cache-Control']               = 'no-store'
@@ -1455,8 +1469,7 @@ def stream_audio():
         def generate():
             try:
                 for chunk in upstream.iter_content(chunk_size=65536):
-                    if chunk:
-                        yield chunk
+                    if chunk: yield chunk
             finally:
                 upstream.close()
 
@@ -1495,7 +1508,6 @@ def download_song():
             'Connection':      'keep-alive',
         }
         upstream = requests.get(result['url'], headers=req_headers, stream=True, timeout=30, allow_redirects=True)
-
         if upstream.status_code != 200:
             return jsonify({'success': False, 'error': 'Stream failed'}), 502
 
@@ -1503,7 +1515,7 @@ def download_song():
         artist_safe = re.sub(r'[^\w\s-]', '', result.get('artist', 'unknown'))[:30]
         filename    = f"{title_safe} - {artist_safe}.mp3"
 
-        excluded = {'content-encoding', 'transfer-encoding', 'connection'}
+        excluded     = {'content-encoding', 'transfer-encoding', 'connection'}
         resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in excluded}
         resp_headers['Content-Disposition']         = f'attachment; filename="{filename}"'
         resp_headers['Access-Control-Allow-Origin'] = '*'
@@ -1535,6 +1547,7 @@ def health():
     return jsonify({
         'status':           'ok',
         'yt_dlp':           YT_DLP_AVAILABLE,
+        'des_decrypt':      DES_AVAILABLE,
         'saavn_mirrors':    f"{len(alive_mirrors)}/{len(SAAVN_MIRRORS)}",
         'invidious':        f"{len(alive_inv)}/{len(INVIDIOUS_INSTANCES)}",
         'piped':            f"{len(alive_piped)}/{len(PIPED_INSTANCES)}",
@@ -1547,5 +1560,5 @@ def health():
 # ═══════════════════════════════════════════════════════════════
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 7700))
-    log.info(f"🎵 Aurum Godmode | Port {port} | yt-dlp: {YT_DLP_AVAILABLE}")
+    log.info(f"🎵 Aurum Godmode | Port {port} | yt-dlp: {YT_DLP_AVAILABLE} | DES: {DES_AVAILABLE}")
     app.run(host='0.0.0.0', port=port, threaded=True, debug=False)
