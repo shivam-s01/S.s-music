@@ -167,6 +167,12 @@ jobs:
           STORE_PASSWORD: aurum2025
           KEY_PASSWORD: aurum2025
 
+      - name: Get Fingerprint
+        run: |
+          keytool -list -v -keystore aurum-keystore.jks \
+            -alias aurum -storepass aurum2025 \
+            | grep "SHA256"
+
       - uses: actions/upload-artifact@v4
         with:
           name: Aurum-APK
