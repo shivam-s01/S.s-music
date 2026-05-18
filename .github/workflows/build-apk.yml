@@ -18,19 +18,22 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
+      - name: Install Gradle
+        run: |
+          wget -q https://services.gradle.org/distributions/gradle-8.2-bin.zip -O gradle.zip
+          unzip -q gradle.zip -d /opt/gradle
+          echo "/opt/gradle/gradle-8.2/bin" >> $GITHUB_PATH
+
       - name: Create TWA Project Structure
         run: |
           mkdir -p app/src/main/java/com/aurum/music
           mkdir -p app/src/main/res/values
-          mkdir -p app/src/main/res/xml
-          mkdir -p app/src/main/res/drawable
           mkdir -p app/src/main/res/mipmap-hdpi
           mkdir -p app/src/main/res/mipmap-mdpi
           mkdir -p app/src/main/res/mipmap-xhdpi
           mkdir -p app/src/main/res/mipmap-xxhdpi
           mkdir -p app/src/main/res/mipmap-xxxhdpi
 
-          # settings.gradle
           cat > settings.gradle << 'EOF'
           pluginManagement {
               repositories {
@@ -50,29 +53,12 @@ jobs:
           include ':app'
           EOF
 
-          # build.gradle (root)
           cat > build.gradle << 'EOF'
           plugins {
               id 'com.android.application' version '8.2.0' apply false
           }
           EOF
 
-          # gradle wrapper properties
-          mkdir -p gradle/wrapper
-          cat > gradle/wrapper/gradle-wrapper.properties << 'EOF'
-          distributionBase=GRADLE_USER_HOME
-          distributionPath=wrapper/dists
-          distributionUrl=https\://services.gradle.org/distributions/gradle-8.2-bin.zip
-          zipStoreBase=GRADLE_USER_HOME
-          zipStorePath=wrapper/dists
-          EOF
-
-          # Download gradle wrapper
-          curl -sL https://services.gradle.org/distributions/gradle-8.2-bin.zip -o gradle-bin.zip
-          unzip -q gradle-bin.zip
-          mv gradle-8.2/bin/gradle /usr/local/bin/gradle || true
-
-          # app/build.gradle
           cat > app/build.gradle << 'EOF'
           plugins {
               id 'com.android.application'
@@ -107,7 +93,6 @@ jobs:
           }
           EOF
 
-          # AndroidManifest.xml
           cat > app/src/main/AndroidManifest.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -145,7 +130,6 @@ jobs:
           </manifest>
           EOF
 
-          # strings.xml
           cat > app/src/main/res/values/strings.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <resources>
@@ -153,24 +137,13 @@ jobs:
           </resources>
           EOF
 
-          # Download and resize icon
           curl -sL "https://aurum-waves.up.railway.app/static/icon-512.png" -o icon-512.png
-          
-          # Install imagemagick for resizing
           sudo apt-get install -y imagemagick -q
-          
           convert icon-512.png -resize 48x48 app/src/main/res/mipmap-mdpi/ic_launcher.png
           convert icon-512.png -resize 72x72 app/src/main/res/mipmap-hdpi/ic_launcher.png
           convert icon-512.png -resize 96x96 app/src/main/res/mipmap-xhdpi/ic_launcher.png
           convert icon-512.png -resize 144x144 app/src/main/res/mipmap-xxhdpi/ic_launcher.png
           convert icon-512.png -resize 192x192 app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
-
-          # gradlew script
-          cat > gradlew << 'GWEOF'
-          #!/bin/sh
-          exec gradle "$@"
-          GWEOF
-          chmod +x gradlew
 
       - name: Generate Keystore
         run: |
@@ -184,7 +157,8 @@ jobs:
             -dname "CN=Aurum,OU=Dev,O=Aurum,L=India,ST=UP,C=IN"
 
       - name: Build APK
-        run: ./gradlew assembleRelease
+        run: gradle assembleRelease
+        working-directory: .
         env:
           STORE_PASSWORD: aurum2025
           KEY_PASSWORD: aurum2025
