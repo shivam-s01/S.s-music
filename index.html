@@ -134,8 +134,8 @@
       <button onclick="toggleRepeat()" id="repeat-btn" aria-label="Repeat"><svg viewBox="0 0 24 24"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></button>
     </div>
 
-    <!-- Up Next Strip -->
-<div class="fp-next-strip" id="fp-next-strip" onclick="openQueuePanel()" style="display:none">
+    <!-- Up Next Strip - FIXED: removed style="display:none" -->
+    <div class="fp-next-strip" id="fp-next-strip" onclick="openQueuePanel()">
       <div class="fp-next-tag">UP<br>NEXT</div>
       <img class="fp-next-art" id="fp-next-art" src="" alt="Next song art">
       <div class="fp-next-info">
@@ -145,7 +145,7 @@
       <svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
     </div>
 
-    <!-- LYRICS SECTION — shown only when lyrics are available -->
+    <!-- LYRICS SECTION -->
     <div id="fp-lyrics-wrap" style="display:none;margin:0 20px 12px;border-radius:16px;background:rgba(255,255,255,0.04);overflow:hidden;">
       <div style="padding:14px 16px 8px;font-size:10px;font-weight:700;letter-spacing:1.2px;color:var(--text3);text-transform:uppercase;">Lyrics</div>
       <div id="fp-lyrics" style="padding:0 16px 16px;font-size:14px;line-height:2;color:var(--text2);white-space:pre-wrap;max-height:220px;overflow-y:auto;-webkit-overflow-scrolling:touch;"></div>
