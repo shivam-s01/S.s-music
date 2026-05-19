@@ -2,9 +2,7 @@
   "relation": ["delegate_permission/common.handle_all_urls"],
   "target": {
     "namespace": "android_app",
-    "package_name": "com.aurum.music",
-    "sha256_cert_fingerprints": [
-      "FD:93:5B:C9:8F:23:FA:2A:A9:00:59:4B:03:C0:25:A4:FC:9E:A2:70:7E:40:40:76:50:6D:08:5B:C8:E9:C4:2D"
-    ]
+    "package_name": "dev.workers.sharmashivam9109.aurum_stream.twa",
+    "sha256_cert_fingerprints": ["3B:70:C9:A9:29:0F:45:1A:5F:A3:21:FE:6E:25:52:8A:43:5F:06:67:82:D7:9C:A1:9D:09:75:31:B0:A1:FC:8A"]
   }
 }]
