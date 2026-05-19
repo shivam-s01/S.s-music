@@ -559,7 +559,6 @@ function toggleLyricsView() {
   }
 }
 
-// ─── FIXED: updateNextStrip ───────────────────────────────────────────────────
 function updateNextStrip() {
   const strip = document.getElementById('fp-next-strip');
   if (!strip) return;
@@ -571,17 +570,9 @@ function updateNextStrip() {
     return; 
   }
   
-  // FIXED: shuffle aur normal dono sahi se calculate hota hai
-  let nextIdx;
-  if (shuffleOn) {
-    nextIdx = Math.floor(Math.random() * currentQueue.length);
-    while (nextIdx === currentIndex && currentQueue.length > 1) {
-      nextIdx = Math.floor(Math.random() * currentQueue.length);
-    }
-  } else {
-    nextIdx = (currentIndex + 1) % currentQueue.length;
-  }
-
+  const nextIdx = shuffleOn
+    ? (currentIndex + 1 + Math.floor(Math.random() * (currentQueue.length - 1))) % currentQueue.length
+    : (currentIndex + 1) % currentQueue.length;
   const nextSong = currentQueue[nextIdx];
   if (!nextSong) { strip.style.display = 'none'; return; }
 
@@ -606,8 +597,8 @@ function updateNextStrip() {
     }));
   }
 
-  const nextArtEl    = document.getElementById('fp-next-art');
-  const nextTitleEl  = document.getElementById('fp-next-title');
+  const nextArtEl = document.getElementById('fp-next-art');
+  const nextTitleEl = document.getElementById('fp-next-title');
   const nextArtistEl = document.getElementById('fp-next-artist');
 
   if (nextArtEl) {
@@ -2425,21 +2416,17 @@ async function triggerDownload(quality) {
   }
 }
 
-// ─── FIXED: fetchLyrics ───────────────────────────────────────────────────────
+// ─── LYRICS FETCH (updated with toggle button) ─────────────────────────────────
 async function fetchLyrics(song) {
   const wrap = document.getElementById('fp-lyrics-wrap');
   const el   = document.getElementById('fp-lyrics');
   const lyricsBtn = document.getElementById('fp-lyrics-toggle');
   if (!wrap || !el) return;
 
-  // Reset: agar lyrics view active tha to artwork pe wapas aao
-  if (lyricsViewActive) toggleLyricsView();
-
-  wrap.style.display   = 'none';
   wrap.style.opacity   = '0';
   wrap.style.transform = 'translateY(6px)';
+  wrap.style.display   = '';
   el.textContent       = '';
-  if (lyricsBtn) lyricsBtn.style.display = 'none';
 
   try {
     const artist = encodeURIComponent((song.artistName || '').split(/[&,]/)[0].trim());
@@ -2450,23 +2437,25 @@ async function fetchLyrics(song) {
     if (!d.lyrics || !d.lyrics.trim()) throw new Error('empty');
 
     el.textContent = d.lyrics.trim();
-    wrap.style.display = '';
-
-    // Lyrics button dikhao
+    
+    // Show lyrics button if lyrics available
     if (lyricsBtn) lyricsBtn.style.display = 'flex';
 
     requestAnimationFrame(() => {
       wrap.style.transition = 'opacity 0.4s cubic-bezier(0.22,1,0.36,1), transform 0.4s cubic-bezier(0.22,1,0.36,1)';
-      wrap.style.opacity    = '1';
-      wrap.style.transform  = 'translateY(0)';
+      if (!lyricsViewActive) {
+        wrap.style.opacity    = '1';
+        wrap.style.transform  = 'translateY(0)';
+      }
       setTimeout(() => { wrap.style.transition = ''; }, 420);
     });
-
   } catch(e) {
-    wrap.style.display   = 'none';
-    wrap.style.opacity   = '';
+    wrap.style.display = 'none';
+    wrap.style.opacity = '';
     wrap.style.transform = '';
     if (lyricsBtn) lyricsBtn.style.display = 'none';
+    // If lyrics view was active, revert to artwork
+    if (lyricsViewActive) toggleLyricsView();
   }
 }
 
