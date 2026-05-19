@@ -7,7 +7,7 @@ const CACHE_TTL = {
   stream: 3600,
   songs: 120,
   song: 300,
-  static: 86400,
+  static: 0,
   default: 60,
 };
 
