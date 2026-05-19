@@ -5,8 +5,10 @@
   "description": "Premium futuristic music streaming app",
   "start_url": "https://aurum-stream.sharmashivam9109.workers.dev/",
   "scope": "https://aurum-stream.sharmashivam9109.workers.dev/",
-  "display": "fullscreen",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
   "orientation": "portrait",
   "background_color": "#000000",
-  "theme_color": "#000000"
+  "theme_color": "#000000",
+  "prefer_related_applications": false
 }
