@@ -1462,10 +1462,6 @@ img.img-error{opacity:1}
 }
 
 /* ══ QUEUE PANEL — open animation polish ══ */
-#queue-panel{
-  /* override — handled fully by JS now */
-  transition:none;
-}
 #queue-panel.open{transform:translateY(0)}
 
 /* Queue panel bg blur — same as fullscreen player */
