@@ -559,6 +559,7 @@ function toggleLyricsView() {
   }
 }
 
+// ─── FIXED: updateNextStrip ───────────────────────────────────────────────────
 function updateNextStrip() {
   const strip = document.getElementById('fp-next-strip');
   if (!strip) return;
@@ -570,9 +571,17 @@ function updateNextStrip() {
     return; 
   }
   
-  const nextIdx = shuffleOn
-    ? (currentIndex + 1 + Math.floor(Math.random() * (currentQueue.length - 1))) % currentQueue.length
-    : (currentIndex + 1) % currentQueue.length;
+  // FIXED: shuffle aur normal dono sahi se calculate hota hai
+  let nextIdx;
+  if (shuffleOn) {
+    nextIdx = Math.floor(Math.random() * currentQueue.length);
+    while (nextIdx === currentIndex && currentQueue.length > 1) {
+      nextIdx = Math.floor(Math.random() * currentQueue.length);
+    }
+  } else {
+    nextIdx = (currentIndex + 1) % currentQueue.length;
+  }
+
   const nextSong = currentQueue[nextIdx];
   if (!nextSong) { strip.style.display = 'none'; return; }
 
@@ -597,8 +606,8 @@ function updateNextStrip() {
     }));
   }
 
-  const nextArtEl = document.getElementById('fp-next-art');
-  const nextTitleEl = document.getElementById('fp-next-title');
+  const nextArtEl    = document.getElementById('fp-next-art');
+  const nextTitleEl  = document.getElementById('fp-next-title');
   const nextArtistEl = document.getElementById('fp-next-artist');
 
   if (nextArtEl) {
@@ -2336,161 +2345,4 @@ function closeDownloadModal(e) {
 async function triggerDownload(quality) {
   const song = _downloadSong || currentTrack;
   _downloadSong = null;
-  if (!song) { showToast('No track selected'); return; }
-
-  const modal = document.getElementById('download-modal');
-  modal.classList.remove('open');
-  modal.style.display = 'none';
-
-  const cleanTitle  = (song.trackName  || 'audio').replace(/[/\?%*:|"<>]/g, '-');
-  const cleanArtist = (song.artistName || '').replace(/[/\?%*:|"<>]/g, '-');
-
-  if (quality === 'preview') {
-    try {
-      showToast('Downloading preview…');
-      const res = await fetch(song.previewUrl);
-      if (!res.ok) throw new Error('fetch failed');
-      const blob   = await res.blob();
-      const objUrl = URL.createObjectURL(blob);
-      const a      = document.createElement('a');
-      a.href       = objUrl;
-      a.download   = `${cleanTitle}_preview.m4a`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(objUrl), 5000);
-      haptic([10, 30, 10]);
-      showToast('Preview saved ✓');
-    } catch(e) { showToast('Download failed'); }
-    return;
-  }
-
-  if (quality === 'ringtone') {
-    try {
-      showToast('Saving ringtone…');
-      const res = await fetch(song.previewUrl);
-      if (!res.ok) throw new Error('fetch failed');
-      const blob   = await res.blob();
-      const objUrl = URL.createObjectURL(blob);
-      const a      = document.createElement('a');
-      a.href       = objUrl;
-      a.download   = `${cleanTitle}_ringtone.m4a`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(objUrl), 5000);
-      haptic([10, 30, 10]);
-      showToast('Ringtone saved ✓');
-    } catch(e) { showToast('Download failed'); }
-    return;
-  }
-
-  if (quality === 'full') {
-    showToast('Downloading full song…');
-    try {
-      const q      = encodeURIComponent(song.trackName  || '');
-      const artist = encodeURIComponent(song.artistName || '');
-      const dlUrl  = `/api/download?q=${q}&artist=${artist}&quality=full`;
-      const a      = document.createElement('a');
-      a.href       = dlUrl;
-      a.download   = `${cleanTitle} - ${cleanArtist}.mp3`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      haptic([10, 30, 10]);
-      showToast('Download started ✓');
-    } catch(e) { showToast('Download failed'); }
-    return;
-  }
-
-  if (quality === 'gift') {
-    showToast('Fetching 320 kbps…');
-    try {
-      const rawTitle  = (song.trackName  || '').replace(/\(.*?\)/g, '').trim();
-      const rawArtist = (song.artistName || '').split(/[&,]/)[0].trim();
-      const q      = encodeURIComponent(rawTitle);
-      const artist = encodeURIComponent(rawArtist);
-      const dlUrl  = `/api/download?q=${q}&artist=${artist}&quality=gift`;
-      const a      = document.createElement('a');
-      a.href       = dlUrl;
-      a.download   = `${cleanTitle} - ${cleanArtist}_320.mp3`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      haptic([10, 30, 10]);
-      showToast('320 kbps download started ✓');
-    } catch(e) { showToast('Owner Gift failed'); }
-    return;
-  }
-}
-
-// ─── LYRICS FETCH (updated with toggle button) ─────────────────────────────────
-async function fetchLyrics(song) {
-  const wrap = document.getElementById('fp-lyrics-wrap');
-  const el   = document.getElementById('fp-lyrics');
-  const lyricsBtn = document.getElementById('fp-lyrics-toggle');
-  if (!wrap || !el) return;
-
-  wrap.style.opacity   = '0';
-  wrap.style.transform = 'translateY(6px)';
-  wrap.style.display   = '';
-  el.textContent       = '';
-
-  try {
-    const artist = encodeURIComponent((song.artistName || '').split(/[&,]/)[0].trim());
-    const title  = encodeURIComponent(song.trackName || '');
-    const r = await fetch(`https://api.lyrics.ovh/v1/${artist}/${title}`);
-    if (!r.ok) throw new Error('not found');
-    const d = await r.json();
-    if (!d.lyrics || !d.lyrics.trim()) throw new Error('empty');
-
-    el.textContent = d.lyrics.trim();
-    
-    // Show lyrics button if lyrics available
-    if (lyricsBtn) lyricsBtn.style.display = 'flex';
-
-    requestAnimationFrame(() => {
-      wrap.style.transition = 'opacity 0.4s cubic-bezier(0.22,1,0.36,1), transform 0.4s cubic-bezier(0.22,1,0.36,1)';
-      if (!lyricsViewActive) {
-        wrap.style.opacity    = '1';
-        wrap.style.transform  = 'translateY(0)';
-      }
-      setTimeout(() => { wrap.style.transition = ''; }, 420);
-    });
-  } catch(e) {
-    wrap.style.display = 'none';
-    wrap.style.opacity = '';
-    wrap.style.transform = '';
-    if (lyricsBtn) lyricsBtn.style.display = 'none';
-    // If lyrics view was active, revert to artwork
-    if (lyricsViewActive) toggleLyricsView();
-  }
-}
-
-// ─── TOAST ────────────────────────────────────────────────────────────────────
-let _toastTimer = null;
-function showToast(msg) {
-  const t = document.getElementById('toast'); if (!t) return;
-  t.textContent = msg; t.classList.add('show');
-  clearTimeout(_toastTimer);
-  _toastTimer = setTimeout(() => t.classList.remove('show'), 2200);
-}
-
-// ─── UTILS ────────────────────────────────────────────────────────────────────
-function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-function formatMs(ms) { const s = Math.floor((ms||0)/1000); return `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`; }
-function formatSec(s) { s = Math.floor(s||0); return `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`; }
-function haptic(pat) { try { if (navigator.vibrate && (typeof appSettings === 'undefined' || appSettings?.hapticFeedback !== false)) navigator.vibrate(pat); } catch(e) {} }
-
-if (!isTV) {
-  document.addEventListener('keydown', e => {
-    if (e.code === 'Space' && e.target.tagName !== 'INPUT') { e.preventDefault(); togglePlay(); }
-  });
-}
-
-// ─── INIT ─────────────────────────────────────────────────────────────────────
-window.addEventListener('DOMContentLoaded', () => {
-  setVh();
-  initViz();
-  buildHomeSections('all');
-  renderLibrary();
-  renderSearchIdle();
-  setupMiniGesture();
-  setupFullPlayerGesture();
-  setupArtSwipeGesture();
-  setupShakeGesture();
-  if (isTV) setupTVNavigation();
-  requestPersistentStorage();
-});
+  if (!song)
