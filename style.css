@@ -5,7 +5,7 @@
 /* ══ Z-INDEX SYSTEM ══ */
 :root{
   --z-page:1;--z-mini:99;--z-nav:100;
-  --z-playlist:150;--z-fp:200;--z-settings:300;
+  --z-playlist:210;--z-fp:200;--z-settings:300;
   --z-modal:10000;--z-toast:10001;
 }
 
@@ -588,13 +588,24 @@ img.img-error{opacity:1}
 
 /* ══ QUEUE PANEL ══ */
 #queue-panel{
-  position:absolute;inset:0;z-index:var(--z-playlist);
-  background:var(--bg);transform:translateY(100%);
+  position:fixed;
+  left:0;right:0;bottom:0;
+  height:100%;
+  max-height:calc(var(--vh,1vh)*100);
+  z-index:var(--z-playlist);
+  background:var(--bg);
+  transform:translateY(100%);
   transition:transform var(--t-player);
   display:flex;flex-direction:column;
   overscroll-behavior:contain;touch-action:pan-y;
+  will-change:transform;
+  /* Constrain to app column on wide screens */
+  max-width:430px;
+  margin:0 auto;
 }
-#queue-panel.open{transform:translateY(0)}
+#queue-panel.open{
+  transform:translateY(0) !important;
+}
 #queue-panel.dragging{transition:none!important}
 
 .queue-panel-handle{width:36px;height:4px;border-radius:2px;background:var(--border2);margin:16px auto 0;cursor:grab;flex-shrink:0}
@@ -1461,8 +1472,7 @@ img.img-error{opacity:1}
   fill:var(--gold-glow2);
 }
 
-/* ══ QUEUE PANEL — open animation polish ══ */
-#queue-panel.open{transform:translateY(0)}
+/* ══ QUEUE PANEL — open animation polish (handled above) ══ */
 
 /* Queue panel bg blur — same as fullscreen player */
 #queue-panel::before{
@@ -1489,23 +1499,69 @@ img.img-error{opacity:1}
   animation:none;
   opacity:.9;
 }
-/* Lyrics Toggle Button */
+/* ══ LYRICS TOGGLE BUTTON ══ */
 .fp-lyrics-btn {
   background: none;
   border: none;
   cursor: pointer;
   padding: 10px;
-  transition: transform 0.2s ease, stroke 0.2s ease;
-  display: none;
+  display: none; /* shown by JS when lyrics available */
   align-items: center;
   justify-content: center;
   margin: 0 auto 4px;
+  transition: transform 0.2s cubic-bezier(.33,1,.68,1);
+  touch-action: manipulation;
 }
 .fp-lyrics-btn:active {
-  transform: scale(0.85);
+  transform: scale(0.82);
+}
+.fp-lyrics-btn svg {
+  width: 18px; height: 18px;
+  stroke: var(--text3);
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  transition: stroke 0.18s ease;
 }
 .fp-lyrics-btn.active svg {
   stroke: var(--gold-l);
+}
+
+/* ══ LYRICS WRAP — full-height scrollable panel inside fp-art-wrap area ══ */
+#fp-lyrics-wrap {
+  display: none; /* toggled by JS */
+  flex-direction: column;
+  width: 100%;
+  /* Inherit the same padding as fp-art-wrap so it aligns perfectly */
+  padding: 0 26px;
+  box-sizing: border-box;
+  /* Take the same vertical space as the artwork */
+  aspect-ratio: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+  scrollbar-width: none;
+  /* Fade edges for polish */
+  mask-image: linear-gradient(to bottom, transparent 0%, black 8%, black 88%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 8%, black 88%, transparent 100%);
+  transition: opacity 0.3s cubic-bezier(0.2, 0.9, 0.4, 1.1),
+              transform 0.3s cubic-bezier(0.2, 0.9, 0.4, 1.1);
+}
+#fp-lyrics-wrap::-webkit-scrollbar { display: none; }
+
+#fp-lyrics {
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.85;
+  color: var(--text2);
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 16px 0 24px;
+  letter-spacing: 0.01em;
+}
+[data-theme="light"] #fp-lyrics {
+  color: var(--text2);
 }
 
 /* Queue swipe hint animation */
@@ -1518,7 +1574,4 @@ img.img-error{opacity:1}
   50% { transform: translateX(-5px); opacity: 0.8; }
 }
 
-/* Lyrics wrap smooth transitions */
-#fp-lyrics-wrap {
-  transition: opacity 0.3s cubic-bezier(0.2,0.9,0.4,1.1), transform 0.3s cubic-bezier(0.2,0.9,0.4,1.1);
-}
+/* fp-lyrics-wrap transition defined in the lyrics section above */
