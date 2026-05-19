@@ -195,8 +195,6 @@ function loadTrack(song, autoplay = true) {
   _autoFetchFullSong(song);
   clearTimeout(_recFetchTimeout);
   _recFetchTimeout = setTimeout(() => fetchRecommendations(song), 800);
-
-  // ── CHANGE 1: Fetch lyrics on every track load ──
   fetchLyrics(song);
 }
 
@@ -510,16 +508,21 @@ function updatePlayerUI() {
 function updateNextStrip() {
   const strip = document.getElementById('fp-next-strip');
   if (!strip) return;
-  if (!currentQueue.length || currentQueue.length < 2) { strip.style.display = 'none'; return; }
+  
+  if (!currentQueue.length || currentQueue.length < 2) { 
+    strip.style.display = 'none'; 
+    return; 
+  }
+  
   const nextIdx = shuffleOn
     ? (currentIndex + 1 + Math.floor(Math.random() * (currentQueue.length - 1))) % currentQueue.length
     : (currentIndex + 1) % currentQueue.length;
   const nextSong = currentQueue[nextIdx];
   if (!nextSong) { strip.style.display = 'none'; return; }
 
-  // ── Smooth reveal animation ──
-  const wasHidden = strip.style.display === 'none' || strip.style.display === '';
-  strip.style.display = '';
+  strip.style.display = 'flex';
+  
+  const wasHidden = !strip.style.opacity || strip.style.opacity === '0' || getComputedStyle(strip).opacity === '0';
   if (wasHidden) {
     strip.style.opacity = '0';
     strip.style.transform = 'translateY(8px)';
@@ -531,11 +534,10 @@ function updateNextStrip() {
     }));
   }
 
-  const nextArtEl   = document.getElementById('fp-next-art');
+  const nextArtEl = document.getElementById('fp-next-art');
   const nextTitleEl = document.getElementById('fp-next-title');
   const nextArtistEl = document.getElementById('fp-next-artist');
 
-  // ── Cross-fade art when song changes ──
   if (nextArtEl) {
     const newSrc = getArtUrl(nextSong, '300x300');
     if (nextArtEl.dataset.currentSrc !== newSrc) {
@@ -1335,7 +1337,6 @@ async function fetchRecommendations(song) {
       const newRecs = recs.filter(s => !existingIds.has(String(s.trackId))).slice(0, 8);
       currentQueue = [...currentQueue, ...newRecs];
       if (queuePanelOpen) updateQueuePanel();
-      // ── CHANGE 2: Refresh next strip after recs load ──
       updateNextStrip();
     }
   } catch(e) {}
@@ -2247,13 +2248,11 @@ async function triggerDownload(quality) {
 }
 
 // ─── LYRICS ───────────────────────────────────────────────────────────────────
-// ── CHANGE 3: fetchLyrics — auto-shows/hides the lyrics section ──
 async function fetchLyrics(song) {
   const wrap = document.getElementById('fp-lyrics-wrap');
   const el   = document.getElementById('fp-lyrics');
   if (!wrap || !el) return;
 
-  // Hide + clear while loading
   wrap.style.opacity   = '0';
   wrap.style.transform = 'translateY(6px)';
   wrap.style.display   = '';
@@ -2269,7 +2268,6 @@ async function fetchLyrics(song) {
 
     el.textContent = d.lyrics.trim();
 
-    // Smooth reveal
     requestAnimationFrame(() => {
       wrap.style.transition = 'opacity 0.4s cubic-bezier(0.22,1,0.36,1), transform 0.4s cubic-bezier(0.22,1,0.36,1)';
       wrap.style.opacity    = '1';
@@ -2277,7 +2275,6 @@ async function fetchLyrics(song) {
       setTimeout(() => { wrap.style.transition = ''; }, 420);
     });
   } catch(e) {
-    // No lyrics available — hide cleanly
     wrap.style.display = 'none';
     wrap.style.opacity = '';
     wrap.style.transform = '';
@@ -2311,11 +2308,11 @@ window.addEventListener('DOMContentLoaded', () => {
   initViz();
   buildHomeSections('all');
   renderLibrary();
-renderSearchIdle();
-setupMiniGesture();
-setupFullPlayerGesture();
-setupArtSwipeGesture();
-setupShakeGesture();
-if (isTV) setupTVNavigation();
-requestPersistentStorage();
+  renderSearchIdle();
+  setupMiniGesture();
+  setupFullPlayerGesture();
+  setupArtSwipeGesture();
+  setupShakeGesture();
+  if (isTV) setupTVNavigation();
+  requestPersistentStorage();
 });
