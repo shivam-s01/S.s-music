@@ -134,7 +134,15 @@
       <button onclick="toggleRepeat()" id="repeat-btn" aria-label="Repeat"><svg viewBox="0 0 24 24"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></button>
     </div>
 
-    <!-- Up Next Strip - FIXED: removed style="display:none" -->
+    <!-- Lyrics Toggle Button -->
+    <button class="fp-lyrics-btn" id="fp-lyrics-toggle" onclick="toggleLyricsView()" style="display:none;">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--text2)" stroke-width="1.5">
+        <path d="M3 4h18M3 12h12M3 20h6M15 8l4 4-4 4" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M21 12h-6"/>
+      </svg>
+    </button>
+
+    <!-- Up Next Strip -->
     <div class="fp-next-strip" id="fp-next-strip" onclick="openQueuePanel()">
       <div class="fp-next-tag">UP<br>NEXT</div>
       <img class="fp-next-art" id="fp-next-art" src="" alt="Next song art">
