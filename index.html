@@ -146,9 +146,14 @@
     </div>
 
     <!-- LYRICS SECTION -->
-    <div id="fp-lyrics-wrap" style="display:none;margin:0 20px 12px;border-radius:16px;background:rgba(255,255,255,0.04);overflow:hidden;">
-      <div style="padding:14px 16px 8px;font-size:10px;font-weight:700;letter-spacing:1.2px;color:var(--text3);text-transform:uppercase;">Lyrics</div>
-      <div id="fp-lyrics" style="padding:0 16px 16px;font-size:14px;line-height:2;color:var(--text2);white-space:pre-wrap;max-height:220px;overflow-y:auto;-webkit-overflow-scrolling:touch;"></div>
+    <div id="fp-lyrics-wrap" style="display:none;">
+      <div class="fp-lyrics-header">
+        <span class="fp-lyrics-label">Lyrics</span>
+        <button class="fp-lyrics-close-btn" onclick="toggleLyricsView()" aria-label="Close lyrics">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div id="fp-lyrics"></div>
     </div>
 
     <div class="fp-bottom">
@@ -157,15 +162,30 @@
         <div class="fp-vol-icon"><svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path id="vol-path" d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg></div>
         <input type="range" class="fp-vol-slider" id="fp-vol-slider" min="0" max="1" step="0.01" value="1" oninput="setVolume(this.value)" aria-label="Volume">
       </div>
+      <!-- LYRICS TOGGLE BUTTON — hidden until JS confirms lyrics loaded -->
+      <button class="fp-bottom-icon fp-lyrics-btn" id="fp-lyrics-toggle" onclick="toggleLyricsView()" title="Lyrics" style="display:none;" aria-label="Lyrics">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/>
+          <line x1="16" y1="17" x2="8" y2="17"/>
+          <polyline points="10 9 9 9 8 9"/>
+        </svg>
+      </button>
       <button class="fp-bottom-icon" id="fp-dl-btn" onclick="openDownloadModal()" title="Download"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
     </div>
 
-    <!-- QUEUE PANEL -->
-    <div id="queue-panel">
-      <div class="queue-panel-handle" id="queue-drag-handle"></div>
-      <div class="queue-panel-header"><h3>Up Next</h3><span class="queue-count" id="queue-count"></span></div>
-      <div class="queue-panel-body" id="queue-panel-body"></div>
-    </div>
+  </div>
+  <!-- END FULLSCREEN PLAYER -->
+
+  <!-- ═══════════════════════════════════════════════════════════
+       QUEUE PANEL — OUTSIDE fullscreen-player so position:fixed
+       can escape overflow:hidden and render above everything
+       ═══════════════════════════════════════════════════════════ -->
+  <div id="queue-panel">
+    <div class="queue-panel-handle" id="queue-drag-handle"></div>
+    <div class="queue-panel-header"><h3>Up Next</h3><span class="queue-count" id="queue-count"></span></div>
+    <div class="queue-panel-body" id="queue-panel-body"></div>
   </div>
 
   <!-- PLAYLIST DETAIL -->
