@@ -1373,3 +1373,123 @@ img.img-error{opacity:1}
   .song-row-artist{font-size:13px}
   .nav-btn span{font-size:11px}
 }
+/* ══ QUEUE VISUAL CARDS ROW (Spotify-style) ══ */
+.queue-visual-row{
+  display:flex;gap:10px;
+  padding:4px 16px 16px;
+  overflow-x:auto;overflow-y:hidden;
+  -webkit-overflow-scrolling:touch;
+  scroll-snap-type:x proximity;
+  scrollbar-width:none;
+  touch-action:pan-x pan-y;
+}
+.queue-visual-row::-webkit-scrollbar{display:none}
+
+.queue-visual-card{
+  flex-shrink:0;width:120px;
+  border-radius:14px;overflow:hidden;
+  position:relative;cursor:pointer;
+  background:var(--surface3);
+  box-shadow:var(--card-shadow);
+  transition:transform var(--t-spring),box-shadow var(--t-smooth);
+  scroll-snap-align:start;
+  animation:fadeSlideUp .28s cubic-bezier(.33,1,.68,1) both;
+  touch-action:manipulation;
+}
+.queue-visual-card:active{
+  transform:scale(0.91);
+  box-shadow:0 1px 4px rgba(0,0,0,.22);
+}
+.queue-visual-card img{
+  width:120px;height:120px;
+  object-fit:cover;display:block;
+  background:var(--surface3);
+}
+
+.qvc-overlay{
+  position:absolute;bottom:0;left:0;right:0;
+  background:linear-gradient(to top,rgba(0,0,0,.88) 0%,rgba(0,0,0,.32) 55%,transparent 100%);
+  padding:24px 8px 8px;
+  pointer-events:none;
+}
+.qvc-title{
+  font-size:10px;font-weight:700;
+  color:#fff;letter-spacing:-.04px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  line-height:1.3;
+}
+.qvc-artist{
+  font-size:9px;color:rgba(255,255,255,.52);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  margin-top:2px;font-weight:500;
+}
+
+.qvc-play{
+  position:absolute;top:7px;right:7px;
+  width:26px;height:26px;border-radius:50%;
+  background:rgba(0,0,0,.44);
+  backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
+  display:flex;align-items:center;justify-content:center;
+  pointer-events:none;
+}
+.qvc-play svg{
+  width:11px;height:11px;
+  stroke:none;fill:#fff;
+  margin-left:2px;
+}
+
+/* ══ QUEUE ITEM — right side (heart + duration) ══ */
+.queue-item-right{
+  display:flex;align-items:center;
+  gap:4px;flex-shrink:0;
+}
+.queue-item-heart{
+  background:none;border:none;cursor:pointer;
+  padding:6px;display:flex;align-items:center;
+  touch-action:manipulation;
+  transition:transform var(--t-spring);
+}
+.queue-item-heart:active{transform:scale(0.72)}
+.queue-item-heart svg{
+  width:14px;height:14px;
+  stroke:var(--text3);fill:none;
+  stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;
+  transition:stroke .16s ease,fill .16s ease;
+}
+.queue-item-heart.saved svg{
+  stroke:var(--gold-l);
+  fill:var(--gold-glow2);
+}
+
+/* ══ QUEUE PANEL — open animation polish ══ */
+#queue-panel{
+  /* override — handled fully by JS now */
+  transition:none;
+}
+#queue-panel.open{transform:translateY(0)}
+
+/* Queue panel bg blur — same as fullscreen player */
+#queue-panel::before{
+  content:'';
+  position:absolute;inset:0;
+  background:var(--bg);
+  z-index:-1;
+}
+
+/* Section label spacing tweak for visual row */
+.queue-section-label+.queue-visual-row{
+  margin-top:-4px;
+}
+
+/* ══ NEXT STRIP — tap hint arrow pulse ══ */
+.fp-next-strip>svg{
+  animation:next-strip-pulse 2.4s ease-in-out infinite;
+}
+@keyframes next-strip-pulse{
+  0%,100%{opacity:.38;transform:translateX(0)}
+  50%{opacity:.7;transform:translateX(2px)}
+}
+.fp-next-strip:active>svg{
+  animation:none;
+  opacity:.9;
+}
