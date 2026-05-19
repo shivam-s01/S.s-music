@@ -144,6 +144,13 @@
       </div>
       <svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
     </div>
+
+    <!-- LYRICS SECTION — shown only when lyrics are available -->
+    <div id="fp-lyrics-wrap" style="display:none;margin:0 20px 12px;border-radius:16px;background:rgba(255,255,255,0.04);overflow:hidden;">
+      <div style="padding:14px 16px 8px;font-size:10px;font-weight:700;letter-spacing:1.2px;color:var(--text3);text-transform:uppercase;">Lyrics</div>
+      <div id="fp-lyrics" style="padding:0 16px 16px;font-size:14px;line-height:2;color:var(--text2);white-space:pre-wrap;max-height:220px;overflow-y:auto;-webkit-overflow-scrolling:touch;"></div>
+    </div>
+
     <div class="fp-bottom">
       <button class="fp-bottom-icon fp-queue-btn" id="fp-queue-btn" onclick="toggleQueuePanel()" title="Up Next"><svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></button>
       <div class="fp-volume-wrap">
@@ -188,19 +195,19 @@
   <!-- ADD TO PLAYLIST MODAL -->
   <div class="modal-overlay" id="add-playlist-modal" onclick="closeAddToPlaylistModal(event)"><div class="modal-sheet"><div class="modal-handle"></div><div class="modal-title">Add to Playlist</div><div id="add-playlist-options"></div></div></div>
 
-  <!-- CREATE PLAYLIST MODAL — FIX: added display:none -->
+  <!-- CREATE PLAYLIST MODAL -->
   <div class="input-modal" id="create-playlist-modal" style="display:none"><div class="input-sheet"><div class="input-modal-handle"></div><h3>New Playlist</h3><input type="text" id="playlist-name-input" placeholder="Give it a name…" maxlength="40"><div class="input-modal-actions"><button class="btn-cancel" onclick="closeCreatePlaylist()">Cancel</button><button class="btn-create" onclick="createPlaylist()">Create</button></div></div></div>
 
-  <!-- RENAME MODAL — FIX: added display:none -->
+  <!-- RENAME MODAL -->
   <div id="rename-modal" style="display:none"><div class="input-sheet"><div class="input-modal-handle"></div><h3>Rename Playlist</h3><input type="text" id="rename-input" placeholder="New name…" maxlength="40"><div class="input-modal-actions"><button class="btn-cancel" onclick="closeRenameModal()">Cancel</button><button class="btn-create" onclick="confirmRename()">Save</button></div></div></div>
 
-  <!-- PLAYLIST OPTIONS MODAL — FIX: added display:none -->
+  <!-- PLAYLIST OPTIONS MODAL -->
   <div id="playlist-opts-modal" style="display:none" onclick="closePlaylistOpts(event)"><div class="modal-sheet"><div class="modal-handle"></div><div class="modal-title" id="pl-opts-title">Playlist</div><div class="modal-option" onclick="openRenameModal()"><svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg><span>Rename</span></div><div class="modal-option danger" onclick="confirmDeletePlaylist()"><svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg><span>Delete Playlist</span></div></div></div>
 
-  <!-- QUALITY MODAL — FIX: added display:none -->
+  <!-- QUALITY MODAL -->
   <div id="quality-modal" style="display:none" onclick="closeQualitySheet(event)"><div class="quality-sheet"><div class="quality-sheet-handle"></div><h3>Audio Quality</h3><div class="qs-sub" id="qs-track-name">Select audio source</div><div class="quality-option" onclick="selectQuality('full')"><div class="quality-option-left"><svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg><div><div class="qo-title">Lossless Stream</div><div class="qo-desc">Full song · Best quality</div></div></div><span class="quality-badge active" id="q-badge-full">● Active</span></div><div class="quality-option" onclick="selectQuality('preview')"><div class="quality-option-left"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg><div><div class="qo-title">30s Preview</div><div class="qo-desc">128kbps AAC · Quick listen</div></div></div><span class="quality-badge ext" id="q-badge-preview">○ Switch</span></div></div></div>
 
-  <!-- DOWNLOAD MODAL — FIX: added display:none -->
+  <!-- DOWNLOAD MODAL -->
   <div id="download-modal" style="display:none" onclick="closeDownloadModal(event)"><div class="dl-sheet">
     <div class="dl-sheet-handle"></div>
     <h3>Save to Device</h3>
@@ -257,3 +264,5 @@
     });
   }
 </script>
+</body>
+</html>
