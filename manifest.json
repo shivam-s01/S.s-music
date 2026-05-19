@@ -1,76 +1,12 @@
-export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-
-    // 1. URL BAR HATANE KA JUGAAD (Assetlinks Route)
-    if (url.pathname === '/.well-known/assetlinks.json') {
-      const assetLinks = [{
-        "relation": ["delegate_permission/common.handle_all_urls"],
-        "target": {
-          "namespace": "android_app",
-          "package_name": "dev.workers.sharmashivam9109.aurum_stream.twa",
-          "sha256_cert_fingerprints": ["06:AA:CB:92:3C:05:F3:8E:DA:CC:5F:B6:42:EF:EE:BF:21:D2:CB:04:D7:82:0D:4F:C1:5E:CC:A9:51:E4:76:AD"]
-        }
-      }];
-
-      return new Response(JSON.stringify(assetLinks), {
-        headers: { 
-          'content-type': 'application/json',
-          'Access-Control-Allow-Origin': '*'
-        }
-      });
-    }
-
-    // 2. TUMHARA ASLI MUSIC APP KA CODE (HTML/Frontend)
-    // Agar tumhari app ka index.html code alag hai, toh tum use is HTML block ke andar badal sakte ho.
-    const htmlContent = `
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Aurum - Premium Futuristic Music</title>
-        <link rel="manifest" href="/manifest.json">
-        <style>
-            body {
-                background-color: #000000;
-                color: #ffffff;
-                font-family: Arial, sans-serif;
-                margin: 0;
-                padding: 20px;
-            }
-            /* Tumhara baaki ka CSS yahan aayega */
-        </style>
-    </head>
-    <body>
-        <h1>Welcome to Aurum</h1>
-        <p>Premium futuristic music streaming app...</p>
-        </body>
-    </html>
-    `;
-
-    // Static manifest file ke liye handle (agar browser manifest maange)
-    if (url.pathname === '/manifest.json') {
-      const manifest = {
-        "id": "https://aurum-stream.sharmashivam9109.workers.dev/",
-        "name": "Aurum",
-        "short_name": "Aurum",
-        "description": "Premium futuristic music streaming app",
-        "start_url": "https://aurum-stream.sharmashivam9109.workers.dev/",
-        "scope": "https://aurum-stream.sharmashivam9109.workers.dev/",
-        "display": "fullscreen",
-        "orientation": "portrait",
-        "background_color": "#000000",
-        "theme_color": "#000000"
-      };
-      return new Response(JSON.stringify(manifest), {
-        headers: { 'content-type': 'application/json' }
-      });
-    }
-
-    // Default response: Pura HTML render hoga
-    return new Response(htmlContent, {
-      headers: { 'content-type': 'text/html; charset=utf-8' }
-    });
-  }
-};
+{
+  "id": "https://aurum-stream.sharmashivam9109.workers.dev/",
+  "name": "Aurum",
+  "short_name": "Aurum",
+  "description": "Premium futuristic music streaming app",
+  "start_url": "https://aurum-stream.sharmashivam9109.workers.dev/",
+  "scope": "https://aurum-stream.sharmashivam9109.workers.dev/",
+  "display": "fullscreen",
+  "orientation": "portrait",
+  "background_color": "#000000",
+  "theme_color": "#000000"
+}
