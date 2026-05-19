@@ -1,10 +1,10 @@
 {
-  "id": "https://aurum-waves.up.railway.app/",
+  "id": "https://aurum-stream.sharmashivam9109.workers.dev/",
   "name": "Aurum",
   "short_name": "Aurum",
   "description": "Premium futuristic music streaming app",
-  "start_url": "https://aurum-waves.up.railway.app/",
-  "scope": "https://aurum-waves.up.railway.app/",
+  "start_url": "https://aurum-stream.sharmashivam9109.workers.dev/",
+  "scope": "https://aurum-stream.sharmashivam9109.workers.dev/",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#000000",
