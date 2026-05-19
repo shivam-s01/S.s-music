@@ -511,51 +511,79 @@ function updatePlayerUI() {
 
 // ─── LYRICS TOGGLE VIEW (Spotify Style) ───────────────────────────────────────
 function toggleLyricsView() {
-  const artWrap = document.getElementById('fp-art-wrap');
+  const artWrap   = document.getElementById('fp-art-wrap');
   const lyricsWrap = document.getElementById('fp-lyrics-wrap');
-  const lyricsBtn = document.getElementById('fp-lyrics-toggle');
-  
-  if (!lyricsViewActive && lyricsWrap && lyricsWrap.style.display !== 'none') {
+  const lyricsBtn  = document.getElementById('fp-lyrics-toggle');
+
+  // Guard: both elements must exist
+  if (!artWrap || !lyricsWrap) return;
+
+  // Guard: only enter lyrics view if lyrics are actually loaded
+  const lyricsEl = document.getElementById('fp-lyrics');
+  const hasLyrics = lyricsEl && lyricsEl.textContent.trim().length > 0;
+  if (!lyricsViewActive && !hasLyrics) {
+    showToast('No lyrics available');
+    return;
+  }
+
+  if (!lyricsViewActive) {
+    // ── Artwork → Lyrics ──
     originalArtworkHTML = artWrap.innerHTML;
+
+    // Fade out artwork
     artWrap.style.transition = 'opacity 0.2s ease, transform 0.2s ease';
-    artWrap.style.opacity = '0';
-    artWrap.style.transform = 'scale(0.95)';
-    
+    artWrap.style.opacity    = '0';
+    artWrap.style.transform  = 'scale(0.95)';
+
     setTimeout(() => {
       artWrap.style.display = 'none';
-      lyricsWrap.style.display = '';
-      lyricsWrap.style.opacity = '0';
-      lyricsWrap.style.transform = 'translateY(20px)';
+
+      // Show lyrics with flex so it matches the CSS declaration
+      lyricsWrap.style.display    = 'flex';
+      lyricsWrap.style.opacity    = '0';
+      lyricsWrap.style.transform  = 'translateY(20px)';
+
       requestAnimationFrame(() => {
         lyricsWrap.style.transition = 'opacity 0.3s cubic-bezier(0.2,0.9,0.4,1.1), transform 0.3s cubic-bezier(0.2,0.9,0.4,1.1)';
-        lyricsWrap.style.opacity = '1';
-        lyricsWrap.style.transform = 'translateY(0)';
+        lyricsWrap.style.opacity    = '1';
+        lyricsWrap.style.transform  = 'translateY(0)';
+        // Scroll to top whenever we open lyrics
+        lyricsWrap.scrollTop = 0;
+        setTimeout(() => { lyricsWrap.style.transition = ''; }, 320);
       });
     }, 200);
-    
+
     lyricsViewActive = true;
     if (lyricsBtn) lyricsBtn.classList.add('active');
-    showToast('Lyrics view');
-  } else if (lyricsViewActive) {
+    showToast('Lyrics');
+
+  } else {
+    // ── Lyrics → Artwork ──
     lyricsWrap.style.transition = 'opacity 0.2s ease, transform 0.2s ease';
-    lyricsWrap.style.opacity = '0';
-    lyricsWrap.style.transform = 'translateY(20px)';
-    
+    lyricsWrap.style.opacity    = '0';
+    lyricsWrap.style.transform  = 'translateY(20px)';
+
     setTimeout(() => {
-      lyricsWrap.style.display = 'none';
-      artWrap.style.display = '';
-      artWrap.style.opacity = '0';
-      artWrap.style.transform = 'scale(0.95)';
+      lyricsWrap.style.display    = 'none';
+      lyricsWrap.style.opacity    = '';
+      lyricsWrap.style.transform  = '';
+      lyricsWrap.style.transition = '';
+
+      artWrap.style.display    = '';
+      artWrap.style.opacity    = '0';
+      artWrap.style.transform  = 'scale(0.95)';
+
       requestAnimationFrame(() => {
         artWrap.style.transition = 'opacity 0.3s cubic-bezier(0.2,0.9,0.4,1.1), transform 0.3s cubic-bezier(0.2,0.9,0.4,1.1)';
-        artWrap.style.opacity = '1';
-        artWrap.style.transform = '';
+        artWrap.style.opacity    = '1';
+        artWrap.style.transform  = '';
+        setTimeout(() => { artWrap.style.transition = ''; }, 320);
       });
     }, 200);
-    
+
     lyricsViewActive = false;
     if (lyricsBtn) lyricsBtn.classList.remove('active');
-    showToast('Artwork view');
+    showToast('Artwork');
   }
 }
 
@@ -975,9 +1003,14 @@ function setupFullPlayerGesture() {
 
   function snapBackQp() {
     qp.style.transition = 'transform 0.32s cubic-bezier(0.34,1.56,0.64,1)';
-    qp.style.transform  = '';
+    // If panel is open, snap back to 0; if closed, snap back to off-screen
+    qp.style.transform  = qp.classList.contains('open') ? 'translateY(0)' : 'translateY(100%)';
     qp.style.willChange = '';
-    setTimeout(() => { qp.style.transition = ''; }, 340);
+    setTimeout(() => {
+      // Hand control back to CSS class system
+      qp.style.transform  = '';
+      qp.style.transition = '';
+    }, 340);
     _resumeBlur();
   }
 
@@ -1324,17 +1357,35 @@ function closeFullscreen() {
 function toggleQueuePanel() { queuePanelOpen ? closeQueuePanel() : openQueuePanel(); }
 
 function openQueuePanel() {
+  const panel = document.getElementById('queue-panel');
+  const btn   = document.getElementById('fp-queue-btn');
+  if (!panel) return;
+
+  // Reset any inline transform that gesture system may have left behind
+  panel.style.transform = '';
+  panel.style.transition = '';
+
   queuePanelOpen = true;
-  document.getElementById('queue-panel').classList.add('open');
-  document.getElementById('fp-queue-btn').classList.add('queue-open');
-  updateQueuePanel();
-  setupSwipeToRemove();
+  panel.classList.add('open');
+  if (btn) btn.classList.add('queue-open');
+
+  // Defer DOM reads until after class is applied
+  requestAnimationFrame(() => {
+    if (typeof updateQueuePanel === 'function') updateQueuePanel();
+    if (typeof setupSwipeToRemove === 'function') setupSwipeToRemove();
+  });
 }
 
 function closeQueuePanel() {
+  const panel = document.getElementById('queue-panel');
+  const btn   = document.getElementById('fp-queue-btn');
+  if (!panel) return;
+
   queuePanelOpen = false;
-  document.getElementById('queue-panel').classList.remove('open');
-  document.getElementById('fp-queue-btn').classList.remove('queue-open');
+  // Clear any dragging inline transform before CSS transition takes over
+  panel.style.transform = '';
+  panel.classList.remove('open');
+  if (btn) btn.classList.remove('queue-open');
 }
 
 function updateQueuePanel() {
@@ -2450,7 +2501,7 @@ async function fetchLyrics(song) {
     if (!d.lyrics || !d.lyrics.trim()) throw new Error('empty');
 
     el.textContent = d.lyrics.trim();
-    wrap.style.display = '';
+    wrap.style.display = 'flex';   /* matches CSS display:flex declaration */
 
     // Lyrics button dikhao
     if (lyricsBtn) lyricsBtn.style.display = 'flex';
