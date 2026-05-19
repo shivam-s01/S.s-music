@@ -2310,12 +2310,4 @@ window.addEventListener('DOMContentLoaded', () => {
   setVh();
   initViz();
   buildHomeSections('all');
-  renderLibrary();
-  renderSearchIdle();
-  setupMiniGesture();
-  setupFullPlayerGesture();
-  setupArtSwipeGesture();
-  setupShakeGesture();
-  if (isTV) setupTVNavigation();
-  requestPersistentStorage();
-});
+  rende
