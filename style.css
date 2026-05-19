@@ -1493,3 +1493,36 @@ img.img-error{opacity:1}
   animation:none;
   opacity:.9;
 }
+/* Lyrics Toggle Button */
+.fp-lyrics-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 10px;
+  transition: transform 0.2s ease, stroke 0.2s ease;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 4px;
+}
+.fp-lyrics-btn:active {
+  transform: scale(0.85);
+}
+.fp-lyrics-btn.active svg {
+  stroke: var(--gold-l);
+}
+
+/* Queue swipe hint animation */
+.queue-swipe-hint {
+  animation: swipeHint 1.5s ease-in-out infinite;
+  display: inline-block;
+}
+@keyframes swipeHint {
+  0%, 100% { transform: translateX(0); opacity: 0.3; }
+  50% { transform: translateX(-5px); opacity: 0.8; }
+}
+
+/* Lyrics wrap smooth transitions */
+#fp-lyrics-wrap {
+  transition: opacity 0.3s cubic-bezier(0.2,0.9,0.4,1.1), transform 0.3s cubic-bezier(0.2,0.9,0.4,1.1);
+}
