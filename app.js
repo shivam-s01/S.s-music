@@ -115,6 +115,10 @@ let _lastTuTime          = 0;
 let _uiHidden            = false;
 let _dismissedTrackId    = null;
 
+// Lyrics view state
+let lyricsViewActive = false;
+let originalArtworkHTML = null;
+
 // ─── AUDIO ENGINE ─────────────────────────────────────────────────────────────
 const audio = new Audio();
 audio.preload = 'none';
@@ -505,9 +509,61 @@ function updatePlayerUI() {
   showMiniPlayer();
 }
 
+// ─── LYRICS TOGGLE VIEW (Spotify Style) ───────────────────────────────────────
+function toggleLyricsView() {
+  const artWrap = document.getElementById('fp-art-wrap');
+  const lyricsWrap = document.getElementById('fp-lyrics-wrap');
+  const lyricsBtn = document.getElementById('fp-lyrics-toggle');
+  
+  if (!lyricsViewActive && lyricsWrap && lyricsWrap.style.display !== 'none') {
+    originalArtworkHTML = artWrap.innerHTML;
+    artWrap.style.transition = 'opacity 0.2s ease, transform 0.2s ease';
+    artWrap.style.opacity = '0';
+    artWrap.style.transform = 'scale(0.95)';
+    
+    setTimeout(() => {
+      artWrap.style.display = 'none';
+      lyricsWrap.style.display = '';
+      lyricsWrap.style.opacity = '0';
+      lyricsWrap.style.transform = 'translateY(20px)';
+      requestAnimationFrame(() => {
+        lyricsWrap.style.transition = 'opacity 0.3s cubic-bezier(0.2,0.9,0.4,1.1), transform 0.3s cubic-bezier(0.2,0.9,0.4,1.1)';
+        lyricsWrap.style.opacity = '1';
+        lyricsWrap.style.transform = 'translateY(0)';
+      });
+    }, 200);
+    
+    lyricsViewActive = true;
+    if (lyricsBtn) lyricsBtn.classList.add('active');
+    showToast('Lyrics view');
+  } else if (lyricsViewActive) {
+    lyricsWrap.style.transition = 'opacity 0.2s ease, transform 0.2s ease';
+    lyricsWrap.style.opacity = '0';
+    lyricsWrap.style.transform = 'translateY(20px)';
+    
+    setTimeout(() => {
+      lyricsWrap.style.display = 'none';
+      artWrap.style.display = '';
+      artWrap.style.opacity = '0';
+      artWrap.style.transform = 'scale(0.95)';
+      requestAnimationFrame(() => {
+        artWrap.style.transition = 'opacity 0.3s cubic-bezier(0.2,0.9,0.4,1.1), transform 0.3s cubic-bezier(0.2,0.9,0.4,1.1)';
+        artWrap.style.opacity = '1';
+        artWrap.style.transform = '';
+      });
+    }, 200);
+    
+    lyricsViewActive = false;
+    if (lyricsBtn) lyricsBtn.classList.remove('active');
+    showToast('Artwork view');
+  }
+}
+
 function updateNextStrip() {
   const strip = document.getElementById('fp-next-strip');
   if (!strip) return;
+  
+  const remainingCount = currentQueue.length - currentIndex - 1;
   
   if (!currentQueue.length || currentQueue.length < 2) { 
     strip.style.display = 'none'; 
@@ -521,6 +577,13 @@ function updateNextStrip() {
   if (!nextSong) { strip.style.display = 'none'; return; }
 
   strip.style.display = 'flex';
+  
+  const tag = strip.querySelector('.fp-next-tag');
+  if (tag && remainingCount > 0) {
+    tag.innerHTML = `UP<br>NEXT<br><span style="font-size:7px; margin-top:2px;">${remainingCount}</span>`;
+  } else if (tag) {
+    tag.innerHTML = 'UP<br>NEXT';
+  }
   
   const wasHidden = !strip.style.opacity || strip.style.opacity === '0' || getComputedStyle(strip).opacity === '0';
   if (wasHidden) {
@@ -1256,6 +1319,7 @@ function openQueuePanel() {
   document.getElementById('queue-panel').classList.add('open');
   document.getElementById('fp-queue-btn').classList.add('queue-open');
   updateQueuePanel();
+  setupSwipeToRemove();
 }
 
 function closeQueuePanel() {
@@ -1267,31 +1331,33 @@ function closeQueuePanel() {
 function updateQueuePanel() {
   const body    = document.getElementById('queue-panel-body');
   const countEl = document.getElementById('queue-count');
+  if (!body) return;
+  
   body.innerHTML = '';
   if (!currentQueue.length) {
     body.innerHTML = '<div style="padding:32px;text-align:center;color:var(--text3);font-size:12px;">Queue is empty</div>';
     return;
   }
   const remaining = currentQueue.length - currentIndex - 1;
-  if (countEl) countEl.textContent = remaining + ' songs';
+  if (countEl) countEl.textContent = remaining + ' songs remaining';
 
   if (currentTrack) {
-    const sec = document.createElement('div'); sec.className = 'queue-section-label'; sec.textContent = 'Now Playing';
+    const sec = document.createElement('div'); sec.className = 'queue-section-label'; sec.textContent = 'NOW PLAYING';
     body.appendChild(sec);
     body.appendChild(makeQueueItem(currentTrack, currentIndex, true));
   }
 
-  const nextSongs = currentQueue.slice(currentIndex + 1, currentIndex + 16);
+  const nextSongs = currentQueue.slice(currentIndex + 1);
   if (nextSongs.length) {
-    const sec = document.createElement('div'); sec.className = 'queue-section-label'; sec.textContent = 'Up Next';
+    const sec = document.createElement('div'); sec.className = 'queue-section-label'; sec.textContent = `UP NEXT (${nextSongs.length})`;
     body.appendChild(sec);
     nextSongs.forEach((s, i) => body.appendChild(makeQueueItem(s, currentIndex + 1 + i, false)));
   }
 
   if (currentIndex > 0) {
-    const prevSongs = currentQueue.slice(Math.max(0, currentIndex - 5), currentIndex);
+    const prevSongs = currentQueue.slice(Math.max(0, currentIndex - 8), currentIndex);
     if (prevSongs.length) {
-      const sec = document.createElement('div'); sec.className = 'queue-section-label'; sec.textContent = 'Previously Played';
+      const sec = document.createElement('div'); sec.className = 'queue-section-label'; sec.textContent = 'PREVIOUSLY PLAYED';
       body.appendChild(sec);
       prevSongs.forEach((s, i) => body.appendChild(makeQueueItem(s, Math.max(0, currentIndex - prevSongs.length) + i, false)));
     }
@@ -1320,8 +1386,111 @@ function makeQueueItem(song, qIdx, isCurrent) {
     const d = document.createElement('span'); d.className = 'queue-item-dur'; d.textContent = dur;
     item.appendChild(d);
   }
-  if (!isCurrent) item.onclick = () => { currentIndex = qIdx; loadTrack(currentQueue[currentIndex]); updateQueuePanel(); };
+  if (!isCurrent) item.onclick = () => { currentIndex = qIdx; loadTrack(currentQueue[currentIndex]); updateQueuePanel(); closeQueuePanel(); };
   return item;
+}
+
+// ─── SWIPE TO REMOVE FROM QUEUE ───────────────────────────────────────────────
+function setupSwipeToRemove() {
+  const queueBody = document.getElementById('queue-panel-body');
+  if (!queueBody || queueBody._swipeAttached) return;
+  queueBody._swipeAttached = true;
+  
+  let startX = 0, startY = 0, startTime = 0;
+  let currentItem = null;
+  let isSwiping = false;
+  let swipeThreshold = 80;
+  
+  queueBody.addEventListener('touchstart', (e) => {
+    const item = e.target.closest('.queue-item');
+    if (!item || item.classList.contains('current')) return;
+    
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    startTime = Date.now();
+    currentItem = item;
+    isSwiping = true;
+    item.style.transition = 'none';
+  }, { passive: true });
+  
+  queueBody.addEventListener('touchmove', (e) => {
+    if (!isSwiping || !currentItem) return;
+    
+    const dx = e.touches[0].clientX - startX;
+    const dy = e.touches[0].clientY - startY;
+    
+    if (Math.abs(dx) < 15 && Math.abs(dy) < 15) return;
+    
+    if (Math.abs(dx) > Math.abs(dy) && dx < 0) {
+      e.preventDefault();
+      const translateX = Math.max(-swipeThreshold, dx);
+      const opacity = 1 - (Math.abs(translateX) / swipeThreshold) * 0.8;
+      currentItem.style.transform = `translateX(${translateX}px)`;
+      currentItem.style.opacity = opacity;
+      currentItem.style.transition = 'none';
+    }
+  }, { passive: false });
+  
+  queueBody.addEventListener('touchend', (e) => {
+    if (!isSwiping || !currentItem) {
+      resetSwipe();
+      return;
+    }
+    
+    const endX = e.changedTouches[0].clientX;
+    const dx = endX - startX;
+    const dt = Date.now() - startTime;
+    const velocity = Math.abs(dx) / dt;
+    
+    if (dx < -swipeThreshold || (dx < -40 && velocity > 0.3)) {
+      const trackId = currentItem.dataset.trackId;
+      removeFromQueue(trackId);
+      
+      currentItem.style.transition = 'transform 0.2s ease, opacity 0.15s ease';
+      currentItem.style.transform = 'translateX(-100%)';
+      currentItem.style.opacity = '0';
+      setTimeout(() => {
+        if (currentItem && currentItem.parentNode) currentItem.remove();
+        updateQueuePanel();
+        updateNextStrip();
+      }, 180);
+    } else {
+      currentItem.style.transition = 'transform 0.25s cubic-bezier(0.2,0.9,0.4,1.1), opacity 0.2s ease';
+      currentItem.style.transform = '';
+      currentItem.style.opacity = '';
+    }
+    
+    resetSwipe();
+  });
+  
+  function resetSwipe() {
+    if (currentItem) {
+      currentItem.style.transition = '';
+      currentItem.style.transform = '';
+      currentItem.style.opacity = '';
+    }
+    isSwiping = false;
+    currentItem = null;
+    startX = 0;
+    startY = 0;
+  }
+  
+  queueBody.addEventListener('touchcancel', resetSwipe);
+}
+
+function removeFromQueue(trackId) {
+  const index = currentQueue.findIndex(s => String(s.trackId) === String(trackId));
+  if (index === -1) return;
+  if (index === currentIndex) {
+    showToast("Can't remove currently playing song");
+    return;
+  }
+  currentQueue.splice(index, 1);
+  if (index < currentIndex) currentIndex--;
+  updateQueuePanel();
+  updateNextStrip();
+  haptic(15);
+  showToast('Removed from queue');
 }
 
 // ─── RECOMMENDATIONS ─────────────────────────────────────────────────────────
@@ -2247,10 +2416,11 @@ async function triggerDownload(quality) {
   }
 }
 
-// ─── LYRICS ───────────────────────────────────────────────────────────────────
+// ─── LYRICS FETCH (updated with toggle button) ─────────────────────────────────
 async function fetchLyrics(song) {
   const wrap = document.getElementById('fp-lyrics-wrap');
   const el   = document.getElementById('fp-lyrics');
+  const lyricsBtn = document.getElementById('fp-lyrics-toggle');
   if (!wrap || !el) return;
 
   wrap.style.opacity   = '0';
@@ -2267,17 +2437,25 @@ async function fetchLyrics(song) {
     if (!d.lyrics || !d.lyrics.trim()) throw new Error('empty');
 
     el.textContent = d.lyrics.trim();
+    
+    // Show lyrics button if lyrics available
+    if (lyricsBtn) lyricsBtn.style.display = 'flex';
 
     requestAnimationFrame(() => {
       wrap.style.transition = 'opacity 0.4s cubic-bezier(0.22,1,0.36,1), transform 0.4s cubic-bezier(0.22,1,0.36,1)';
-      wrap.style.opacity    = '1';
-      wrap.style.transform  = 'translateY(0)';
+      if (!lyricsViewActive) {
+        wrap.style.opacity    = '1';
+        wrap.style.transform  = 'translateY(0)';
+      }
       setTimeout(() => { wrap.style.transition = ''; }, 420);
     });
   } catch(e) {
     wrap.style.display = 'none';
     wrap.style.opacity = '';
     wrap.style.transform = '';
+    if (lyricsBtn) lyricsBtn.style.display = 'none';
+    // If lyrics view was active, revert to artwork
+    if (lyricsViewActive) toggleLyricsView();
   }
 }
 
