@@ -123,6 +123,9 @@ let originalArtworkHTML = null;
 const audio = new Audio();
 audio.preload = 'none';
 audio.crossOrigin = 'anonymous';
+// Keep audio context alive in background on Android WebView
+audio.setAttribute('playsinline', '');
+audio.setAttribute('webkit-playsinline', '');
 window._aurumAudio = audio;
 
 let _currentSaavnUrl     = null;
@@ -452,6 +455,7 @@ document.addEventListener('visibilitychange', () => {
     const ac = document.getElementById('ambient-canvas');
     if (fp) fp.style.setProperty('visibility', 'hidden', 'important');
     if (ac) ac.style.setProperty('display', 'none', 'important');
+    // NOTE: Do NOT pause audio here — let it play in background
     const keep = new Set(['recent', 'featured']);
     Object.keys(sectionCache).forEach(k => { if (!keep.has(k)) delete sectionCache[k]; });
   } else {
@@ -466,6 +470,10 @@ document.addEventListener('visibilitychange', () => {
       _syncPlayIcons();
       _syncPlayingClass();
       updateQualityLabel();
+      // Resume if audio was suspended by Android
+      if (isPlaying && audio.paused) {
+        audio.play().catch(() => {});
+      }
     }
   }
 }, { passive: true });
@@ -509,81 +517,28 @@ function updatePlayerUI() {
   showMiniPlayer();
 }
 
-// ─── LYRICS TOGGLE VIEW (Spotify Style) ───────────────────────────────────────
+// ─── LYRICS TOGGLE VIEW ───────────────────────────────────────────────────────
 function toggleLyricsView() {
-  const artWrap   = document.getElementById('fp-art-wrap');
-  const lyricsWrap = document.getElementById('fp-lyrics-wrap');
-  const lyricsBtn  = document.getElementById('fp-lyrics-toggle');
+  const wrap      = document.getElementById('fp-lyrics-wrap');
+  const lyricsBtn = document.getElementById('fp-lyrics-toggle');
+  if (!wrap) return;
 
-  // Guard: both elements must exist
-  if (!artWrap || !lyricsWrap) return;
+  const isOpen = wrap.style.display !== 'none' && wrap.style.display !== '';
 
-  // Guard: only enter lyrics view if lyrics are actually loaded
-  const lyricsEl = document.getElementById('fp-lyrics');
-  const hasLyrics = lyricsEl && lyricsEl.textContent.trim().length > 0;
-  if (!lyricsViewActive && !hasLyrics) {
-    showToast('No lyrics available');
-    return;
-  }
-
-  if (!lyricsViewActive) {
-    // ── Artwork → Lyrics ──
-    originalArtworkHTML = artWrap.innerHTML;
-
-    // Fade out artwork
-    artWrap.style.transition = 'opacity 0.2s ease, transform 0.2s ease';
-    artWrap.style.opacity    = '0';
-    artWrap.style.transform  = 'scale(0.95)';
-
-    setTimeout(() => {
-      artWrap.style.display = 'none';
-
-      // Show lyrics with flex so it matches the CSS declaration
-      lyricsWrap.style.display    = 'flex';
-      lyricsWrap.style.opacity    = '0';
-      lyricsWrap.style.transform  = 'translateY(20px)';
-
-      requestAnimationFrame(() => {
-        lyricsWrap.style.transition = 'opacity 0.3s cubic-bezier(0.2,0.9,0.4,1.1), transform 0.3s cubic-bezier(0.2,0.9,0.4,1.1)';
-        lyricsWrap.style.opacity    = '1';
-        lyricsWrap.style.transform  = 'translateY(0)';
-        // Scroll to top whenever we open lyrics
-        lyricsWrap.scrollTop = 0;
-        setTimeout(() => { lyricsWrap.style.transition = ''; }, 320);
-      });
-    }, 200);
-
-    lyricsViewActive = true;
-    if (lyricsBtn) lyricsBtn.classList.add('active');
-    showToast('Lyrics');
-
-  } else {
-    // ── Lyrics → Artwork ──
-    lyricsWrap.style.transition = 'opacity 0.2s ease, transform 0.2s ease';
-    lyricsWrap.style.opacity    = '0';
-    lyricsWrap.style.transform  = 'translateY(20px)';
-
-    setTimeout(() => {
-      lyricsWrap.style.display    = 'none';
-      lyricsWrap.style.opacity    = '';
-      lyricsWrap.style.transform  = '';
-      lyricsWrap.style.transition = '';
-
-      artWrap.style.display    = '';
-      artWrap.style.opacity    = '0';
-      artWrap.style.transform  = 'scale(0.95)';
-
-      requestAnimationFrame(() => {
-        artWrap.style.transition = 'opacity 0.3s cubic-bezier(0.2,0.9,0.4,1.1), transform 0.3s cubic-bezier(0.2,0.9,0.4,1.1)';
-        artWrap.style.opacity    = '1';
-        artWrap.style.transform  = '';
-        setTimeout(() => { artWrap.style.transition = ''; }, 320);
-      });
-    }, 200);
-
+  if (isOpen) {
+    // Close
+    wrap.style.display = 'none';
     lyricsViewActive = false;
     if (lyricsBtn) lyricsBtn.classList.remove('active');
-    showToast('Artwork');
+  } else {
+    // Open — guard: must have actual lyrics text
+    const el = document.getElementById('fp-lyrics');
+    if (!el || !el.textContent.trim()) { showToast('No lyrics available'); return; }
+    wrap.style.display = 'block';
+    // Reset scroll to top every open
+    el.scrollTop = 0;
+    lyricsViewActive = true;
+    if (lyricsBtn) lyricsBtn.classList.add('active');
   }
 }
 
@@ -1262,6 +1217,8 @@ function setupShakeGesture() {
   let initialized = false;
 
   function onMotion(e) {
+    // Respect settings — if shake disabled, do nothing
+    if (typeof appSettings !== 'undefined' && appSettings?.shakeToShuffle === false) return;
     const acc = e.accelerationIncludingGravity;
     if (!acc) return;
     if (!initialized) { lastX = acc.x||0; lastY = acc.y||0; lastZ = acc.z||0; initialized = true; return; }
@@ -1301,17 +1258,65 @@ function setupShakeGesture() {
 }
 
 function setupTVNavigation() {
+  // Add TV class for CSS targeting
+  document.documentElement.classList.add('is-tv');
+  document.body.classList.add('is-tv');
+
+  // Hide mini player on TV — use fullscreen always
+  const mp = document.getElementById('mini-player');
+  if (mp) mp.style.display = 'none';
+
+  // Auto-open fullscreen when track starts on TV
+  const _origShowMini = showMiniPlayer;
+  window.showMiniPlayer = function() {
+    const fp = document.getElementById('fullscreen-player');
+    if (fp && !fp.classList.contains('open') && currentTrack) openFullscreen();
+  };
+
   document.addEventListener('keydown', e => {
+    const fp = document.getElementById('fullscreen-player');
+    const fpOpen = fp && fp.classList.contains('open');
+
     switch(e.key) {
-      case 'ArrowRight': nextTrack();  e.preventDefault(); break;
-      case 'ArrowLeft':  prevTrack();  e.preventDefault(); break;
-      case 'Enter':      togglePlay(); e.preventDefault(); break;
-      case 'ArrowUp':    setVolume(Math.min(1, audio.volume + 0.1)); e.preventDefault(); break;
-      case 'ArrowDown':  setVolume(Math.max(0, audio.volume - 0.1)); e.preventDefault(); break;
+      case 'ArrowRight':
+        if (fpOpen) { nextTrack(); e.preventDefault(); }
+        break;
+      case 'ArrowLeft':
+        if (fpOpen) { prevTrack(); e.preventDefault(); }
+        break;
+      case 'Enter':
+      case ' ':
+        if (fpOpen) { togglePlay(); e.preventDefault(); }
+        else if (document.activeElement && document.activeElement !== document.body) {
+          document.activeElement.click(); e.preventDefault();
+        }
+        break;
+      case 'ArrowUp':
+        if (fpOpen) { setVolume(Math.min(1, audio.volume + 0.1)); e.preventDefault(); }
+        else _tvMoveFocus(-1, e);
+        break;
+      case 'ArrowDown':
+        if (fpOpen) { setVolume(Math.max(0, audio.volume - 0.1)); e.preventDefault(); }
+        else _tvMoveFocus(1, e);
+        break;
       case 'Backspace':
-      case 'GoBack':     closeFullscreen(); e.preventDefault(); break;
+      case 'GoBack':
+      case 'Escape':
+        if (fpOpen) { closeFullscreen(); e.preventDefault(); }
+        break;
     }
   });
+}
+
+function _tvMoveFocus(dir, e) {
+  const focusable = [...document.querySelectorAll(
+    '[tabindex="0"], button:not([disabled]), .nav-btn, .song-row, .quick-card, .browse-card, .queue-item, .modal-option'
+  )].filter(el => el.offsetParent !== null);
+  if (!focusable.length) return;
+  const cur = document.activeElement;
+  const idx = focusable.indexOf(cur);
+  const next = focusable[Math.max(0, Math.min(focusable.length - 1, idx + dir))];
+  if (next) { next.focus(); e.preventDefault(); next.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
 }
 
 // ─── PLAYER OPEN / CLOSE ─────────────────────────────────────────────────────
@@ -1553,7 +1558,197 @@ function removeFromQueue(trackId) {
   showToast('Removed from queue');
 }
 
-// ─── RECOMMENDATIONS ─────────────────────────────────────────────────────────
+// ─── QUEUE PANEL DIRECT GESTURE ───────────────────────────────────────────────
+// Queue panel is now outside #fullscreen-player so it needs its own touch
+// listeners for swipe-down-to-close. The fp gesture system handles swipe-up
+// to open; this handles swipe-down to close.
+function setupQueuePanelGesture() {
+  const qp = document.getElementById('queue-panel');
+  if (!qp) return;
+
+  let startY = 0, startX = 0, isDragging = false, startTime = 0;
+  let moved = false, rafId = null, axisLocked = null;
+
+  function snapBack() {
+    qp.style.transition = 'transform 0.32s cubic-bezier(0.34,1.56,0.64,1)';
+    qp.style.transform  = '';
+    qp.style.willChange = '';
+    setTimeout(() => { qp.style.transition = ''; }, 340);
+    _resumeBlur();
+  }
+
+  qp.addEventListener('touchstart', e => {
+    // Only allow drag from handle OR when body scroll is at top
+    const onHandle = e.target.closest('#queue-drag-handle') || e.target.closest('.queue-panel-handle');
+    const body = document.getElementById('queue-panel-body');
+    const bodyAtTop = !body || body.scrollTop <= 0;
+    if (!onHandle && !bodyAtTop) return;
+
+    startY     = e.touches[0].clientY;
+    startX     = e.touches[0].clientX;
+    isDragging = true;
+    startTime  = Date.now();
+    moved      = false;
+    axisLocked = null;
+    qp.style.transition  = 'none';
+    qp.style.willChange  = 'transform';
+    qp.classList.add('dragging');
+    _pauseBlur();
+  }, { passive: true });
+
+  qp.addEventListener('touchmove', e => {
+    if (!isDragging) return;
+    const dy    = e.touches[0].clientY - startY;
+    const dx    = e.touches[0].clientX - startX;
+    const absDy = Math.abs(dy);
+    const absDx = Math.abs(dx);
+
+    if (!axisLocked && (absDy > 6 || absDx > 6)) {
+      axisLocked = absDx > absDy ? 'horizontal' : 'vertical';
+    }
+    if (axisLocked === 'horizontal') { isDragging = false; return; }
+
+    // Only allow downward drag
+    if (axisLocked === 'vertical' && dy > 0 && absDy > 4) {
+      moved = true;
+      e.preventDefault();
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        qp.style.transform = `translateY(${dy}px)`;
+        rafId = null;
+      });
+    }
+  }, { passive: false });
+
+  qp.addEventListener('touchend', e => {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    if (!isDragging) return;
+    isDragging = false;
+    qp.classList.remove('dragging');
+    qp.style.willChange = '';
+
+    const dy  = e.changedTouches[0].clientY - startY;
+    const dt  = Math.max(1, Date.now() - startTime);
+    const vel = dy / dt;
+    _resumeBlur();
+
+    if (!moved) { snapBack(); return; }
+
+    if (dy > 90 || (vel > 0.45 && dy > 25)) {
+      qp.style.transform = '';
+      closeQueuePanel();
+    } else {
+      snapBack();
+    }
+  }, { passive: true });
+
+  qp.addEventListener('touchcancel', () => {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    isDragging = false;
+    qp.classList.remove('dragging');
+    qp.style.willChange = '';
+    snapBack();
+  }, { passive: true });
+}
+// ─── ARTIST PAGE ─────────────────────────────────────────────────────────────
+function openArtistPage(artistName, songs, artUrl) {
+  let page = document.getElementById('artist-page');
+  if (!page) {
+    page = document.createElement('div');
+    page.id = 'artist-page';
+    page.className = 'artist-page';
+    document.getElementById('app').appendChild(page);
+  }
+
+  const thumbUrl = artUrl || (songs[0] ? getArtUrl(songs[0], '600x600') : '');
+
+  page.innerHTML = `
+    <div class="artist-page-hero">
+      <img class="artist-page-bg" src="${thumbUrl}" alt="" crossorigin="anonymous">
+      <div class="artist-page-overlay"></div>
+      <div class="artist-page-topbar">
+        <button class="ap-back-btn" onclick="closeArtistPage()" aria-label="Back">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <div class="ap-logo">
+          <svg viewBox="0 0 28 28" fill="none" width="20" height="20"><path d="M4 23L10 7L14 16L18 7L24 23" stroke="rgba(184,150,64,0.28)" stroke-width="1" stroke-linecap="round"/><path d="M6.5 23L12 8.5L14 13" stroke="var(--gold-l)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M14 13L16 8.5L21.5 23" stroke="var(--gold)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Aurum</span>
+        </div>
+        <button class="ap-share-btn" onclick="_shareArtist('${esc(artistName)}')" aria-label="Share">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+        </button>
+      </div>
+      <div class="artist-page-info">
+        <div class="ap-artist-name">${esc(artistName)}</div>
+        <div class="ap-track-count">${songs.length} songs</div>
+      </div>
+      <div class="artist-page-actions">
+        <button class="ap-play-btn" onclick="_playArtistAll()">
+          <svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3" fill="currentColor"/></svg>
+          Play All
+        </button>
+        <button class="ap-shuffle-btn" onclick="_playArtistShuffle()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="artist-page-songs" id="ap-songs-list"></div>
+  `;
+
+  page._songs = songs;
+  page._artistName = artistName;
+
+  const list = document.getElementById('ap-songs-list');
+  songs.forEach((s, i) => list.appendChild(makeSongRow(s, i, songs)));
+
+  requestAnimationFrame(() => page.classList.add('open'));
+}
+
+function closeArtistPage() {
+  const page = document.getElementById('artist-page');
+  if (!page) return;
+  page.classList.remove('open');
+  setTimeout(() => page.remove(), 340);
+}
+
+function _playArtistAll() {
+  const page = document.getElementById('artist-page');
+  if (!page?._songs?.length) return;
+  playSongs(page._songs, 0);
+  openFullscreen();
+}
+
+function _playArtistShuffle() {
+  const page = document.getElementById('artist-page');
+  if (!page?._songs?.length) return;
+  playSongs(page._songs, Math.floor(Math.random() * page._songs.length));
+  shuffleOn = true;
+  const sb = document.getElementById('shuffle-btn');
+  if (sb) sb.querySelector('svg').style.stroke = 'var(--gold-l)';
+  showToast('Shuffle on');
+  openFullscreen();
+}
+
+function _shareArtist(artistName) {
+  if (navigator.share) {
+    navigator.share({ title: artistName + ' on Aurum', text: 'Check out ' + artistName + ' on Aurum!', url: window.location.href }).catch(() => {});
+  } else {
+    navigator.clipboard?.writeText(window.location.href).then(() => showToast('Link copied'));
+  }
+}
+
+async function openArtistPageFromName(artistName) {
+  showToast('Loading ' + artistName + '…');
+  try {
+    const q = encodeURIComponent(artistName + ' songs');
+    const r = await fetch(`/api/songs?q=${q}`);
+    const d = await r.json();
+    const songs = (d.results || []).filter(s => s.previewUrl);
+    if (!songs.length) { showToast('No songs found'); return; }
+    openArtistPage(artistName, songs, getArtUrl(songs[0], '600x600'));
+  } catch(e) { showToast('Could not load artist'); }
+}
+
 async function fetchRecommendations(song) {
   if (!song) return;
   try {
@@ -1803,7 +1998,7 @@ function makeSongRow(s, i, queue) {
   row.appendChild(img);
 
   const info = document.createElement('div'); info.className = 'song-row-info';
-  info.innerHTML = `<div class="song-row-title">${esc(s.trackName)}</div><div class="song-row-artist">${esc(s.artistName)}</div>`;
+  info.innerHTML = `<div class="song-row-title">${esc(s.trackName)}</div><div class="song-row-artist"><span class="artist-link" onclick="event.stopPropagation();openArtistPageFromName('${esc(s.artistName?.split(/[&,]/)[0].trim()||'')}')">${esc(s.artistName)}</span></div>`;
   row.appendChild(info);
 
   const right = document.createElement('div'); right.className = 'song-row-right';
@@ -2478,19 +2673,16 @@ async function triggerDownload(quality) {
 
 // ─── FIXED: fetchLyrics ───────────────────────────────────────────────────────
 async function fetchLyrics(song) {
-  const wrap = document.getElementById('fp-lyrics-wrap');
-  const el   = document.getElementById('fp-lyrics');
+  const wrap      = document.getElementById('fp-lyrics-wrap');
+  const el        = document.getElementById('fp-lyrics');
   const lyricsBtn = document.getElementById('fp-lyrics-toggle');
   if (!wrap || !el) return;
 
-  // Reset: agar lyrics view active tha to artwork pe wapas aao
-  if (lyricsViewActive) toggleLyricsView();
-
-  wrap.style.display   = 'none';
-  wrap.style.opacity   = '0';
-  wrap.style.transform = 'translateY(6px)';
-  el.textContent       = '';
-  if (lyricsBtn) lyricsBtn.style.display = 'none';
+  // Reset: close lyrics panel on every new song
+  wrap.style.display = 'none';
+  el.textContent     = '';
+  lyricsViewActive   = false;
+  if (lyricsBtn) { lyricsBtn.style.display = 'none'; lyricsBtn.classList.remove('active'); }
 
   try {
     const artist = encodeURIComponent((song.artistName || '').split(/[&,]/)[0].trim());
@@ -2501,27 +2693,60 @@ async function fetchLyrics(song) {
     if (!d.lyrics || !d.lyrics.trim()) throw new Error('empty');
 
     el.textContent = d.lyrics.trim();
-    wrap.style.display = 'flex';   /* matches CSS display:flex declaration */
 
-    // Lyrics button dikhao
+    // Show lyrics button — user can now tap to open panel
     if (lyricsBtn) lyricsBtn.style.display = 'flex';
 
-    requestAnimationFrame(() => {
-      wrap.style.transition = 'opacity 0.4s cubic-bezier(0.22,1,0.36,1), transform 0.4s cubic-bezier(0.22,1,0.36,1)';
-      wrap.style.opacity    = '1';
-      wrap.style.transform  = 'translateY(0)';
-      setTimeout(() => { wrap.style.transition = ''; }, 420);
-    });
-
   } catch(e) {
-    wrap.style.display   = 'none';
-    wrap.style.opacity   = '';
-    wrap.style.transform = '';
+    // Lyrics not available — button stays hidden, panel stays closed
     if (lyricsBtn) lyricsBtn.style.display = 'none';
   }
 }
 
-// ─── TOAST ────────────────────────────────────────────────────────────────────
+// ─── BACKGROUND AUDIO KEEP-ALIVE ─────────────────────────────────────────────
+// Android WebView suspends audio context when screen off or app backgrounded.
+// This creates a silent AudioContext buffer ping every 25s to keep it alive.
+let _wakeLock = null;
+let _bgPingInterval = null;
+let _bgAudioCtx = null;
+
+async function _acquireWakeLock() {
+  if (!('wakeLock' in navigator)) return;
+  try {
+    _wakeLock = await navigator.wakeLock.request('screen');
+    _wakeLock.addEventListener('release', () => { _wakeLock = null; });
+  } catch(e) {}
+}
+
+function _releaseWakeLock() {
+  if (_wakeLock) { _wakeLock.release().catch(()=>{}); _wakeLock = null; }
+}
+
+function _setupBgAudioPing() {
+  // Create a silent AudioContext — keeps audio thread alive on Android
+  try {
+    _bgAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    _bgPingInterval = setInterval(() => {
+      if (!isPlaying) return;
+      try {
+        const buf = _bgAudioCtx.createBuffer(1, 1, 22050);
+        const src = _bgAudioCtx.createBufferSource();
+        src.buffer = buf;
+        src.connect(_bgAudioCtx.destination);
+        src.start(0);
+      } catch(e) {}
+    }, 25000);
+  } catch(e) {}
+}
+
+// Acquire wake lock when playing, release when paused
+audio.addEventListener('playing', () => { _acquireWakeLock(); });
+audio.addEventListener('pause',   () => { if (!isPlaying) _releaseWakeLock(); });
+
+// Re-acquire wake lock when app comes back to foreground
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && isPlaying) _acquireWakeLock();
+}, { passive: true });
 let _toastTimer = null;
 function showToast(msg) {
   const t = document.getElementById('toast'); if (!t) return;
@@ -2551,8 +2776,10 @@ window.addEventListener('DOMContentLoaded', () => {
   renderSearchIdle();
   setupMiniGesture();
   setupFullPlayerGesture();
+  setupQueuePanelGesture();
   setupArtSwipeGesture();
   setupShakeGesture();
+  _setupBgAudioPing();
   if (isTV) setupTVNavigation();
   requestPersistentStorage();
 });
