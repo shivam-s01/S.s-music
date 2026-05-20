@@ -163,10 +163,9 @@ function _titleMatches(saavnTitle, itunesTitle) {
 }
 
 function loadTrack(song, autoplay = true) {
-  if (!song?.previewUrl) return;
+  if (!song) return;
 
   _dismissedTrackId = null;
-
   if (_fullSongAbort) { _fullSongAbort.abort(); _fullSongAbort = null; }
   _currentSaavnUrl = null; _currentSaavnQuality = null;
 
@@ -174,32 +173,25 @@ function loadTrack(song, autoplay = true) {
   if (pill) pill.style.boxShadow = '';
 
   const sb = document.getElementById('fp-seekbar');
-  if (sb) { sb.classList.remove('full-active'); sb.max = 30; sb.value = 0; sb.style.setProperty('--prog', '0%'); }
+  if (sb) { sb.classList.remove('full-active'); sb.value = 0; sb.style.setProperty('--prog', '0%'); }
 
-  currentTrack = song; currentQuality = 'loading';
-  document.getElementById('fp-duration').textContent = '0:30';
+  currentTrack = song;
+  currentQuality = 'loading';
 
+  // Stop previous audio
   audio.pause();
   audio.src = '';
   audio.load();
-  audio.src = song.previewUrl;
-
-  if (autoplay) {
-    const p = audio.play();
-    if (p && p.then) {
-      p.then(() => { isPlaying = true; updatePlayerUI(); })
-       .catch(err => {
-         if (err.name !== 'AbortError') { isPlaying = false; updatePlayerUI(); }
-       });
-    }
-  }
 
   updatePlayerUI();
   showMiniPlayer();
   updateActiveRows();
   updateQualityLabel();
   addToRecentlyPlayed(song);
-  _autoFetchFullSong(song);
+
+  // Seedha full song fetch karo — no preview
+  if (autoplay) _autoFetchFullSong(song, true);
+
   clearTimeout(_recFetchTimeout);
   _recFetchTimeout = setTimeout(() => fetchRecommendations(song), 800);
   fetchLyrics(song);
@@ -210,7 +202,7 @@ function playSongs(queue, index) {
   loadTrack(currentQueue[currentIndex]);
 }
 
-async function _autoFetchFullSong(song) {
+async function _autoFetchFullSong(song, forcePlay = false) {
   const ctrl = new AbortController();
   _fullSongAbort = ctrl;
   const requested = song;
@@ -260,7 +252,7 @@ async function _autoFetchFullSong(song) {
       preAudio.src = ''; return;
     }
 
-    const wasPlaying = isPlaying;
+    const wasPlaying = isPlaying || forcePlay;
     const pos = audio.currentTime;
 
     const onMeta = () => {
