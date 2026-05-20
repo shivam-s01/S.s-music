@@ -4570,3 +4570,25 @@ img.img-error {
 .artist-link:active {
   color: var(--gold-l);
 }
+@media (min-width: 1280px) {
+  #quality-modal,
+  #download-modal,
+  #create-playlist-modal,
+  #rename-modal,
+  #playlist-opts-modal,
+  #song-modal,
+  #add-playlist-modal {
+    position: fixed !important;
+    inset: 0 !important;
+    max-width: 100% !important;
+  }
+
+  .quality-sheet,
+  .dl-sheet,
+  .input-sheet,
+  .modal-sheet {
+    max-width: 560px !important;
+    margin: 0 auto !important;
+    border-radius: 26px 26px 0 0 !important;
+  }
+}
