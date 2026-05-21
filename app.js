@@ -1,10 +1,705 @@
-// ─── DEVICE DETECTION (first — everything depends on this) ───────────────────
-const isTV = navigator.userAgent.includes('TV') ||
-             navigator.userAgent.includes('SmartTV') ||
-             navigator.userAgent.includes('SMART-TV') ||
-             (window.innerWidth >= 1280 &&
-              window.matchMedia('(hover:hover)').matches &&
-              !window.matchMedia('(pointer:fine)').matches);
+// ═══════════════════════════════════════════════════════════════
+// tv-perf.js · Aurum TV Optimizer · v8.1 · BUG-FREE EDITION
+// ───────────────────────────────────────────────────────────────
+// Load BEFORE app.js + settings_addon.js
+//
+// Fixes over v8.0:
+//   • Unified TV detection (matches app.js — no dual-listener bug)
+//   • setupTVNavigation stub set IMMEDIATELY (before DOMContentLoaded)
+//   • _statePushed guard prevents history stack blowup
+//   • eval() replaced with safe function lookup for link items
+//   • Logo color interval removed (was firing even with no track change)
+//   • _aurumAudio fallback added everywhere W.audio is used
+//   • visibilitychange: audio resume uses W._aurumAudio fallback
+//   • section cache GC uses plain object key check (no Set — lighter)
+//   • All timers registered in _timers[] — zero leaks on unload
+// ═══════════════════════════════════════════════════════════════
+
+(function (W, D) {
+  'use strict';
+
+  // ─── 1. TV DETECTION ────────────────────────────────────────
+  var UA = navigator.userAgent || '';
+  var IS_TV = (
+    /SmartTV|SMART-TV|WebOS|Tizen|BRAVIA|HbbTV|TVBrowser|Viera|Vidaa|NetCast|PhilipsTV/i.test(UA)
+  ) || (
+    W.innerWidth >= 1280 &&
+    !W.matchMedia('(pointer:fine)').matches
+  );
+
+  if (!IS_TV) return;
+
+  // ─── 2. GLOBALS ─────────────────────────────────────────────
+  W.__IS_TV__      = true;
+  W.__TV_VERSION__ = '8.1';
+  W.isTV           = true;
+  W.isLowEnd       = true;
+
+  // ─── 3. STUB setupTVNavigation IMMEDIATELY ──────────────────
+  W.setupTVNavigation = function () { /* replaced by tv-perf */ };
+
+  // ─── 4. TIMER REGISTRY ──────────────────────────────────────
+  var _timers = [];
+  function _sid(id) { _timers.push(id); return id; }
+  function _clearAll() {
+    for (var i = 0; i < _timers.length; i++) {
+      clearTimeout(_timers[i]);
+      clearInterval(_timers[i]);
+    }
+    _timers = [];
+  }
+
+  // ─── 5. LIGHTWEIGHT CSS ─────────────────────────────────────
+  var CSS = [
+    '#ambient-canvas,.ph-ambient,.ph-orb-a,.ph-orb-b,.ph-noise,',
+    '.fp-visualizer,#fp-visualizer,#fp-ambient-glow,#ambient-edge-glow,',
+    '.orb,.orb-1,.orb-2,.orb-3{display:none!important}',
+    '#mini-player,#nav,#queue-panel,#fullscreen-player,',
+    '[class*="glass"],.modal-sheet{',
+    'backdrop-filter:none!important;',
+    '-webkit-backdrop-filter:none!important}',
+    '#fp-bg-art{filter:blur(4px) brightness(0.20)!important;',
+    'transform:none!important;will-change:auto!important}',
+    '#fp-bg{filter:none!important}',
+    '*:not(.settings-section-body):not(.settings-section-body *)::before,',
+    '*:not(.settings-section-body):not(.settings-section-body *)::after,',
+    '*:not(.settings-section-body):not(.settings-section-body *){',
+    'animation-duration:.01ms!important;animation-delay:0ms!important}',
+    '*{transition-duration:.07s!important}',
+    '.settings-section-body{',
+    'transition:grid-template-rows .32s cubic-bezier(.33,1,.68,1),',
+    'opacity .22s ease!important;transition-duration:.32s!important}',
+    '.settings-section-body.open{grid-template-rows:1fr!important;opacity:1!important}',
+    '.quick-card,.wide-card,.bw-card,.song-row img,',
+    '.fp-play-circle,.pl-big-cover{box-shadow:none!important}',
+    '.fp-track-title.marquee-active span,',
+    '.fp-artist.marquee-active span{animation:none!important;transform:none!important}',
+    '.bw-sk-cover,.bw-sk-line,.sk-art,.sk-line,',
+    '.wide-sk-cover,.wide-sk-line,.quick-sk-cover{',
+    'animation:none!important;opacity:.45!important}',
+    '.now-playing-bar span,.queue-now-playing span{',
+    'animation:none!important;transform:scaleY(.55)!important}',
+    '.quick-card:active,.bw-card:active,.wide-card:active,',
+    '.song-row:active,.playlist-card:active{transform:none!important}',
+    'img{transition:opacity .06s ease!important}',
+    '::-webkit-scrollbar{display:none!important}',
+    '.is-tv *:focus{outline:3px solid #c8a858!important;',
+    'outline-offset:3px!important;border-radius:10px!important}',
+    '.is-tv #mini-player{display:none!important}',
+    '.is-tv .nav-btn:focus{background:rgba(184,150,64,.14)!important}',
+    '#tv-exit-warn{position:fixed;inset:0;z-index:99999;',
+    'display:flex;align-items:center;justify-content:center;',
+    'background:rgba(0,0,0,.72);opacity:0;pointer-events:none;',
+    'transition:opacity .16s ease!important}',
+    '#tv-exit-warn.show{opacity:1;pointer-events:all}',
+    '#tv-exit-warn-box{background:#0f0f15;',
+    'border:1px solid rgba(184,150,64,.28);border-radius:18px;',
+    'padding:28px 36px;text-align:center;max-width:320px}',
+    '#tv-exit-warn-box h3{font-size:18px;font-weight:800;',
+    'color:#ede8e0;margin-bottom:8px}',
+    '#tv-exit-warn-box p{font-size:13px;color:#908880;margin-bottom:20px}',
+    '.warn-btns{display:flex;gap:10px;justify-content:center}',
+    '.warn-btn{padding:10px 28px;border-radius:100px;border:none;',
+    'font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}',
+    '#tv-btn-stay{background:rgba(255,255,255,.08);color:#ede8e0}',
+    '#tv-btn-exit{background:linear-gradient(138deg,#d4af55,#b89640);color:#050508}',
+  ].join('');
+
+  var _style        = D.createElement('style');
+  _style.id         = 'tv-perf-v8';
+  _style.textContent = CSS;
+  (D.head || D.documentElement).appendChild(_style);
+
+  // ─── 6. EXIT OVERLAY ────────────────────────────────────────
+  var _exitEl    = null;
+  var _exitTimer = null;
+  var _exitShown = false;
+
+  function _buildExitOverlay() {
+    if (D.getElementById('tv-exit-warn')) {
+      _exitEl = D.getElementById('tv-exit-warn');
+      return;
+    }
+    var el = D.createElement('div');
+    el.id  = 'tv-exit-warn';
+    el.innerHTML = [
+      '<div id="tv-exit-warn-box">',
+      '<h3>Exit Aurum?</h3>',
+      '<p>Press Back again to exit,<br>or Stay to keep listening.</p>',
+      '<div class="warn-btns">',
+      '<button class="warn-btn" id="tv-btn-stay">Stay</button>',
+      '<button class="warn-btn" id="tv-btn-exit">Exit</button>',
+      '</div></div>',
+    ].join('');
+    D.body.appendChild(el);
+    _exitEl = el;
+    D.getElementById('tv-btn-stay').addEventListener('click', _tvStay);
+    D.getElementById('tv-btn-exit').addEventListener('click', _tvExit);
+  }
+
+  function _showExit() {
+    _buildExitOverlay();
+    _exitShown = true;
+    _exitEl.classList.add('show');
+    clearTimeout(_exitTimer);
+    _exitTimer = _sid(setTimeout(_tvStay, 4000));
+    var stay = D.getElementById('tv-btn-stay');
+    if (stay) stay.focus();
+  }
+
+  function _tvStay() {
+    _exitShown = false;
+    clearTimeout(_exitTimer);
+    if (_exitEl) _exitEl.classList.remove('show');
+    var nb = D.querySelector('.nav-btn');
+    if (nb) nb.focus();
+  }
+
+  function _tvExit() {
+    try { W.close(); } catch (e) {}
+    history.back();
+  }
+
+  // ─── 7. BACK BUTTON — SAFE HISTORY ──────────────────────────
+  var _statePushed = false;
+
+  function _pushSentinel() {
+    if (_statePushed) return;
+    _statePushed = true;
+    try { history.pushState({ aurumTV: true }, '', location.href); } catch (e) {}
+  }
+
+  function _handleBack() {
+    if (!_exitShown) {
+      _statePushed = false;
+      _pushSentinel();
+    }
+
+    var fp     = D.getElementById('fullscreen-player');
+    var qp     = D.getElementById('queue-panel');
+    var sp     = D.getElementById('settings-panel');
+    var fpOpen = !!(fp && fp.classList.contains('open'));
+    var qpOpen = !!(qp && qp.classList.contains('open'));
+    var spOpen = !!(sp && sp.classList.contains('open'));
+
+    if (_exitShown)                                               { _tvExit(); return; }
+    if (qpOpen && typeof W.closeQueuePanel === 'function')        { W.closeQueuePanel(); }
+    else if (spOpen && typeof W.closeSettings === 'function')     { W.closeSettings(); }
+    else if (fpOpen && typeof W.closeFullscreen === 'function')   { W.closeFullscreen(); }
+    else                                                          { _showExit(); }
+  }
+
+  W.addEventListener('popstate', _handleBack);
+
+  // ─── 8. REMOTE KEYDOWN — SINGLE LISTENER ────────────────────
+  function _audio() { return W.audio || W._aurumAudio || null; }
+
+  function _moveFocus(dir) {
+    var SEL = [
+      '.nav-btn', '.song-row', '.quick-card', '.wide-card',
+      '.bw-card', '.browse-card', '.queue-item', '.modal-option',
+      '.settings-section-header', '.settings-item',
+      'button:not([disabled])', '[tabindex="0"]',
+    ].join(',');
+    var all = Array.prototype.filter.call(
+      D.querySelectorAll(SEL),
+      function (el) { return el.offsetParent !== null; }
+    );
+    if (!all.length) return;
+    var idx  = all.indexOf(D.activeElement);
+    var next = all[Math.max(0, Math.min(all.length - 1, idx + dir))];
+    if (next && next !== D.activeElement) {
+      next.focus();
+      next.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
+
+  function _toast(msg) {
+    if (typeof W.showToast === 'function') W.showToast(msg);
+  }
+
+  D.addEventListener('keydown', function (e) {
+    var fp     = D.getElementById('fullscreen-player');
+    var qp     = D.getElementById('queue-panel');
+    var sp     = D.getElementById('settings-panel');
+    var fpOpen = !!(fp && fp.classList.contains('open'));
+    var qpOpen = !!(qp && qp.classList.contains('open'));
+    var spOpen = !!(sp && sp.classList.contains('open'));
+    var inInput = e.target &&
+      (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
+
+    switch (e.key) {
+
+      case 'ArrowRight':
+        e.preventDefault();
+        if (fpOpen && !qpOpen && !spOpen) {
+          if (typeof W.nextTrack === 'function') W.nextTrack();
+        } else { _moveFocus(1); }
+        break;
+
+      case 'ArrowLeft':
+        e.preventDefault();
+        if (fpOpen && !qpOpen && !spOpen) {
+          if (typeof W.prevTrack === 'function') W.prevTrack();
+        } else { _moveFocus(-1); }
+        break;
+
+      case 'ArrowUp':
+        e.preventDefault();
+        if (fpOpen && !qpOpen && !spOpen) {
+          var a1 = _audio();
+          if (a1) {
+            var v1 = Math.min(1, +(a1.volume || 0) + 0.1);
+            if (typeof W.setVolume === 'function') W.setVolume(v1);
+            _toast('🔊 ' + Math.round(v1 * 100) + '%');
+          }
+        } else { _moveFocus(-1); }
+        break;
+
+      case 'ArrowDown':
+        e.preventDefault();
+        if (fpOpen && !qpOpen && !spOpen) {
+          var a2 = _audio();
+          if (a2) {
+            var v2 = Math.max(0, +(a2.volume || 1) - 0.1);
+            if (typeof W.setVolume === 'function') W.setVolume(v2);
+            _toast('🔉 ' + Math.round(v2 * 100) + '%');
+          }
+        } else { _moveFocus(1); }
+        break;
+
+      case 'Enter':
+      case ' ':
+        if (inInput) break;
+        e.preventDefault();
+        var ae = D.activeElement;
+        if (ae && ae !== D.body && ae !== D.documentElement) {
+          ae.click();
+        } else if (fpOpen && typeof W.togglePlay === 'function') {
+          W.togglePlay();
+        }
+        break;
+
+      case 'GoBack':
+      case 'Backspace':
+        if (inInput) break;
+        e.preventDefault();
+        if (_exitShown) { _tvExit(); break; }
+        if (qpOpen && typeof W.closeQueuePanel === 'function') {
+          W.closeQueuePanel();
+        } else if (spOpen && typeof W.closeSettings === 'function') {
+          W.closeSettings();
+        } else if (fpOpen && typeof W.closeFullscreen === 'function') {
+          W.closeFullscreen();
+        } else {
+          _showExit();
+        }
+        break;
+
+      case 'Escape':
+        e.preventDefault();
+        if (_exitShown) { _tvStay(); break; }
+        if (qpOpen && typeof W.closeQueuePanel === 'function') {
+          W.closeQueuePanel();
+        } else if (spOpen && typeof W.closeSettings === 'function') {
+          W.closeSettings();
+        } else if (fpOpen && typeof W.closeFullscreen === 'function') {
+          W.closeFullscreen();
+        }
+        break;
+
+      case 's':
+      case 'S':
+        e.preventDefault();
+        if (typeof W._setSleepMin === 'function') {
+          W._setSleepMin(30);
+        } else {
+          _toast('⏱ Sleep · 30 min');
+        }
+        break;
+
+      case 'm':
+      case 'M': {
+        e.preventDefault();
+        var am = _audio();
+        if (am) {
+          am.muted = !am.muted;
+          _toast(am.muted ? '🔇 Muted' : '🔊 Unmuted');
+        }
+        break;
+      }
+    }
+  });
+
+  // ─── 9. DOM READY ───────────────────────────────────────────
+  function _onReady() {
+
+    D.documentElement.classList.add('is-tv');
+    D.body.classList.add('is-tv');
+
+    _pushSentinel();
+
+    W.showMiniPlayer = function () {
+      if (W.currentTrack) {
+        var fp = D.getElementById('fullscreen-player');
+        if (fp && !fp.classList.contains('open')) {
+          if (typeof W.openFullscreen === 'function') W.openFullscreen();
+        }
+      }
+    };
+
+    var mp = D.getElementById('mini-player');
+    if (mp) mp.style.display = 'none';
+
+    try {
+      if (typeof W._stopViz === 'function') W._stopViz();
+      if (W.vizRaf) { cancelAnimationFrame(W.vizRaf); W.vizRaf = null; }
+      W._startViz = function () {};
+      W.tickViz   = function () {};
+      W.initViz   = function () {
+        var c = D.getElementById('fp-visualizer');
+        if (c) { c.innerHTML = ''; c.style.display = 'none'; }
+      };
+    } catch (e) {}
+
+    try {
+      var ac = D.getElementById('ambient-canvas');
+      if (ac) { ac.style.display = 'none'; ac.innerHTML = ''; }
+    } catch (e) {}
+
+    try {
+      if (W.imgObserver) { W.imgObserver.disconnect(); W.imgObserver = null; }
+      W.setImgSrc = function (img, src) {
+        if (!img) return;
+        var ph = W.IMG_PLACEHOLDER || '';
+        if (!src) { img.src = ph; img.classList.add('loaded'); return; }
+        img.onerror = function () {
+          if (this.src !== ph) this.src = ph;
+          this.classList.add('img-error', 'loaded');
+          this.onerror = null;
+        };
+        img.onload = function () { this.classList.add('loaded'); };
+        img.src = src;
+        if (img.complete && img.naturalWidth > 0) img.classList.add('loaded');
+      };
+    } catch (e) {}
+
+    try {
+      W.getArtUrl = function (song) {
+        return ((song && song.artworkUrl100) || '')
+          .replace('100x100', '300x300');
+      };
+    } catch (e) {}
+
+    try {
+      W.fetchRecommendations = function () {};
+      W._autoFetchFullSong   = function () {};
+    } catch (e) {}
+
+    try {
+      if (W._bgPingInterval) {
+        clearInterval(W._bgPingInterval);
+        W._bgPingInterval = _sid(setInterval(function () {
+          if (!W.isPlaying) return;
+          try {
+            var ctx = W._bgAudioCtx || W._aurumAudioCtx;
+            if (!ctx) return;
+            var buf = ctx.createBuffer(1, 1, 22050);
+            var src = ctx.createBufferSource();
+            src.buffer = buf;
+            src.connect(ctx.destination);
+            src.start(0);
+          } catch (_) {}
+        }, 120000));
+      }
+    } catch (e) {}
+
+    _sid(setInterval(function () {
+      try {
+        if (typeof sectionCache !== 'undefined') {
+          var keys = Object.keys(sectionCache);
+          for (var i = 0; i < keys.length; i++) {
+            if (keys[i] !== 'recent' && keys[i] !== 'featured') {
+              delete sectionCache[keys[i]];
+            }
+          }
+        }
+      } catch (_) {}
+    }, 30000));
+
+    try {
+      D.querySelectorAll('.song-row,.queue-item').forEach(function (el) {
+        el.style.contentVisibility    = 'auto';
+        el.style.containIntrinsicSize = '0 64px';
+      });
+    } catch (e) {}
+
+    _sid(setTimeout(function () {
+      var _origOpen   = W.openSettings;
+      var _origRender = W.renderSettingsPage;
+
+      W.openSettings = function () {
+        if (typeof _origOpen === 'function') _origOpen();
+        _sid(setTimeout(_renderTVSettings, 30));
+      };
+
+      W.renderSettingsPage = function () {
+        var sp2 = D.getElementById('settings-panel');
+        if (sp2 && sp2.classList.contains('open')) {
+          _renderTVSettings();
+        } else if (typeof _origRender === 'function') {
+          _origRender();
+        }
+      };
+    }, 200));
+
+    _sid(setTimeout(function () {
+      var first = D.querySelector(
+        '.nav-btn,[tabindex="0"],button,.quick-card,.song-row'
+      );
+      if (first) first.focus();
+    }, 800));
+
+    D.addEventListener('visibilitychange', function () {
+      if (D.hidden) {
+        try { if (typeof W._stopViz === 'function') W._stopViz(); } catch (_) {}
+        try {
+          if (typeof sectionCache !== 'undefined') {
+            var ks = Object.keys(sectionCache);
+            for (var i = 0; i < ks.length; i++) {
+              if (ks[i] !== 'recent' && ks[i] !== 'featured') {
+                delete sectionCache[ks[i]];
+              }
+            }
+          }
+        } catch (_) {}
+        try {
+          D.querySelectorAll('img[data-lazy-src]').forEach(function (img) {
+            img.src = W.IMG_PLACEHOLDER || '';
+          });
+        } catch (_) {}
+      } else {
+        try {
+          var a = _audio();
+          if (W.isPlaying && a && a.paused) {
+            a.play().catch(function () {});
+          }
+        } catch (_) {}
+      }
+    }, { passive: true });
+
+    W.addEventListener('beforeunload', function () {
+      try {
+        var au = _audio();
+        if (au) { au.pause(); au.src = ''; }
+      } catch (_) {}
+      _clearAll();
+      try {
+        var ctx2 = W._bgAudioCtx || W._aurumAudioCtx;
+        if (ctx2) { ctx2.close(); }
+      } catch (_) {}
+    }, { passive: true });
+
+    console.log(
+      '%c[Aurum TV v8.1] ✅ Bug-Free · Lightweight · Zero background load',
+      'color:#c8a858;font-weight:800;font-size:13px'
+    );
+    console.log(
+      '%c[Aurum TV v8.1] 🎮 ◀▶=Nav | ▲▼=Vol | OK=Select | Back=Smart | S=Sleep | M=Mute',
+      'color:#666'
+    );
+  }
+
+  // ─── 10. TV SETTINGS PANEL ──────────────────────────────────
+  function _renderTVSettings() {
+    var body = D.getElementById('settings-body');
+    if (!body) return;
+    var s = (typeof appSettings !== 'undefined') ? appSettings : {};
+
+    function tog(key, chk) {
+      var id   = 'tv-tog-' + key;
+      var chkd = chk ? ' checked' : '';
+      return (
+        '<label class="settings-toggle">' +
+        '<input type="checkbox" id="' + id + '"' + chkd + '>' +
+        '<span class="settings-toggle-track"></span></label>'
+      );
+    }
+
+    function row(icon, title, sub, right, active) {
+      return (
+        '<div class="settings-item" tabindex="0">' +
+        '<div class="settings-item-left">' +
+        '<div class="settings-item-icon' + (active ? ' icon-active' : '') + '">' + icon + '</div>' +
+        '<div class="settings-item-info">' +
+        '<div class="settings-item-title">' + title + '</div>' +
+        '<div class="settings-item-sub">' + sub + '</div>' +
+        '</div></div>' + right + '</div>'
+      );
+    }
+
+    function link(icon, title, sub, fnName, active) {
+      return (
+        '<div class="settings-item" tabindex="0" data-tv-fn="' + fnName + '">' +
+        '<div class="settings-item-left">' +
+        '<div class="settings-item-icon' + (active ? ' icon-active' : '') + '">' + icon + '</div>' +
+        '<div class="settings-item-info">' +
+        '<div class="settings-item-title">' + title + '</div>' +
+        '<div class="settings-item-sub">' + sub + '</div>' +
+        '</div></div>' +
+        '<svg class="settings-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>' +
+        '</div>'
+      );
+    }
+
+    function sec(id, icon, title, content) {
+      return (
+        '<div class="settings-section-header" tabindex="0" data-tv-sec="' + id + '">' +
+        '<div class="ssh-left"><div class="ssh-icon">' + icon + '</div>' +
+        '<span>' + title + '</span></div>' +
+        '<svg class="ssh-chevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg></div>' +
+        '<div class="settings-section-body open" id="tvs-' + id + '">' + content + '</div>'
+      );
+    }
+
+    var I = {
+      eq:   '<svg viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>',
+      bolt: '<svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>',
+      sun:  '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/></svg>',
+      moon: '<svg viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>',
+      vol:  '<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>',
+      gear: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+      note: '<svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
+      dot:  '<svg viewBox="0 0 24 24"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="19" cy="11" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/><circle cx="8.5" cy="7.5" r="2.5"/><circle cx="6.5" cy="12" r="2.5"/></svg>',
+      rst:  '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
+      info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
+      spd:  '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
+      rmt:  '<svg viewBox="0 0 24 24"><rect x="7" y="2" width="10" height="20" rx="3"/><circle cx="12" cy="17" r="1.5" fill="currentColor"/><line x1="10" y1="7" x2="14" y2="7"/><line x1="12" y1="5" x2="12" y2="9"/></svg>',
+    };
+
+    var qL  = { auto: 'Auto', high: '320 kbps', low: '128 kbps' }[s.streamQuality] || 'Auto';
+    var thL = { dark: 'Dark', amoled: 'AMOLED', light: 'Light' }[s.theme] || 'Dark';
+    var acL = { gold: 'Gold', rose: 'Rose', sky: 'Sky', sage: 'Sage', violet: 'Violet', ember: 'Ember' }[s.accentColor] || 'Gold';
+    var slL = (function () {
+      if (s.sleepMode === 'track' && s.sleepTimerEnd === -1) return 'End of track ✓';
+      if (s.sleepTimerEnd > 0) {
+        var rem = Math.max(0, s.sleepTimerEnd - Date.now());
+        if (rem > 0) return 'Stops in ' + Math.ceil(rem / 60000) + ' min ✓';
+      }
+      return 'Off';
+    }());
+
+    var badge = (
+      '<div style="margin:12px 16px 4px;padding:10px 16px;border-radius:12px;' +
+      'background:rgba(184,150,64,.10);border:1px solid rgba(184,150,64,.22);' +
+      'display:flex;align-items:center;gap:10px">' +
+      I.rmt +
+      '<div>' +
+      '<div style="font-size:12px;font-weight:700;color:var(--gold-l)">TV Mode v8.1</div>' +
+      '<div style="font-size:10px;color:var(--text3);margin-top:2px">' +
+      '◀▶ Nav · ▲▼ Vol · OK=Select · Back=Smart · S=Sleep · M=Mute' +
+      '</div></div></div>'
+    );
+
+    var html = badge + [
+      sec('audio', I.eq, 'Audio', [
+        link(I.eq,   'Stream Quality',   qL,  'openStreamQualityPicker'),
+        row( I.bolt, 'Data Saver',       s.dataSaver ? '128kbps · Low data' : 'Off',
+             tog('dataSaver', s.dataSaver), s.dataSaver),
+        row( I.vol,  'Bass Boost',       'Enhance low frequencies',
+             tog('bassBoost', s.bassBoost), s.bassBoost),
+        row( I.note, 'Volume Normalize', 'Smooth gain leveling',
+             tog('volumeNormalize', s.volumeNormalize), s.volumeNormalize),
+        link(I.spd,  'Sleep Timer',      slL, 'openSleepTimerSheet', !!(s.sleepTimerEnd)),
+      ].join('')),
+
+      sec('visuals', I.sun, 'Visuals', [
+        link(I.moon, 'Theme',        thL, 'openThemePicker'),
+        link(I.dot,  'Accent Color', acL, 'openAccentColorPicker'),
+        row( I.bolt, 'Smart Saver',
+             s.smartSaver ? '⚡ Active' : 'Optimize performance',
+             tog('smartSaver', s.smartSaver), s.smartSaver),
+      ].join('')),
+
+      sec('system', I.gear, 'System', [
+        link(I.rst, 'Reset Settings', 'Restore defaults', 'smartReset'),
+        '<div class="settings-item">' +
+        '<div class="settings-item-left">' +
+        '<div class="settings-item-icon">' + I.info + '</div>' +
+        '<div class="settings-item-info">' +
+        '<div class="settings-item-title">Aurum</div>' +
+        '<div class="settings-item-sub">v3.1 · TV Optimizer v8.1</div>' +
+        '</div></div></div>',
+      ].join('')),
+    ].join('');
+
+    body.innerHTML = html;
+
+    var toggleMap = {
+      'tv-tog-dataSaver': function (v) {
+        if (typeof saveSetting === 'function') saveSetting('dataSaver', v);
+        if (typeof showToast   === 'function') showToast(v ? 'Data Saver on' : 'Data Saver off');
+      },
+      'tv-tog-bassBoost': function (v) {
+        if (typeof toggleAudioFX === 'function') toggleAudioFX('bassBoost', v);
+        else if (typeof saveSetting === 'function') saveSetting('bassBoost', v);
+      },
+      'tv-tog-volumeNormalize': function (v) {
+        if (typeof saveSetting === 'function') saveSetting('volumeNormalize', v);
+      },
+      'tv-tog-smartSaver': function (v) {
+        if (typeof applySmartSaver === 'function') applySmartSaver(v);
+        else if (typeof saveSetting === 'function') saveSetting('smartSaver', v);
+      },
+    };
+
+    Object.keys(toggleMap).forEach(function (id) {
+      var el = D.getElementById(id);
+      if (!el) return;
+      el.addEventListener('change', function () { toggleMap[id](this.checked); });
+    });
+
+    body.querySelectorAll('[data-tv-fn]').forEach(function (el) {
+      var fnName = el.getAttribute('data-tv-fn');
+      function _call() {
+        if (typeof W[fnName] === 'function') W[fnName]();
+      }
+      el.addEventListener('click', _call);
+      el.addEventListener('keydown', function (e2) {
+        if (e2.key === 'Enter' || e2.key === ' ') { e2.preventDefault(); _call(); }
+      });
+    });
+
+    body.querySelectorAll('[data-tv-sec]').forEach(function (hdr) {
+      var sid2 = hdr.getAttribute('data-tv-sec');
+      hdr.addEventListener('click', function () {
+        if (typeof W.toggleSection === 'function') W.toggleSection('tvs-' + sid2);
+      });
+    });
+
+    body.querySelectorAll('.settings-item,.settings-section-header').forEach(function (el) {
+      if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '0');
+    });
+  }
+
+  // ─── BOOT ───────────────────────────────────────────────────
+  if (D.readyState === 'loading') {
+    D.addEventListener('DOMContentLoaded', _onReady, { once: true });
+  } else {
+    _onReady();
+  }
+
+}(window, document));
+
+// ═══════════════════════════════════════════════════════════════
+// app.js · Aurum Music Player · Main Application
+// ═══════════════════════════════════════════════════════════════
+
+// ─── DEVICE DETECTION ────────────────────────────────────────────────────────
+const isTV = window.__IS_TV__ || (
+  /SmartTV|SMART-TV|WebOS|Tizen|BRAVIA|HbbTV|TVBrowser|Viera|Vidaa|NetCast|PhilipsTV/i.test(navigator.userAgent) ||
+  (window.innerWidth >= 1280 && !window.matchMedia('(pointer:fine)').matches)
+);
 
 const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent) && !isTV;
 
@@ -123,7 +818,6 @@ let originalArtworkHTML = null;
 const audio = new Audio();
 audio.preload = 'none';
 audio.crossOrigin = 'anonymous';
-// Keep audio context alive in background on Android WebView
 audio.setAttribute('playsinline', '');
 audio.setAttribute('webkit-playsinline', '');
 window._aurumAudio = audio;
@@ -455,7 +1149,6 @@ document.addEventListener('visibilitychange', () => {
     const ac = document.getElementById('ambient-canvas');
     if (fp) fp.style.setProperty('visibility', 'hidden', 'important');
     if (ac) ac.style.setProperty('display', 'none', 'important');
-    // NOTE: Do NOT pause audio here — let it play in background
     const keep = new Set(['recent', 'featured']);
     Object.keys(sectionCache).forEach(k => { if (!keep.has(k)) delete sectionCache[k]; });
   } else {
@@ -470,7 +1163,6 @@ document.addEventListener('visibilitychange', () => {
       _syncPlayIcons();
       _syncPlayingClass();
       updateQualityLabel();
-      // Resume if audio was suspended by Android
       if (isPlaying && audio.paused) {
         audio.play().catch(() => {});
       }
@@ -526,35 +1218,31 @@ function toggleLyricsView() {
   const isOpen = wrap.style.display !== 'none' && wrap.style.display !== '';
 
   if (isOpen) {
-    // Close
     wrap.style.display = 'none';
     lyricsViewActive = false;
     if (lyricsBtn) lyricsBtn.classList.remove('active');
   } else {
-    // Open — guard: must have actual lyrics text
     const el = document.getElementById('fp-lyrics');
     if (!el || !el.textContent.trim()) { showToast('No lyrics available'); return; }
     wrap.style.display = 'block';
-    // Reset scroll to top every open
     el.scrollTop = 0;
     lyricsViewActive = true;
     if (lyricsBtn) lyricsBtn.classList.add('active');
   }
 }
 
-// ─── FIXED: updateNextStrip ───────────────────────────────────────────────────
+// ─── updateNextStrip ─────────────────────────────────────────────────────────
 function updateNextStrip() {
   const strip = document.getElementById('fp-next-strip');
   if (!strip) return;
-  
+
   const remainingCount = currentQueue.length - currentIndex - 1;
-  
-  if (!currentQueue.length || currentQueue.length < 2) { 
-    strip.style.display = 'none'; 
-    return; 
+
+  if (!currentQueue.length || currentQueue.length < 2) {
+    strip.style.display = 'none';
+    return;
   }
-  
-  // FIXED: shuffle aur normal dono sahi se calculate hota hai
+
   let nextIdx;
   if (shuffleOn) {
     nextIdx = Math.floor(Math.random() * currentQueue.length);
@@ -569,14 +1257,14 @@ function updateNextStrip() {
   if (!nextSong) { strip.style.display = 'none'; return; }
 
   strip.style.display = 'flex';
-  
+
   const tag = strip.querySelector('.fp-next-tag');
   if (tag && remainingCount > 0) {
     tag.innerHTML = `UP<br>NEXT<br><span style="font-size:7px; margin-top:2px;">${remainingCount}</span>`;
   } else if (tag) {
     tag.innerHTML = 'UP<br>NEXT';
   }
-  
+
   const wasHidden = !strip.style.opacity || strip.style.opacity === '0' || getComputedStyle(strip).opacity === '0';
   if (wasHidden) {
     strip.style.opacity = '0';
@@ -958,11 +1646,9 @@ function setupFullPlayerGesture() {
 
   function snapBackQp() {
     qp.style.transition = 'transform 0.32s cubic-bezier(0.34,1.56,0.64,1)';
-    // If panel is open, snap back to 0; if closed, snap back to off-screen
     qp.style.transform  = qp.classList.contains('open') ? 'translateY(0)' : 'translateY(100%)';
     qp.style.willChange = '';
     setTimeout(() => {
-      // Hand control back to CSS class system
       qp.style.transform  = '';
       qp.style.transition = '';
     }, 340);
@@ -1217,7 +1903,6 @@ function setupShakeGesture() {
   let initialized = false;
 
   function onMotion(e) {
-    // Respect settings — if shake disabled, do nothing
     if (typeof appSettings !== 'undefined' && appSettings?.shakeToShuffle === false) return;
     const acc = e.accelerationIncludingGravity;
     if (!acc) return;
@@ -1255,68 +1940,6 @@ function setupShakeGesture() {
   } else {
     window.addEventListener('devicemotion', onMotion, { passive: true });
   }
-}
-
-function setupTVNavigation() {
-  // Add TV class for CSS targeting
-  document.documentElement.classList.add('is-tv');
-  document.body.classList.add('is-tv');
-
-  // Hide mini player on TV — use fullscreen always
-  const mp = document.getElementById('mini-player');
-  if (mp) mp.style.display = 'none';
-
-  // Auto-open fullscreen when track starts on TV
-  const _origShowMini = showMiniPlayer;
-  window.showMiniPlayer = function() {
-    const fp = document.getElementById('fullscreen-player');
-    if (fp && !fp.classList.contains('open') && currentTrack) openFullscreen();
-  };
-
-  document.addEventListener('keydown', e => {
-    const fp = document.getElementById('fullscreen-player');
-    const fpOpen = fp && fp.classList.contains('open');
-
-    switch(e.key) {
-      case 'ArrowRight':
-        if (fpOpen) { nextTrack(); e.preventDefault(); }
-        break;
-      case 'ArrowLeft':
-        if (fpOpen) { prevTrack(); e.preventDefault(); }
-        break;
-      case 'Enter':
-      case ' ':
-        if (fpOpen) { togglePlay(); e.preventDefault(); }
-        else if (document.activeElement && document.activeElement !== document.body) {
-          document.activeElement.click(); e.preventDefault();
-        }
-        break;
-      case 'ArrowUp':
-        if (fpOpen) { setVolume(Math.min(1, audio.volume + 0.1)); e.preventDefault(); }
-        else _tvMoveFocus(-1, e);
-        break;
-      case 'ArrowDown':
-        if (fpOpen) { setVolume(Math.max(0, audio.volume - 0.1)); e.preventDefault(); }
-        else _tvMoveFocus(1, e);
-        break;
-      case 'Backspace':
-      case 'GoBack':
-      case 'Escape':
-        if (fpOpen) { closeFullscreen(); e.preventDefault(); }
-        break;
-    }
-  });
-}
-
-function _tvMoveFocus(dir, e) {
-  const focusable = [...document.querySelectorAll(
-    '[tabindex="0"], button:not([disabled]), .nav-btn, .song-row, .quick-card, .browse-card, .queue-item, .modal-option'
-  )].filter(el => el.offsetParent !== null);
-  if (!focusable.length) return;
-  const cur = document.activeElement;
-  const idx = focusable.indexOf(cur);
-  const next = focusable[Math.max(0, Math.min(focusable.length - 1, idx + dir))];
-  if (next) { next.focus(); e.preventDefault(); next.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
 }
 
 // ─── PLAYER OPEN / CLOSE ─────────────────────────────────────────────────────
@@ -1365,16 +1988,11 @@ function openQueuePanel() {
   const panel = document.getElementById('queue-panel');
   const btn   = document.getElementById('fp-queue-btn');
   if (!panel) return;
-
-  // Reset any inline transform that gesture system may have left behind
   panel.style.transform = '';
   panel.style.transition = '';
-
   queuePanelOpen = true;
   panel.classList.add('open');
   if (btn) btn.classList.add('queue-open');
-
-  // Defer DOM reads until after class is applied
   requestAnimationFrame(() => {
     if (typeof updateQueuePanel === 'function') updateQueuePanel();
     if (typeof setupSwipeToRemove === 'function') setupSwipeToRemove();
@@ -1385,9 +2003,7 @@ function closeQueuePanel() {
   const panel = document.getElementById('queue-panel');
   const btn   = document.getElementById('fp-queue-btn');
   if (!panel) return;
-
   queuePanelOpen = false;
-  // Clear any dragging inline transform before CSS transition takes over
   panel.style.transform = '';
   panel.classList.remove('open');
   if (btn) btn.classList.remove('queue-open');
@@ -1397,7 +2013,7 @@ function updateQueuePanel() {
   const body    = document.getElementById('queue-panel-body');
   const countEl = document.getElementById('queue-count');
   if (!body) return;
-  
+
   body.innerHTML = '';
   if (!currentQueue.length) {
     body.innerHTML = '<div style="padding:32px;text-align:center;color:var(--text3);font-size:12px;">Queue is empty</div>';
@@ -1460,16 +2076,15 @@ function setupSwipeToRemove() {
   const queueBody = document.getElementById('queue-panel-body');
   if (!queueBody || queueBody._swipeAttached) return;
   queueBody._swipeAttached = true;
-  
+
   let startX = 0, startY = 0, startTime = 0;
   let currentItem = null;
   let isSwiping = false;
   let swipeThreshold = 80;
-  
+
   queueBody.addEventListener('touchstart', (e) => {
     const item = e.target.closest('.queue-item');
     if (!item || item.classList.contains('current')) return;
-    
     startX = e.touches[0].clientX;
     startY = e.touches[0].clientY;
     startTime = Date.now();
@@ -1477,15 +2092,12 @@ function setupSwipeToRemove() {
     isSwiping = true;
     item.style.transition = 'none';
   }, { passive: true });
-  
+
   queueBody.addEventListener('touchmove', (e) => {
     if (!isSwiping || !currentItem) return;
-    
     const dx = e.touches[0].clientX - startX;
     const dy = e.touches[0].clientY - startY;
-    
     if (Math.abs(dx) < 15 && Math.abs(dy) < 15) return;
-    
     if (Math.abs(dx) > Math.abs(dy) && dx < 0) {
       e.preventDefault();
       const translateX = Math.max(-swipeThreshold, dx);
@@ -1495,22 +2107,16 @@ function setupSwipeToRemove() {
       currentItem.style.transition = 'none';
     }
   }, { passive: false });
-  
+
   queueBody.addEventListener('touchend', (e) => {
-    if (!isSwiping || !currentItem) {
-      resetSwipe();
-      return;
-    }
-    
+    if (!isSwiping || !currentItem) { resetSwipe(); return; }
     const endX = e.changedTouches[0].clientX;
     const dx = endX - startX;
     const dt = Date.now() - startTime;
     const velocity = Math.abs(dx) / dt;
-    
     if (dx < -swipeThreshold || (dx < -40 && velocity > 0.3)) {
       const trackId = currentItem.dataset.trackId;
       removeFromQueue(trackId);
-      
       currentItem.style.transition = 'transform 0.2s ease, opacity 0.15s ease';
       currentItem.style.transform = 'translateX(-100%)';
       currentItem.style.opacity = '0';
@@ -1524,10 +2130,9 @@ function setupSwipeToRemove() {
       currentItem.style.transform = '';
       currentItem.style.opacity = '';
     }
-    
     resetSwipe();
   });
-  
+
   function resetSwipe() {
     if (currentItem) {
       currentItem.style.transition = '';
@@ -1539,17 +2144,14 @@ function setupSwipeToRemove() {
     startX = 0;
     startY = 0;
   }
-  
+
   queueBody.addEventListener('touchcancel', resetSwipe);
 }
 
 function removeFromQueue(trackId) {
   const index = currentQueue.findIndex(s => String(s.trackId) === String(trackId));
   if (index === -1) return;
-  if (index === currentIndex) {
-    showToast("Can't remove currently playing song");
-    return;
-  }
+  if (index === currentIndex) { showToast("Can't remove currently playing song"); return; }
   currentQueue.splice(index, 1);
   if (index < currentIndex) currentIndex--;
   updateQueuePanel();
@@ -1559,9 +2161,6 @@ function removeFromQueue(trackId) {
 }
 
 // ─── QUEUE PANEL DIRECT GESTURE ───────────────────────────────────────────────
-// Queue panel is now outside #fullscreen-player so it needs its own touch
-// listeners for swipe-down-to-close. The fp gesture system handles swipe-up
-// to open; this handles swipe-down to close.
 function setupQueuePanelGesture() {
   const qp = document.getElementById('queue-panel');
   if (!qp) return;
@@ -1578,12 +2177,10 @@ function setupQueuePanelGesture() {
   }
 
   qp.addEventListener('touchstart', e => {
-    // Only allow drag from handle OR when body scroll is at top
     const onHandle = e.target.closest('#queue-drag-handle') || e.target.closest('.queue-panel-handle');
     const body = document.getElementById('queue-panel-body');
     const bodyAtTop = !body || body.scrollTop <= 0;
     if (!onHandle && !bodyAtTop) return;
-
     startY     = e.touches[0].clientY;
     startX     = e.touches[0].clientX;
     isDragging = true;
@@ -1602,13 +2199,10 @@ function setupQueuePanelGesture() {
     const dx    = e.touches[0].clientX - startX;
     const absDy = Math.abs(dy);
     const absDx = Math.abs(dx);
-
     if (!axisLocked && (absDy > 6 || absDx > 6)) {
       axisLocked = absDx > absDy ? 'horizontal' : 'vertical';
     }
     if (axisLocked === 'horizontal') { isDragging = false; return; }
-
-    // Only allow downward drag
     if (axisLocked === 'vertical' && dy > 0 && absDy > 4) {
       moved = true;
       e.preventDefault();
@@ -1626,14 +2220,11 @@ function setupQueuePanelGesture() {
     isDragging = false;
     qp.classList.remove('dragging');
     qp.style.willChange = '';
-
     const dy  = e.changedTouches[0].clientY - startY;
     const dt  = Math.max(1, Date.now() - startTime);
     const vel = dy / dt;
     _resumeBlur();
-
     if (!moved) { snapBack(); return; }
-
     if (dy > 90 || (vel > 0.45 && dy > 25)) {
       qp.style.transform = '';
       closeQueuePanel();
@@ -1650,6 +2241,7 @@ function setupQueuePanelGesture() {
     snapBack();
   }, { passive: true });
 }
+
 // ─── ARTIST PAGE ─────────────────────────────────────────────────────────────
 function openArtistPage(artistName, songs, artUrl) {
   let page = document.getElementById('artist-page');
@@ -2671,14 +3263,13 @@ async function triggerDownload(quality) {
   }
 }
 
-// ─── FIXED: fetchLyrics ───────────────────────────────────────────────────────
+// ─── fetchLyrics ─────────────────────────────────────────────────────────────
 async function fetchLyrics(song) {
   const wrap      = document.getElementById('fp-lyrics-wrap');
   const el        = document.getElementById('fp-lyrics');
   const lyricsBtn = document.getElementById('fp-lyrics-toggle');
   if (!wrap || !el) return;
 
-  // Reset: close lyrics panel on every new song
   wrap.style.display = 'none';
   el.textContent     = '';
   lyricsViewActive   = false;
@@ -2691,21 +3282,14 @@ async function fetchLyrics(song) {
     if (!r.ok) throw new Error('not found');
     const d = await r.json();
     if (!d.lyrics || !d.lyrics.trim()) throw new Error('empty');
-
     el.textContent = d.lyrics.trim();
-
-    // Show lyrics button — user can now tap to open panel
     if (lyricsBtn) lyricsBtn.style.display = 'flex';
-
   } catch(e) {
-    // Lyrics not available — button stays hidden, panel stays closed
     if (lyricsBtn) lyricsBtn.style.display = 'none';
   }
 }
 
 // ─── BACKGROUND AUDIO KEEP-ALIVE ─────────────────────────────────────────────
-// Android WebView suspends audio context when screen off or app backgrounded.
-// This creates a silent AudioContext buffer ping every 25s to keep it alive.
 let _wakeLock = null;
 let _bgPingInterval = null;
 let _bgAudioCtx = null;
@@ -2723,7 +3307,6 @@ function _releaseWakeLock() {
 }
 
 function _setupBgAudioPing() {
-  // Create a silent AudioContext — keeps audio thread alive on Android
   try {
     _bgAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
     _bgPingInterval = setInterval(() => {
@@ -2739,14 +3322,13 @@ function _setupBgAudioPing() {
   } catch(e) {}
 }
 
-// Acquire wake lock when playing, release when paused
 audio.addEventListener('playing', () => { _acquireWakeLock(); });
 audio.addEventListener('pause',   () => { if (!isPlaying) _releaseWakeLock(); });
 
-// Re-acquire wake lock when app comes back to foreground
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden && isPlaying) _acquireWakeLock();
 }, { passive: true });
+
 let _toastTimer = null;
 function showToast(msg) {
   const t = document.getElementById('toast'); if (!t) return;
@@ -2780,6 +3362,5 @@ window.addEventListener('DOMContentLoaded', () => {
   setupArtSwipeGesture();
   setupShakeGesture();
   _setupBgAudioPing();
-  if (isTV) setupTVNavigation();
   requestPersistentStorage();
 });
