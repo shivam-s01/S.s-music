@@ -9,32 +9,26 @@
   <meta name="theme-color" content="#050508">
   <meta name="color-scheme" content="dark light">
 
-  <!-- SEO -->
   <title>Aurum — Music Player</title>
   <meta name="description" content="Aurum — premium music player with beautiful design, lyrics, and high-quality audio.">
   <meta name="application-name" content="Aurum">
 
-  <!-- OpenGraph -->
   <meta property="og:title" content="Aurum — Music Player">
   <meta property="og:description" content="Premium music player with beautiful design and high-quality audio.">
   <meta property="og:type" content="website">
   <meta property="og:image" content="icons/og-image.png">
 
-  <!-- Icons -->
   <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png">
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 
-  <!-- Fonts — preload for zero FOUT -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&display=swap">
   <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 
-  <!-- PWA -->
   <link rel="manifest" href="manifest.json">
 
-  <!-- CSS -->
   <link rel="stylesheet" href="style.css?v=__CACHEBUST__">
   <link rel="stylesheet" href="queue-panel.css?v=__CACHEBUST__">
   <link rel="stylesheet" href="settings.css?v=__CACHEBUST__">
@@ -48,7 +42,7 @@
     Offline
   </div>
 
-  <!-- Decorative ambient — aria-hidden, no battery cost when hidden -->
+  <!-- Ambient — hidden, no battery cost -->
   <div id="ambient-canvas" aria-hidden="true">
     <div class="orb orb-1"></div>
     <div class="orb orb-2"></div>
@@ -87,7 +81,7 @@
       </div>
       <div class="ph-chips-scroll" role="tablist" aria-label="Music genres">
         <div class="ph-chips" id="home-chips">
-          <button class="chip active" role="tab" aria-selected="true" onclick="filterHome('all',this)">For You</button>
+          <button class="chip active" role="tab" aria-selected="true"  onclick="filterHome('all',this)">For You</button>
           <button class="chip" role="tab" aria-selected="false" onclick="filterHome('bollywood',this)">Bollywood</button>
           <button class="chip" role="tab" aria-selected="false" onclick="filterHome('hiphop',this)">Hip-Hop</button>
           <button class="chip" role="tab" aria-selected="false" onclick="filterHome('pop',this)">Pop</button>
@@ -115,10 +109,10 @@
         <input type="text" id="search-input" placeholder="Search songs, artists..."
                inputmode="search" autocomplete="off" autocorrect="off"
                spellcheck="false" aria-label="Search songs and artists">
+        <button id="search-clear" class="search-clear hidden" onclick="clearSearch()" aria-label="Clear search">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
       </div>
-      <button id="search-clear" class="hidden" onclick="clearSearch()" aria-label="Clear search">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </button>
     </div>
     <div id="search-body"></div>
   </div>
@@ -130,10 +124,12 @@
       <div class="page-subtitle" id="lib-subtitle">Your music, saved</div>
     </div>
     <div class="library-tabs" role="tablist" aria-label="Library sections">
-      <button class="lib-tab active" role="tab" aria-selected="true" onclick="switchLibTab('playlists',this)">Playlists</button>
+      <button class="lib-tab active" role="tab" aria-selected="true"  onclick="switchLibTab('playlists',this)">Playlists</button>
       <button class="lib-tab" role="tab" aria-selected="false" onclick="switchLibTab('saved',this)" id="saved-tab">Liked</button>
       <button class="lib-tab" role="tab" aria-selected="false" onclick="switchLibTab('downloads',this)" id="dl-tab">Downloads</button>
     </div>
+
+    <!-- Playlists tab — visible by default -->
     <div id="lib-playlists">
       <button class="liked-card" onclick="playLikedSongs()" aria-label="Play liked songs">
         <div class="liked-card-icon" aria-hidden="true">
@@ -151,8 +147,16 @@
       </button>
       <div class="playlist-grid" id="playlist-grid"></div>
     </div>
-    <div id="lib-saved" class="hidden"><div id="saved-songs-list"></div></div>
-    <div id="lib-downloads" class="hidden"><div id="downloaded-songs-list"></div></div>
+
+    <!-- Saved tab — hidden by default -->
+    <div id="lib-saved" style="display:none">
+      <div id="saved-songs-list"></div>
+    </div>
+
+    <!-- Downloads tab — hidden by default -->
+    <div id="lib-downloads" style="display:none">
+      <div id="downloaded-songs-list"></div>
+    </div>
   </div>
 
   <!-- ─── BOTTOM NAV ────────────────────────── -->
@@ -172,8 +176,8 @@
   </nav>
 
   <!-- ─── MINI PLAYER ───────────────────────── -->
-  <div id="mini-player" onclick="openFullscreen()" role="button" tabindex="0" ...>
-   aria-label="Open full player">
+  <!-- FIX: Was <div> opening with </button> closing + broken attribute syntax -->
+  <div id="mini-player" onclick="openFullscreen()" role="button" tabindex="0" aria-label="Open full player">
     <img class="mini-art" id="mini-art" src="" alt="Album art">
     <div class="mini-info">
       <div class="mini-title" id="mini-title">—</div>
@@ -193,7 +197,7 @@
     <div class="mini-progress" role="progressbar" aria-label="Track progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
       <div class="mini-progress-bar" id="mini-progress-bar"></div>
     </div>
-  </button>
+  </div>
 
   <!-- ─── FULLSCREEN PLAYER ─────────────────── -->
   <div id="fullscreen-player" role="region" aria-label="Now playing">
@@ -277,7 +281,7 @@
     </button>
 
     <!-- Lyrics Section -->
-    <div id="fp-lyrics-wrap" class="hidden" role="region" aria-label="Lyrics">
+    <div id="fp-lyrics-wrap" style="display:none" role="region" aria-label="Lyrics">
       <div class="fp-lyrics-header">
         <span class="fp-lyrics-label">Lyrics</span>
         <button class="fp-lyrics-close-btn" onclick="toggleLyricsView()" aria-label="Close lyrics">
@@ -306,14 +310,14 @@
                aria-valuetext="100%">
       </div>
 
-      <!-- Lyrics Button — premium redesigned -->
-      <button class="fp-bottom-icon fp-lyrics-btn hidden" id="fp-lyrics-toggle"
+      <!-- Lyrics Button -->
+      <button class="fp-bottom-icon fp-lyrics-btn" id="fp-lyrics-toggle"
+              style="display:none"
               onclick="toggleLyricsView()"
               aria-label="Toggle lyrics"
               aria-pressed="false"
               title="Lyrics">
         <svg class="fp-lyrics-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-          <!-- Microphone shape — more musical/premium than document icon -->
           <rect x="9" y="2" width="6" height="11" rx="3"/>
           <path d="M5 10a7 7 0 0 0 14 0"/>
           <line x1="12" y1="19" x2="12" y2="22"/>
@@ -414,7 +418,9 @@
   </div>
 
   <!-- ─── CREATE PLAYLIST MODAL ────────────── -->
-  <div class="input-modal hidden" id="create-playlist-modal" role="dialog" aria-modal="true" aria-label="Create playlist">
+  <!-- FIX: Removed .hidden class — JS controls visibility via style.display -->
+  <div class="input-modal" id="create-playlist-modal" style="display:none"
+       role="dialog" aria-modal="true" aria-label="Create playlist">
     <div class="input-sheet">
       <div class="input-modal-handle" aria-hidden="true"></div>
       <h2>New Playlist</h2>
@@ -426,7 +432,9 @@
   </div>
 
   <!-- ─── RENAME MODAL ─────────────────────── -->
-  <div class="input-modal hidden" id="rename-modal" role="dialog" aria-modal="true" aria-label="Rename playlist">
+  <!-- FIX: Removed .hidden class — JS controls visibility via style.display -->
+  <div class="input-modal" id="rename-modal" style="display:none"
+       role="dialog" aria-modal="true" aria-label="Rename playlist">
     <div class="input-sheet">
       <div class="input-modal-handle" aria-hidden="true"></div>
       <h2>Rename Playlist</h2>
@@ -438,7 +446,10 @@
   </div>
 
   <!-- ─── PLAYLIST OPTIONS MODAL ───────────── -->
-  <div class="modal-overlay hidden" id="playlist-opts-modal" onclick="closePlaylistOpts(event)" role="dialog" aria-modal="true" aria-label="Playlist options">
+  <!-- FIX: Removed .hidden class — modal-overlay JS toggle controls this -->
+  <div class="modal-overlay" id="playlist-opts-modal"
+       onclick="closePlaylistOpts(event)"
+       role="dialog" aria-modal="true" aria-label="Playlist options">
     <div class="modal-sheet">
       <div class="modal-handle" aria-hidden="true"></div>
       <div class="modal-title" id="pl-opts-title">Playlist</div>
@@ -454,7 +465,9 @@
   </div>
 
   <!-- ─── QUALITY MODAL ────────────────────── -->
-  <div class="modal-overlay hidden" id="quality-modal" onclick="closeQualitySheet(event)" role="dialog" aria-modal="true" aria-label="Audio quality">
+  <div class="modal-overlay" id="quality-modal"
+       onclick="closeQualitySheet(event)"
+       role="dialog" aria-modal="true" aria-label="Audio quality">
     <div class="quality-sheet">
       <div class="quality-sheet-handle" aria-hidden="true"></div>
       <h2>Audio Quality</h2>
@@ -471,13 +484,17 @@
   </div>
 
   <!-- ─── DOWNLOAD MODAL ───────────────────── -->
-  <div class="modal-overlay hidden" id="download-modal" onclick="closeDownloadModal(event)" role="dialog" aria-modal="true" aria-label="Download options">
+  <div class="modal-overlay" id="download-modal"
+       onclick="closeDownloadModal(event)"
+       role="dialog" aria-modal="true" aria-label="Download options">
     <div class="dl-sheet">
       <div class="dl-sheet-handle" aria-hidden="true"></div>
       <h2>Save to Device</h2>
       <div class="dl-sub" id="dl-track-name">Select quality to download</div>
       <button class="dl-option" onclick="triggerDownload('preview')" aria-label="Download 30 second preview">
-        <div class="dl-option-icon quality-low" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+        <div class="dl-option-icon quality-low" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        </div>
         <div>
           <div class="dl-option-title">30s Preview</div>
           <div class="dl-option-desc">iTunes preview · Always available</div>
@@ -485,7 +502,9 @@
         <span class="dl-kbps-badge b128">128 kbps</span>
       </button>
       <button class="dl-option" id="dl-full-option" onclick="triggerDownload('full')" aria-label="Download full song">
-        <div class="dl-option-icon quality-high" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
+        <div class="dl-option-icon quality-high" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+        </div>
         <div>
           <div class="dl-option-title">Full Song</div>
           <div class="dl-option-desc" id="dl-full-desc">Fetching quality…</div>
@@ -493,7 +512,9 @@
         <span class="dl-kbps-badge b160" id="dl-full-badge">—</span>
       </button>
       <button class="dl-option gift-row" onclick="triggerDownload('gift')" aria-label="Download owner gift 320kbps">
-        <div class="dl-option-icon quality-gift" aria-hidden="true"><svg viewBox="0 0 24 24"><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><polyline points="12 7 10 11 14 11 12 7"/></svg></div>
+        <div class="dl-option-icon quality-gift" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><polyline points="12 7 10 11 14 11 12 7"/></svg>
+        </div>
         <div>
           <div class="dl-option-title">★ Owner Gift</div>
           <div class="dl-option-desc">320 kbps guaranteed · Best resolution</div>
@@ -501,7 +522,9 @@
         <span class="dl-kbps-badge bgift">320 kbps</span>
       </button>
       <button class="dl-option" onclick="triggerDownload('ringtone')" aria-label="Download as ringtone">
-        <div class="dl-option-icon quality-ring" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></div>
+        <div class="dl-option-icon quality-ring" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        </div>
         <div>
           <div class="dl-option-title">Ringtone</div>
           <div class="dl-option-desc">30s trimmed · Perfect for ringtones</div>
@@ -530,13 +553,11 @@
 
 </div><!-- #app -->
 
-<!-- Scripts — defer so they never block render -->
 <script src="tv-perf.js?v=__CACHEBUST__" defer></script>
 <script src="settings_addon.js?v=__CACHEBUST__" defer></script>
 <script src="app.js?v=__CACHEBUST__" defer></script>
 
 <script>
-  /* Service Worker */
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('./sw.js')
