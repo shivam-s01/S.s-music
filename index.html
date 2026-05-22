@@ -7,253 +7,517 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#050508">
-  <title>Aurum</title>
+  <meta name="color-scheme" content="dark light">
+
+  <!-- SEO -->
+  <title>Aurum — Music Player</title>
+  <meta name="description" content="Aurum — premium music player with beautiful design, lyrics, and high-quality audio.">
+  <meta name="application-name" content="Aurum">
+
+  <!-- OpenGraph -->
+  <meta property="og:title" content="Aurum — Music Player">
+  <meta property="og:description" content="Premium music player with beautiful design and high-quality audio.">
+  <meta property="og:type" content="website">
+  <meta property="og:image" content="icons/og-image.png">
+
+  <!-- Icons -->
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+
+  <!-- Fonts — preload for zero FOUT -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&display=swap">
   <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+
+  <!-- PWA -->
   <link rel="manifest" href="manifest.json">
+
+  <!-- CSS -->
   <link rel="stylesheet" href="style.css?v=__CACHEBUST__">
   <link rel="stylesheet" href="queue-panel.css?v=__CACHEBUST__">
   <link rel="stylesheet" href="settings.css?v=__CACHEBUST__">
 </head>
 <body>
 <div id="app">
-  <!-- Offline Banner -->
-  <div id="offline-banner"><svg viewBox="0 0 24 24"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M17.41 17.41a10 10 0 0 0-14.83-14.83M2 16.9a10 10 0 0 0 15.35-5.24"/></svg>Offline</div>
-  <div id="ambient-canvas" aria-hidden="true"><div class="orb orb-1"></div><div class="orb orb-2"></div><div class="orb orb-3"></div></div>
 
-  <!-- HOME PAGE -->
-  <div class="page active" id="page-home">
+  <!-- Offline Banner -->
+  <div id="offline-banner" role="alert" aria-live="polite">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M17.41 17.41a10 10 0 0 0-14.83-14.83M2 16.9a10 10 0 0 0 15.35-5.24"/></svg>
+    Offline
+  </div>
+
+  <!-- Decorative ambient — aria-hidden, no battery cost when hidden -->
+  <div id="ambient-canvas" aria-hidden="true">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+  </div>
+
+  <!-- ─── HOME PAGE ──────────────────────────── -->
+  <main class="page active" id="page-home" role="main" aria-label="Home">
     <div class="ph-wrap" id="ph-wrap">
-      <div class="ph-ambient" aria-hidden="true"><div class="ph-orb ph-orb-a"></div><div class="ph-orb ph-orb-b"></div><div class="ph-noise"></div></div>
+      <div class="ph-ambient" aria-hidden="true">
+        <div class="ph-orb ph-orb-a"></div>
+        <div class="ph-orb ph-orb-b"></div>
+        <div class="ph-noise"></div>
+      </div>
       <div class="ph-topbar">
         <div class="ph-wordmark">
           <div class="ph-logo-mark" aria-hidden="true">
-            <svg viewBox="0 0 28 28" fill="none"><path d="M4 23L10 7L14 16L18 7L24 23" stroke="rgba(184,150,64,0.28)" stroke-width="1" stroke-linecap="round"/><path d="M6.5 23L12 8.5L14 13" stroke="rgba(184,150,64,0.14)" stroke-width="0.8" stroke-linecap="round"/></svg>
+            <svg viewBox="0 0 28 28" fill="none">
+              <path d="M4 23L10 7L14 16L18 7L24 23" stroke="rgba(184,150,64,0.28)" stroke-width="1" stroke-linecap="round"/>
+              <path d="M6.5 23L12 8.5L14 13" stroke="rgba(184,150,64,0.14)" stroke-width="0.8" stroke-linecap="round"/>
+            </svg>
           </div>
           <span class="ph-app-name">Aurum</span>
         </div>
         <div class="ph-actions">
-          <button class="ph-icon-btn" onclick="refreshHomeSections()" aria-label="Refresh"><svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg></button>
-          <button class="ph-icon-btn ph-settings-btn" onclick="openSettings()" aria-label="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4 1.65 1.65 0 0 0 7.18 19l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0 .33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.5a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
-          <button class="ph-icon-btn" onclick="goPage('library',document.getElementById('nav-library'))" aria-label="Library"><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></button>
+          <button class="ph-icon-btn" onclick="refreshHomeSections()" aria-label="Refresh home">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          </button>
+          <button class="ph-icon-btn ph-settings-btn" onclick="openSettings()" aria-label="Open settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4 1.65 1.65 0 0 0 7.18 19l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0 .33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.5a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
+          <button class="ph-icon-btn" onclick="goPage('library',document.getElementById('nav-library'))" aria-label="Open library">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          </button>
         </div>
       </div>
-      <div class="ph-chips-scroll">
+      <div class="ph-chips-scroll" role="tablist" aria-label="Music genres">
         <div class="ph-chips" id="home-chips">
-          <div class="chip active" onclick="filterHome('all',this)">For You</div>
-          <div class="chip" onclick="filterHome('bollywood',this)">Bollywood</div>
-          <div class="chip" onclick="filterHome('hiphop',this)">Hip-Hop</div>
-          <div class="chip" onclick="filterHome('pop',this)">Pop</div>
-          <div class="chip" onclick="filterHome('rock',this)">Rock</div>
-          <div class="chip" onclick="filterHome('indie',this)">Indie</div>
-          <div class="chip" onclick="filterHome('rnb',this)">R&amp;B</div>
-          <div class="chip" onclick="filterHome('lofi',this)">Lo-Fi</div>
+          <button class="chip active" role="tab" aria-selected="true" onclick="filterHome('all',this)">For You</button>
+          <button class="chip" role="tab" aria-selected="false" onclick="filterHome('bollywood',this)">Bollywood</button>
+          <button class="chip" role="tab" aria-selected="false" onclick="filterHome('hiphop',this)">Hip-Hop</button>
+          <button class="chip" role="tab" aria-selected="false" onclick="filterHome('pop',this)">Pop</button>
+          <button class="chip" role="tab" aria-selected="false" onclick="filterHome('rock',this)">Rock</button>
+          <button class="chip" role="tab" aria-selected="false" onclick="filterHome('indie',this)">Indie</button>
+          <button class="chip" role="tab" aria-selected="false" onclick="filterHome('rnb',this)">R&amp;B</button>
+          <button class="chip" role="tab" aria-selected="false" onclick="filterHome('lofi',this)">Lo-Fi</button>
         </div>
       </div>
       <div class="ph-fade-edge" aria-hidden="true"></div>
     </div>
     <div id="home-sections"></div>
-    <div style="height:18px;"></div>
-  </div>
+    <div class="page-bottom-spacer"></div>
+  </main>
 
-  <!-- SEARCH PAGE -->
-  <div class="page" id="page-search">
-    <div class="page-header"><div class="page-title">Search</div><div class="page-subtitle">Songs, artists &amp; moods</div></div>
-    <div class="search-bar-wrap"><div class="search-bar"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><input type="text" id="search-input" placeholder="Search songs, artists..."></div><button id="search-clear" style="display:none" onclick="clearSearch()" aria-label="Clear"><svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
+  <!-- ─── SEARCH PAGE ────────────────────────── -->
+  <div class="page" id="page-search" role="region" aria-label="Search">
+    <div class="page-header">
+      <div class="page-title">Search</div>
+      <div class="page-subtitle">Songs, artists &amp; moods</div>
+    </div>
+    <div class="search-bar-wrap">
+      <div class="search-bar">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        <input type="text" id="search-input" placeholder="Search songs, artists..."
+               inputmode="search" autocomplete="off" autocorrect="off"
+               spellcheck="false" aria-label="Search songs and artists">
+      </div>
+      <button id="search-clear" class="hidden" onclick="clearSearch()" aria-label="Clear search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
     <div id="search-body"></div>
   </div>
 
-  <!-- LIBRARY PAGE -->
-  <div class="page" id="page-library">
-    <div class="page-header"><div class="page-title">Library</div><div class="page-subtitle" id="lib-subtitle">Your music, saved</div></div>
-    <div class="library-tabs">
-      <div class="lib-tab active" onclick="switchLibTab('playlists',this)">Playlists</div>
-      <div class="lib-tab" onclick="switchLibTab('saved',this)" id="saved-tab">Liked</div>
-      <div class="lib-tab" onclick="switchLibTab('downloads',this)" id="dl-tab">Downloads</div>
+  <!-- ─── LIBRARY PAGE ──────────────────────── -->
+  <div class="page" id="page-library" role="region" aria-label="Library">
+    <div class="page-header">
+      <div class="page-title">Library</div>
+      <div class="page-subtitle" id="lib-subtitle">Your music, saved</div>
+    </div>
+    <div class="library-tabs" role="tablist" aria-label="Library sections">
+      <button class="lib-tab active" role="tab" aria-selected="true" onclick="switchLibTab('playlists',this)">Playlists</button>
+      <button class="lib-tab" role="tab" aria-selected="false" onclick="switchLibTab('saved',this)" id="saved-tab">Liked</button>
+      <button class="lib-tab" role="tab" aria-selected="false" onclick="switchLibTab('downloads',this)" id="dl-tab">Downloads</button>
     </div>
     <div id="lib-playlists">
-      <div class="liked-card" onclick="playLikedSongs()">
-        <div class="liked-card-icon"><svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg></div>
-        <div class="liked-card-info"><h3>Liked Songs</h3><p id="liked-count">Nothing saved yet</p></div>
-        <svg style="width:16px;height:16px;stroke:var(--text3);fill:none;stroke-width:1.8;stroke-linecap:round;margin-left:auto;" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>
-      </div>
-      <button class="add-playlist-btn" onclick="openCreatePlaylist()"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New Playlist</button>
+      <button class="liked-card" onclick="playLikedSongs()" aria-label="Play liked songs">
+        <div class="liked-card-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>
+        </div>
+        <div class="liked-card-info">
+          <h3>Liked Songs</h3>
+          <p id="liked-count">Nothing saved yet</p>
+        </div>
+        <svg class="liked-card-chevron" viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+      </button>
+      <button class="add-playlist-btn" onclick="openCreatePlaylist()" aria-label="Create new playlist">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        New Playlist
+      </button>
       <div class="playlist-grid" id="playlist-grid"></div>
     </div>
-    <div id="lib-saved" style="display:none"><div id="saved-songs-list"></div></div>
-    <div id="lib-downloads" style="display:none"><div id="downloaded-songs-list"></div></div>
+    <div id="lib-saved" class="hidden"><div id="saved-songs-list"></div></div>
+    <div id="lib-downloads" class="hidden"><div id="downloaded-songs-list"></div></div>
   </div>
 
-  <!-- BOTTOM NAV -->
+  <!-- ─── BOTTOM NAV ────────────────────────── -->
   <nav id="nav" aria-label="Main navigation">
-    <div class="nav-btn active" onclick="goPage('home',this)" id="nav-home"><svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg><span>Home</span></div>
-    <div class="nav-btn" onclick="goPage('search',this)" id="nav-search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><span>Search</span></div>
-    <div class="nav-btn" onclick="goPage('library',this)" id="nav-library"><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg><span>Library</span></div>
+    <button class="nav-btn active" onclick="goPage('home',this)" id="nav-home" aria-label="Home" aria-current="page">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      <span>Home</span>
+    </button>
+    <button class="nav-btn" onclick="goPage('search',this)" id="nav-search" aria-label="Search">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <span>Search</span>
+    </button>
+    <button class="nav-btn" onclick="goPage('library',this)" id="nav-library" aria-label="Library">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+      <span>Library</span>
+    </button>
   </nav>
 
-  <!-- MINI PLAYER -->
-  <div id="mini-player" onclick="openFullscreen()">
+  <!-- ─── MINI PLAYER ───────────────────────── -->
+  <button id="mini-player" onclick="openFullscreen()" aria-label="Open full player">
     <img class="mini-art" id="mini-art" src="" alt="Album art">
-    <div class="mini-info"><div class="mini-title" id="mini-title">—</div><div class="mini-artist" id="mini-artist">—</div></div>
-    <div class="mini-controls">
-      <button onclick="event.stopPropagation();prevTrack()" aria-label="Previous"><svg viewBox="0 0 24 24"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg></button>
-      <button class="play-btn" onclick="event.stopPropagation();togglePlay()" id="mini-play-btn" aria-label="Play/Pause"><svg id="mini-play-icon" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg></button>
-      <button onclick="event.stopPropagation();nextTrack()" aria-label="Next"><svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg></button>
+    <div class="mini-info">
+      <div class="mini-title" id="mini-title">—</div>
+      <div class="mini-artist" id="mini-artist">—</div>
     </div>
-    <div class="mini-progress"><div class="mini-progress-bar" id="mini-progress-bar"></div></div>
-  </div>
+    <div class="mini-controls" role="group" aria-label="Playback controls">
+      <button onclick="event.stopPropagation();prevTrack()" aria-label="Previous track">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
+      </button>
+      <button class="play-btn" onclick="event.stopPropagation();togglePlay()" id="mini-play-btn" aria-label="Play or pause">
+        <svg id="mini-play-icon" viewBox="0 0 24 24" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      </button>
+      <button onclick="event.stopPropagation();nextTrack()" aria-label="Next track">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+      </button>
+    </div>
+    <div class="mini-progress" role="progressbar" aria-label="Track progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <div class="mini-progress-bar" id="mini-progress-bar"></div>
+    </div>
+  </button>
 
-  <!-- FULLSCREEN PLAYER -->
-  <div id="fullscreen-player">
-    <div id="fp-bg"><img id="fp-bg-art" src="" alt="" crossorigin="anonymous"><div id="fp-bg-overlay"></div><div id="fp-ambient-glow"></div></div>
-    <div class="fp-drag-hint" id="fp-drag-hint"></div>
-    <div class="fp-header">
-      <button class="fp-close" onclick="closeFullscreen()" aria-label="Close player"><svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg></button>
-      <h3>Now Playing</h3>
-      <button class="fp-more" onclick="openSongModal(currentTrack)" aria-label="More options"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/></svg></button>
+  <!-- ─── FULLSCREEN PLAYER ─────────────────── -->
+  <div id="fullscreen-player" role="region" aria-label="Now playing">
+    <div id="fp-bg" aria-hidden="true">
+      <img id="fp-bg-art" src="" alt="" role="presentation" crossorigin="anonymous">
+      <div id="fp-bg-overlay"></div>
+      <div id="fp-ambient-glow"></div>
     </div>
-    <div class="fp-art-wrap" id="fp-art-wrap"><img class="fp-art" id="fp-art" src="" alt="Album art"></div>
-    <div id="fp-visualizer" class="fp-visualizer"></div>
+    <div class="fp-drag-hint" id="fp-drag-hint" aria-hidden="true"></div>
+
+    <div class="fp-header">
+      <button class="fp-close" onclick="closeFullscreen()" aria-label="Close player">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <span class="fp-header-title">Now Playing</span>
+      <button class="fp-more" onclick="openSongModal(currentTrack)" aria-label="More options">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/></svg>
+      </button>
+    </div>
+
+    <div class="fp-art-wrap" id="fp-art-wrap">
+      <img class="fp-art" id="fp-art" src="" alt="Album art">
+    </div>
+
+    <div id="fp-visualizer" class="fp-visualizer" aria-hidden="true"></div>
+
     <div class="fp-info">
       <div class="fp-track-title" id="fp-title">—</div>
       <div class="fp-artist" id="fp-artist">—</div>
       <div class="fp-like-row">
-        <button class="fp-save-btn" id="fp-save-btn" onclick="toggleSaveCurrentTrack()"><svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg><span id="fp-save-label">Save</span></button>
-        <button class="quality-pill" onclick="openQualitySheet()" title="Audio Quality"><svg viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/></svg><span id="quality-label">Loading</span></button>
+        <button class="fp-save-btn" id="fp-save-btn" onclick="toggleSaveCurrentTrack()" aria-label="Save track">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+          <span id="fp-save-label">Save</span>
+        </button>
+        <button class="quality-pill" onclick="openQualitySheet()" aria-label="Audio quality settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/></svg>
+          <span id="quality-label">Loading</span>
+        </button>
       </div>
     </div>
+
     <div class="fp-progress-wrap">
-      <input type="range" class="fp-seekbar" id="fp-seekbar" min="0" max="30" value="0" step="0.1" oninput="seekTo(this.value)">
-      <div class="fp-time-row"><span id="fp-current">0:00</span><span id="fp-duration">—:——</span></div>
+      <input type="range" class="fp-seekbar" id="fp-seekbar"
+             min="0" max="100" value="0" step="0.1"
+             oninput="seekTo(this.value)"
+             aria-label="Seek track position"
+             aria-valuetext="0 seconds">
+      <div class="fp-time-row">
+        <span id="fp-current" aria-live="off">0:00</span>
+        <span id="fp-duration">—:——</span>
+      </div>
     </div>
-    <div class="fp-controls">
-      <button onclick="toggleShuffle()" id="shuffle-btn" aria-label="Shuffle"><svg viewBox="0 0 24 24"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/></svg></button>
-      <button onclick="prevTrack()" aria-label="Previous"><svg viewBox="0 0 24 24"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg></button>
-      <div class="fp-play-circle" onclick="togglePlay()" id="fp-play-circle" role="button" aria-label="Play/Pause"><svg id="fp-play-icon" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg></div>
-      <button onclick="nextTrack()" aria-label="Next"><svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg></button>
-      <button onclick="toggleRepeat()" id="repeat-btn" aria-label="Repeat"><svg viewBox="0 0 24 24"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></button>
+
+    <div class="fp-controls" role="group" aria-label="Player controls">
+      <button onclick="toggleShuffle()" id="shuffle-btn" aria-label="Toggle shuffle" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/></svg>
+      </button>
+      <button onclick="prevTrack()" aria-label="Previous track">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
+      </button>
+      <button class="fp-play-circle" onclick="togglePlay()" id="fp-play-circle" aria-label="Play or pause">
+        <svg id="fp-play-icon" viewBox="0 0 24 24" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      </button>
+      <button onclick="nextTrack()" aria-label="Next track">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+      </button>
+      <button onclick="toggleRepeat()" id="repeat-btn" aria-label="Toggle repeat" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+      </button>
     </div>
 
     <!-- Up Next Strip -->
-    <div class="fp-next-strip" id="fp-next-strip" onclick="openQueuePanel()" style="display:none">
-      <div class="fp-next-tag">UP<br>NEXT</div>
+    <button class="fp-next-strip hidden" id="fp-next-strip" onclick="openQueuePanel()" aria-label="Open queue">
+      <div class="fp-next-tag" aria-hidden="true">UP<br>NEXT</div>
       <img class="fp-next-art" id="fp-next-art" src="" alt="Next song art">
       <div class="fp-next-info">
         <div class="fp-next-title" id="fp-next-title">—</div>
         <div class="fp-next-artist" id="fp-next-artist">—</div>
       </div>
-      <svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
-    </div>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+    </button>
 
-    <!-- LYRICS SECTION -->
-    <div id="fp-lyrics-wrap" style="display:none;">
+    <!-- Lyrics Section -->
+    <div id="fp-lyrics-wrap" class="hidden" role="region" aria-label="Lyrics">
       <div class="fp-lyrics-header">
         <span class="fp-lyrics-label">Lyrics</span>
         <button class="fp-lyrics-close-btn" onclick="toggleLyricsView()" aria-label="Close lyrics">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+            <path d="M18 6 6 18M6 6l12 12"/>
+          </svg>
         </button>
       </div>
-      <div id="fp-lyrics"></div>
+      <div id="fp-lyrics" aria-live="polite"></div>
     </div>
 
-    <div class="fp-bottom">
-      <button class="fp-bottom-icon fp-queue-btn" id="fp-queue-btn" onclick="toggleQueuePanel()" title="Up Next"><svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></button>
-      <div class="fp-volume-wrap">
-        <div class="fp-vol-icon"><svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path id="vol-path" d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg></div>
-        <input type="range" class="fp-vol-slider" id="fp-vol-slider" min="0" max="1" step="0.01" value="1" oninput="setVolume(this.value)" aria-label="Volume">
-      </div>
-      <button class="fp-bottom-icon fp-lyrics-btn" id="fp-lyrics-toggle" onclick="toggleLyricsView()" title="Lyrics" style="display:none;" aria-label="Lyrics">
-        <svg viewBox="0 0 24 24" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
-        </svg>
+    <!-- Bottom Bar -->
+    <div class="fp-bottom" role="group" aria-label="Player extras">
+      <button class="fp-bottom-icon fp-queue-btn" id="fp-queue-btn" onclick="toggleQueuePanel()" aria-label="Toggle queue" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
       </button>
-      <button class="fp-bottom-icon" id="fp-dl-btn" onclick="openDownloadModal()" title="Download"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></button>
-    </div>
 
+      <div class="fp-volume-wrap" role="group" aria-label="Volume control">
+        <div class="fp-vol-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path id="vol-path" d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+        </div>
+        <input type="range" class="fp-vol-slider" id="fp-vol-slider"
+               min="0" max="1" step="0.01" value="1"
+               oninput="setVolume(this.value)"
+               aria-label="Volume"
+               aria-valuetext="100%">
+      </div>
+
+      <!-- Lyrics Button — premium redesigned -->
+      <button class="fp-bottom-icon fp-lyrics-btn hidden" id="fp-lyrics-toggle"
+              onclick="toggleLyricsView()"
+              aria-label="Toggle lyrics"
+              aria-pressed="false"
+              title="Lyrics">
+        <svg class="fp-lyrics-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <!-- Microphone shape — more musical/premium than document icon -->
+          <rect x="9" y="2" width="6" height="11" rx="3"/>
+          <path d="M5 10a7 7 0 0 0 14 0"/>
+          <line x1="12" y1="19" x2="12" y2="22"/>
+          <line x1="8" y1="22" x2="16" y2="22"/>
+        </svg>
+        <span class="fp-lyrics-btn-label">Lyrics</span>
+      </button>
+
+      <button class="fp-bottom-icon" id="fp-dl-btn" onclick="openDownloadModal()" aria-label="Download track" title="Download">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      </button>
+    </div>
   </div>
   <!-- END FULLSCREEN PLAYER -->
 
-  <!-- QUEUE PANEL -->
-  <div id="queue-panel">
-    <div class="queue-panel-handle" id="queue-drag-handle"></div>
-    <div class="queue-panel-header"><h3>Up Next</h3><span class="queue-count" id="queue-count"></span></div>
+  <!-- ─── QUEUE PANEL ───────────────────────── -->
+  <div id="queue-panel" role="region" aria-label="Up next queue">
+    <div class="queue-panel-handle" id="queue-drag-handle" aria-hidden="true"></div>
+    <div class="queue-panel-header">
+      <h2>Up Next</h2>
+      <span class="queue-count" id="queue-count" aria-live="polite"></span>
+    </div>
     <div class="queue-panel-body" id="queue-panel-body"></div>
   </div>
 
-  <!-- PLAYLIST DETAIL -->
-  <div id="playlist-detail">
-    <div style="overflow-y:auto;height:100%;padding-bottom:100px;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain;">
-      <div class="pl-detail-header"><button class="pl-back" onclick="closePlaylistDetail()"><svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg></button><div style="flex:1;min-width:0;"><h2 id="pl-detail-name">Playlist</h2></div><button class="pl-more" onclick="openPlaylistOpts(event,currentPlaylistIndex)" aria-label="More"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/></svg></button></div>
-      <div class="pl-cover-wrap"><div id="pl-big-cover"></div><div class="pl-detail-meta"><h2 id="pl-detail-title">Playlist</h2><p id="pl-detail-sub">0 songs</p></div><div class="pl-actions"><button class="pl-action-btn" onclick="playPlaylist()"><svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>Play</button><button class="pl-action-btn" onclick="shufflePlaylist()"><svg viewBox="0 0 24 24"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/></svg>Shuffle</button></div></div>
-      <div id="pl-songs-list" style="padding-bottom:20px;"></div>
-    </div>
-  </div>
-
-  <!-- SONG OPTIONS MODAL -->
-  <div class="modal-overlay" id="song-modal" onclick="closeSongModal(event)">
-    <div class="modal-sheet">
-      <div class="modal-handle"></div>
-      <div style="display:flex;align-items:center;gap:11px;margin-bottom:14px;">
-        <img id="modal-song-art" src="" style="width:48px;height:48px;border-radius:11px;object-fit:cover;background:var(--surface3);box-shadow:0 4px 14px rgba(0,0,0,0.42);" alt="Album art">
-        <div style="min-width:0;"><div id="modal-song-title" style="font-size:13px;font-weight:700;letter-spacing:-0.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div><div id="modal-song-artist" style="font-size:11px;color:var(--text2);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div></div>
+  <!-- ─── PLAYLIST DETAIL ───────────────────── -->
+  <div id="playlist-detail" role="region" aria-label="Playlist">
+    <div class="pl-detail-scroll">
+      <div class="pl-detail-header">
+        <button class="pl-back" onclick="closePlaylistDetail()" aria-label="Back to library">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <div class="pl-detail-title-wrap">
+          <h1 id="pl-detail-name">Playlist</h1>
+        </div>
+        <button class="pl-more" onclick="openPlaylistOpts(event,currentPlaylistIndex)" aria-label="Playlist options">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/></svg>
+        </button>
       </div>
-      <div class="modal-option" onclick="modalSave()"><svg viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg><span id="modal-save-label">Save to Library</span></div>
-      <div class="modal-option" onclick="openAddToPlaylistModal()"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg><span>Add to Playlist</span></div>
-      <div class="modal-option" onclick="playNext()"><svg viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg><span>Play Next</span></div>
-      <div class="modal-option" onclick="modalDownload()"><svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg><span>Download</span></div>
+      <div class="pl-cover-wrap">
+        <div id="pl-big-cover" aria-hidden="true"></div>
+        <div class="pl-detail-meta">
+          <h2 id="pl-detail-title">Playlist</h2>
+          <p id="pl-detail-sub">0 songs</p>
+        </div>
+        <div class="pl-actions" role="group" aria-label="Playlist actions">
+          <button class="pl-action-btn" onclick="playPlaylist()" aria-label="Play playlist">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            Play
+          </button>
+          <button class="pl-action-btn" onclick="shufflePlaylist()" aria-label="Shuffle playlist">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/></svg>
+            Shuffle
+          </button>
+        </div>
+      </div>
+      <div id="pl-songs-list" class="pl-songs-list"></div>
     </div>
   </div>
 
-  <!-- ADD TO PLAYLIST MODAL -->
-  <div class="modal-overlay" id="add-playlist-modal" onclick="closeAddToPlaylistModal(event)"><div class="modal-sheet"><div class="modal-handle"></div><div class="modal-title">Add to Playlist</div><div id="add-playlist-options" style="max-height:340px;overflow-y:auto;-webkit-overflow-scrolling:touch;"></div></div></div>
-
-  <!-- CREATE PLAYLIST MODAL -->
-  <div class="input-modal" id="create-playlist-modal" style="display:none"><div class="input-sheet"><div class="input-modal-handle"></div><h3>New Playlist</h3><input type="text" id="playlist-name-input" placeholder="Name your playlist..." maxlength="60"><button onclick="createPlaylist()" class="btn-primary">Create</button></div></div>
-
-  <!-- RENAME MODAL -->
-  <div id="rename-modal" style="display:none"><div class="input-sheet"><div class="input-modal-handle"></div><h3>Rename Playlist</h3><input type="text" id="rename-input" placeholder="New name…" maxlength="60"><button onclick="confirmRename()" class="btn-primary">Rename</button></div></div>
-
-  <!-- PLAYLIST OPTIONS MODAL -->
-  <div id="playlist-opts-modal" style="display:none" onclick="closePlaylistOpts(event)"><div class="modal-sheet"><div class="modal-handle"></div><div class="modal-title" id="pl-opts-title">Playlist</div><div class="modal-option" onclick="openRenameModal()"><svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg><span>Rename</span></div><div class="modal-option" onclick="confirmDeletePlaylist()"><svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg><span style="color:var(--text);">Delete</span></div></div></div>
-
-  <!-- QUALITY MODAL -->
-  <div id="quality-modal" style="display:none" onclick="closeQualitySheet(event)"><div class="quality-sheet"><div class="quality-sheet-handle"></div><h3>Audio Quality</h3><div class="qs-sub" id="qs-track-name">Select quality for playback</div><div class="quality-option" id="q-badge-full" onclick="selectQuality('full')"><div class="q-dot">●</div><span>Full Song</span></div><div class="quality-option" id="q-badge-preview" onclick="selectQuality('preview')"><div class="q-dot">●</div><span>128 kbps Preview</span></div></div></div>
-
-  <!-- DOWNLOAD MODAL -->
-  <div id="download-modal" style="display:none" onclick="closeDownloadModal(event)"><div class="dl-sheet">
-    <div class="dl-sheet-handle"></div>
-    <h3>Save to Device</h3>
-    <div class="dl-sub" id="dl-track-name">Select quality to download</div>
-    <div class="dl-option" onclick="triggerDownload('preview')">
-      <div class="dl-option-icon quality-low"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
-      <div><div class="dl-option-title">30s Preview</div><div class="dl-option-desc">iTunes preview · Always available</div></div>
-      <span class="dl-kbps-badge b128">128 kbps</span>
+  <!-- ─── SONG OPTIONS MODAL ────────────────── -->
+  <div class="modal-overlay" id="song-modal" onclick="closeSongModal(event)" role="dialog" aria-modal="true" aria-label="Song options">
+    <div class="modal-sheet" role="document">
+      <div class="modal-handle" aria-hidden="true"></div>
+      <div class="modal-song-meta">
+        <img id="modal-song-art" class="modal-song-art" src="" alt="Album art">
+        <div class="modal-song-text">
+          <div id="modal-song-title" class="modal-song-title"></div>
+          <div id="modal-song-artist" class="modal-song-artist"></div>
+        </div>
+      </div>
+      <button class="modal-option" onclick="modalSave()" aria-label="Save to library">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+        <span id="modal-save-label">Save to Library</span>
+      </button>
+      <button class="modal-option" onclick="openAddToPlaylistModal()" aria-label="Add to playlist">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        <span>Add to Playlist</span>
+      </button>
+      <button class="modal-option" onclick="playNext()" aria-label="Play next">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+        <span>Play Next</span>
+      </button>
+      <button class="modal-option" onclick="modalDownload()" aria-label="Download song">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span>Download</span>
+      </button>
     </div>
-    <div class="dl-option" id="dl-full-option" onclick="triggerDownload('full')">
-      <div class="dl-option-icon quality-high"><svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
-      <div><div class="dl-option-title">Full Song</div><div class="dl-option-desc" id="dl-full-desc">Fetching quality…</div></div>
-      <span class="dl-kbps-badge b160" id="dl-full-badge">—</span>
-    </div>
-    <div class="dl-option gift-row" onclick="triggerDownload('gift')">
-      <div class="dl-option-icon quality-gift"><svg viewBox="0 0 24 24"><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><polyline points="12 7 10 11 14 11 12 7"/></svg></div>
-      <div><div class="dl-option-title">★ Owner Gift</div><div class="dl-option-desc">320 kbps guaranteed · Best resolution</div></div>
-      <span class="dl-kbps-badge bgift">320 kbps</span>
-    </div>
-    <div class="dl-option" onclick="triggerDownload('ringtone')">
-      <div class="dl-option-icon quality-ring"><svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></div>
-      <div><div class="dl-option-title">Ringtone</div><div class="dl-option-desc">30s trimmed · Perfect for ringtones</div></div>
-      <span class="dl-kbps-badge b128">30s</span>
-    </div>
-  </div></div>
+  </div>
 
-  <div id="toast" role="status" aria-live="polite"></div>
+  <!-- ─── ADD TO PLAYLIST MODAL ────────────── -->
+  <div class="modal-overlay" id="add-playlist-modal" onclick="closeAddToPlaylistModal(event)" role="dialog" aria-modal="true" aria-label="Add to playlist">
+    <div class="modal-sheet">
+      <div class="modal-handle" aria-hidden="true"></div>
+      <div class="modal-title">Add to Playlist</div>
+      <div id="add-playlist-options" class="add-playlist-options"></div>
+    </div>
+  </div>
 
-  <!-- SETTINGS PANEL -->
-  <div id="settings-panel">
+  <!-- ─── CREATE PLAYLIST MODAL ────────────── -->
+  <div class="input-modal hidden" id="create-playlist-modal" role="dialog" aria-modal="true" aria-label="Create playlist">
+    <div class="input-sheet">
+      <div class="input-modal-handle" aria-hidden="true"></div>
+      <h2>New Playlist</h2>
+      <input type="text" id="playlist-name-input" placeholder="Name your playlist..."
+             maxlength="60" autocomplete="off" autocorrect="off" spellcheck="false"
+             aria-label="Playlist name">
+      <button onclick="createPlaylist()" class="btn-primary" aria-label="Create playlist">Create</button>
+    </div>
+  </div>
+
+  <!-- ─── RENAME MODAL ─────────────────────── -->
+  <div class="input-modal hidden" id="rename-modal" role="dialog" aria-modal="true" aria-label="Rename playlist">
+    <div class="input-sheet">
+      <div class="input-modal-handle" aria-hidden="true"></div>
+      <h2>Rename Playlist</h2>
+      <input type="text" id="rename-input" placeholder="New name…"
+             maxlength="60" autocomplete="off" autocorrect="off" spellcheck="false"
+             aria-label="New playlist name">
+      <button onclick="confirmRename()" class="btn-primary" aria-label="Confirm rename">Rename</button>
+    </div>
+  </div>
+
+  <!-- ─── PLAYLIST OPTIONS MODAL ───────────── -->
+  <div class="modal-overlay hidden" id="playlist-opts-modal" onclick="closePlaylistOpts(event)" role="dialog" aria-modal="true" aria-label="Playlist options">
+    <div class="modal-sheet">
+      <div class="modal-handle" aria-hidden="true"></div>
+      <div class="modal-title" id="pl-opts-title">Playlist</div>
+      <button class="modal-option" onclick="openRenameModal()" aria-label="Rename playlist">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        <span>Rename</span>
+      </button>
+      <button class="modal-option modal-option-danger" onclick="confirmDeletePlaylist()" aria-label="Delete playlist">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+        <span>Delete</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ─── QUALITY MODAL ────────────────────── -->
+  <div class="modal-overlay hidden" id="quality-modal" onclick="closeQualitySheet(event)" role="dialog" aria-modal="true" aria-label="Audio quality">
+    <div class="quality-sheet">
+      <div class="quality-sheet-handle" aria-hidden="true"></div>
+      <h2>Audio Quality</h2>
+      <div class="qs-sub" id="qs-track-name">Select quality for playback</div>
+      <button class="quality-option" id="q-badge-full" onclick="selectQuality('full')" aria-label="Full song quality">
+        <div class="q-dot" aria-hidden="true">●</div>
+        <span>Full Song</span>
+      </button>
+      <button class="quality-option" id="q-badge-preview" onclick="selectQuality('preview')" aria-label="128kbps preview quality">
+        <div class="q-dot" aria-hidden="true">●</div>
+        <span>128 kbps Preview</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ─── DOWNLOAD MODAL ───────────────────── -->
+  <div class="modal-overlay hidden" id="download-modal" onclick="closeDownloadModal(event)" role="dialog" aria-modal="true" aria-label="Download options">
+    <div class="dl-sheet">
+      <div class="dl-sheet-handle" aria-hidden="true"></div>
+      <h2>Save to Device</h2>
+      <div class="dl-sub" id="dl-track-name">Select quality to download</div>
+      <button class="dl-option" onclick="triggerDownload('preview')" aria-label="Download 30 second preview">
+        <div class="dl-option-icon quality-low" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+        <div>
+          <div class="dl-option-title">30s Preview</div>
+          <div class="dl-option-desc">iTunes preview · Always available</div>
+        </div>
+        <span class="dl-kbps-badge b128">128 kbps</span>
+      </button>
+      <button class="dl-option" id="dl-full-option" onclick="triggerDownload('full')" aria-label="Download full song">
+        <div class="dl-option-icon quality-high" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg></div>
+        <div>
+          <div class="dl-option-title">Full Song</div>
+          <div class="dl-option-desc" id="dl-full-desc">Fetching quality…</div>
+        </div>
+        <span class="dl-kbps-badge b160" id="dl-full-badge">—</span>
+      </button>
+      <button class="dl-option gift-row" onclick="triggerDownload('gift')" aria-label="Download owner gift 320kbps">
+        <div class="dl-option-icon quality-gift" aria-hidden="true"><svg viewBox="0 0 24 24"><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><polyline points="12 7 10 11 14 11 12 7"/></svg></div>
+        <div>
+          <div class="dl-option-title">★ Owner Gift</div>
+          <div class="dl-option-desc">320 kbps guaranteed · Best resolution</div>
+        </div>
+        <span class="dl-kbps-badge bgift">320 kbps</span>
+      </button>
+      <button class="dl-option" onclick="triggerDownload('ringtone')" aria-label="Download as ringtone">
+        <div class="dl-option-icon quality-ring" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></div>
+        <div>
+          <div class="dl-option-title">Ringtone</div>
+          <div class="dl-option-desc">30s trimmed · Perfect for ringtones</div>
+        </div>
+        <span class="dl-kbps-badge b128">30s</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- ─── SETTINGS PANEL ────────────────────── -->
+  <div id="settings-panel" role="region" aria-label="Settings">
     <div class="settings-header">
       <button class="settings-back" onclick="closeSettings()" aria-label="Back">
-        <svg viewBox="0 0 24 24"><polyline points="15 18 9 12 15 6"/></svg>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
       </button>
       <div class="settings-title-wrap">
         <div class="settings-title">Settings</div>
@@ -263,19 +527,20 @@
     <div id="settings-body"></div>
   </div>
 
-</div>
+</div><!-- #app -->
 
-<!-- TV FIX BEFORE APP.JS -->
-<script src="tv-perf.js?v=__CACHEBUST__"></script>
-<script src="settings_addon.js?v=__CACHEBUST__"></script>
-<script src="app.js?v=__CACHEBUST__"></script>
+<!-- Scripts — defer so they never block render -->
+<script src="tv-perf.js?v=__CACHEBUST__" defer></script>
+<script src="settings_addon.js?v=__CACHEBUST__" defer></script>
+<script src="app.js?v=__CACHEBUST__" defer></script>
 
 <script>
+  /* Service Worker */
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('./sw.js')
-        .then(reg => console.log('Aurum SW: Registered!', reg.scope))
-        .catch(err => console.log('Aurum SW: Failed!', err));
+        .then(r => console.log('Aurum SW:', r.scope))
+        .catch(e => console.warn('Aurum SW failed:', e));
     });
   }
 </script>
