@@ -1,6 +1,14 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-3XXS99M1QR"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'G-3XXS99M1QR');
+  </script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
   <meta name="mobile-web-app-capable" content="yes">
@@ -36,20 +44,17 @@
 <body>
 <div id="app">
 
-  <!-- Offline Banner -->
   <div id="offline-banner" role="alert" aria-live="polite">
     <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M17.41 17.41a10 10 0 0 0-14.83-14.83M2 16.9a10 10 0 0 0 15.35-5.24"/></svg>
     Offline
   </div>
 
-  <!-- Ambient — hidden, no battery cost -->
   <div id="ambient-canvas" aria-hidden="true">
     <div class="orb orb-1"></div>
     <div class="orb orb-2"></div>
     <div class="orb orb-3"></div>
   </div>
 
-  <!-- ─── HOME PAGE ──────────────────────────── -->
   <main class="page active" id="page-home" role="main" aria-label="Home">
     <div class="ph-wrap" id="ph-wrap">
       <div class="ph-ambient" aria-hidden="true">
@@ -97,7 +102,6 @@
     <div class="page-bottom-spacer"></div>
   </main>
 
-  <!-- ─── SEARCH PAGE ────────────────────────── -->
   <div class="page" id="page-search" role="region" aria-label="Search">
     <div class="page-header">
       <div class="page-title">Search</div>
@@ -117,7 +121,6 @@
     <div id="search-body"></div>
   </div>
 
-  <!-- ─── LIBRARY PAGE ──────────────────────── -->
   <div class="page" id="page-library" role="region" aria-label="Library">
     <div class="page-header">
       <div class="page-title">Library</div>
@@ -129,7 +132,6 @@
       <button class="lib-tab" role="tab" aria-selected="false" onclick="switchLibTab('downloads',this)" id="dl-tab">Downloads</button>
     </div>
 
-    <!-- Playlists tab — visible by default -->
     <div id="lib-playlists">
       <button class="liked-card" onclick="playLikedSongs()" aria-label="Play liked songs">
         <div class="liked-card-icon" aria-hidden="true">
@@ -148,18 +150,15 @@
       <div class="playlist-grid" id="playlist-grid"></div>
     </div>
 
-    <!-- Saved tab — hidden by default -->
     <div id="lib-saved" style="display:none">
       <div id="saved-songs-list"></div>
     </div>
 
-    <!-- Downloads tab — hidden by default -->
     <div id="lib-downloads" style="display:none">
       <div id="downloaded-songs-list"></div>
     </div>
   </div>
 
-  <!-- ─── BOTTOM NAV ────────────────────────── -->
   <nav id="nav" aria-label="Main navigation">
     <button class="nav-btn active" onclick="goPage('home',this)" id="nav-home" aria-label="Home" aria-current="page">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
@@ -175,8 +174,6 @@
     </button>
   </nav>
 
-  <!-- ─── MINI PLAYER ───────────────────────── -->
-  <!-- FIX: Was <div> opening with </button> closing + broken attribute syntax -->
   <div id="mini-player" onclick="openFullscreen()" role="button" tabindex="0" aria-label="Open full player">
     <img class="mini-art" id="mini-art" src="" alt="Album art">
     <div class="mini-info">
@@ -199,7 +196,6 @@
     </div>
   </div>
 
-  <!-- ─── FULLSCREEN PLAYER ─────────────────── -->
   <div id="fullscreen-player" role="region" aria-label="Now playing">
     <div id="fp-bg" aria-hidden="true">
       <img id="fp-bg-art" src="" alt="" role="presentation" crossorigin="anonymous">
@@ -269,7 +265,6 @@
       </button>
     </div>
 
-    <!-- Up Next Strip -->
     <button class="fp-next-strip hidden" id="fp-next-strip" onclick="openQueuePanel()" aria-label="Open queue">
       <div class="fp-next-tag" aria-hidden="true">UP<br>NEXT</div>
       <img class="fp-next-art" id="fp-next-art" src="" alt="Next song art">
@@ -280,7 +275,6 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
     </button>
 
-    <!-- Lyrics Section -->
     <div id="fp-lyrics-wrap" style="display:none" role="region" aria-label="Lyrics">
       <div class="fp-lyrics-header">
         <span class="fp-lyrics-label">Lyrics</span>
@@ -293,7 +287,6 @@
       <div id="fp-lyrics" aria-live="polite"></div>
     </div>
 
-    <!-- Bottom Bar -->
     <div class="fp-bottom" role="group" aria-label="Player extras">
       <button class="fp-bottom-icon fp-queue-btn" id="fp-queue-btn" onclick="toggleQueuePanel()" aria-label="Toggle queue" aria-pressed="false">
         <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
@@ -310,7 +303,6 @@
                aria-valuetext="100%">
       </div>
 
-      <!-- Lyrics Button -->
       <button class="fp-bottom-icon fp-lyrics-btn" id="fp-lyrics-toggle"
               style="display:none"
               onclick="toggleLyricsView()"
@@ -331,9 +323,6 @@
       </button>
     </div>
   </div>
-  <!-- END FULLSCREEN PLAYER -->
-
-  <!-- ─── QUEUE PANEL ───────────────────────── -->
   <div id="queue-panel" role="region" aria-label="Up next queue">
     <div class="queue-panel-handle" id="queue-drag-handle" aria-hidden="true"></div>
     <div class="queue-panel-header">
@@ -343,7 +332,6 @@
     <div class="queue-panel-body" id="queue-panel-body"></div>
   </div>
 
-  <!-- ─── PLAYLIST DETAIL ───────────────────── -->
   <div id="playlist-detail" role="region" aria-label="Playlist">
     <div class="pl-detail-scroll">
       <div class="pl-detail-header">
@@ -378,7 +366,6 @@
     </div>
   </div>
 
-  <!-- ─── SONG OPTIONS MODAL ────────────────── -->
   <div class="modal-overlay" id="song-modal" onclick="closeSongModal(event)" role="dialog" aria-modal="true" aria-label="Song options">
     <div class="modal-sheet" role="document">
       <div class="modal-handle" aria-hidden="true"></div>
@@ -408,7 +395,6 @@
     </div>
   </div>
 
-  <!-- ─── ADD TO PLAYLIST MODAL ────────────── -->
   <div class="modal-overlay" id="add-playlist-modal" onclick="closeAddToPlaylistModal(event)" role="dialog" aria-modal="true" aria-label="Add to playlist">
     <div class="modal-sheet">
       <div class="modal-handle" aria-hidden="true"></div>
@@ -417,8 +403,6 @@
     </div>
   </div>
 
-  <!-- ─── CREATE PLAYLIST MODAL ────────────── -->
-  <!-- FIX: Removed .hidden class — JS controls visibility via style.display -->
   <div class="input-modal" id="create-playlist-modal" style="display:none"
        role="dialog" aria-modal="true" aria-label="Create playlist">
     <div class="input-sheet">
@@ -431,8 +415,6 @@
     </div>
   </div>
 
-  <!-- ─── RENAME MODAL ─────────────────────── -->
-  <!-- FIX: Removed .hidden class — JS controls visibility via style.display -->
   <div class="input-modal" id="rename-modal" style="display:none"
        role="dialog" aria-modal="true" aria-label="Rename playlist">
     <div class="input-sheet">
@@ -445,8 +427,6 @@
     </div>
   </div>
 
-  <!-- ─── PLAYLIST OPTIONS MODAL ───────────── -->
-  <!-- FIX: Removed .hidden class — modal-overlay JS toggle controls this -->
   <div class="modal-overlay" id="playlist-opts-modal"
        onclick="closePlaylistOpts(event)"
        role="dialog" aria-modal="true" aria-label="Playlist options">
@@ -464,7 +444,6 @@
     </div>
   </div>
 
-  <!-- ─── QUALITY MODAL ────────────────────── -->
   <div class="modal-overlay" id="quality-modal"
        onclick="closeQualitySheet(event)"
        role="dialog" aria-modal="true" aria-label="Audio quality">
@@ -483,7 +462,6 @@
     </div>
   </div>
 
-  <!-- ─── DOWNLOAD MODAL ───────────────────── -->
   <div class="modal-overlay" id="download-modal"
        onclick="closeDownloadModal(event)"
        role="dialog" aria-modal="true" aria-label="Download options">
@@ -534,10 +512,8 @@
     </div>
   </div>
 
-  <!-- Toast -->
   <div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
-  <!-- ─── SETTINGS PANEL ────────────────────── -->
   <div id="settings-panel" role="region" aria-label="Settings">
     <div class="settings-header">
       <button class="settings-back" onclick="closeSettings()" aria-label="Back">
@@ -551,9 +527,7 @@
     <div id="settings-body"></div>
   </div>
 
-</div><!-- #app -->
-
-<script src="tv-perf.js?v=__CACHEBUST__" defer></script>
+</div><script src="tv-perf.js?v=__CACHEBUST__" defer></script>
 <script src="settings_addon.js?v=__CACHEBUST__" defer></script>
 <script src="app.js?v=__CACHEBUST__" defer></script>
 
