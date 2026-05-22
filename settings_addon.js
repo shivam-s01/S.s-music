@@ -1,8 +1,10 @@
-// ─── AURUM SETTINGS v3.1 · FIXED EDITION ────────────────────────────────────
-// ✅ BUG FIX: _tog() now calls saveSetting() — toggles persist correctly
-// ✅ BUG FIX: blurredArtworkBg properly applies/removes in light+dark mode
-// ✅ BUG FIX: smartSaver toggle saves state before applying
-// ✅ All other features intact
+// ─── AURUM SETTINGS v3.2 · PREMIUM GATES EDITION ────────────────────────────
+// ✅ FIX: Shake to Skip stays OFF after toggle off — no ghost re-attach
+// ✅ FIX: Bass Boost, Virtualizer, Loudness Enhancer, Shake → login gate
+// ✅ FIX: _tog() persists setting correctly
+// ✅ FIX: blurredArtworkBg applies/removes in light+dark
+// ✅ FIX: smartSaver saves state before applying
+// ✅ All settings intact — nothing removed
 'use strict';
 
 // ─── DEFAULTS ─────────────────────────────────────────────────────────────────
@@ -50,6 +52,36 @@ function saveSetting(key, value) {
   applySettings();
 }
 
+// ─── PREMIUM FEATURE GATE ─────────────────────────────────────────────────────
+// Returns true = BLOCKED (not logged in), false = ALLOWED
+const _PREMIUM_KEYS = ['bassBoost', 'virtualizer', 'loudnessEnhancer', 'shakeToSkip'];
+
+function _premiumGate(key) {
+  if (window.userAuth && window.userAuth.isLoggedIn) return false;
+  // Force setting back to false
+  appSettings[key] = false;
+  localStorage.setItem('aurum_settings', JSON.stringify(appSettings));
+  // Flip the checkbox back off in DOM
+  const checkboxes = document.querySelectorAll('input[type="checkbox"]');
+  checkboxes.forEach(cb => {
+    const attr = cb.getAttribute('onchange') || '';
+    if (attr.includes(key)) cb.checked = false;
+  });
+  // Show login modal
+  if (typeof checkFeatureAccess === 'function') {
+    const featureNames = {
+      bassBoost: 'audio',
+      virtualizer: 'audio',
+      loudnessEnhancer: 'audio',
+      shakeToSkip: 'default',
+    };
+    checkFeatureAccess(featureNames[key] || 'default');
+  } else if (typeof openLoginModal === 'function') {
+    openLoginModal();
+  }
+  return true; // blocked
+}
+
 // ─── DYNAMIC STYLE TAG ────────────────────────────────────────────────────────
 let _styleEl = null;
 function _injectStyles() {
@@ -59,15 +91,14 @@ function _injectStyles() {
     document.head.appendChild(_styleEl);
   }
 
-  const isLight   = appSettings.theme === 'light' ||
+  const isLight = appSettings.theme === 'light' ||
     (appSettings.theme !== 'dark' && appSettings.theme !== 'amoled' &&
      window.matchMedia('(prefers-color-scheme: light)').matches);
-  const doBlur    = appSettings.blurredArtworkBg && !appSettings.smartSaver;
+  const doBlur = appSettings.blurredArtworkBg && !appSettings.smartSaver;
 
   let css = '';
 
   if (isLight) {
-    // Light mode: NEVER show blurred bg-art regardless of setting
     css += `#fp-bg-art{display:none!important}`;
     css += `#fp-bg-overlay{background:var(--bg)!important}`;
     css += `#fp-ambient-glow{display:none!important}`;
@@ -75,7 +106,6 @@ function _injectStyles() {
     css += `#fp-bg-art{filter:blur(32px) saturate(1.9) brightness(0.48)!important;transform:scale(1.18)!important;opacity:1!important}`;
     css += `#fp-bg-overlay{background:linear-gradient(to bottom,rgba(0,0,0,.18) 0%,rgba(0,0,0,.42) 45%,rgba(0,0,0,.82) 80%,rgba(0,0,0,.96) 100%)!important}`;
   } else {
-    // Dark mode, blur OFF
     css += `#fp-bg-art{filter:blur(0px) brightness(0.3)!important;transform:scale(1.05)!important}`;
   }
 
@@ -130,10 +160,10 @@ function applySettings() {
 
   // Animations
   if (!s.animations || s.smartSaver) {
-  root.style.setProperty('--anim-speed', '0s');
-} else {
-  root.style.removeProperty('--anim-speed');
-}
+    root.style.setProperty('--anim-speed', '0s');
+  } else {
+    root.style.removeProperty('--anim-speed');
+  }
 
   // Visualizer
   const viz = document.getElementById('fp-visualizer');
@@ -154,8 +184,17 @@ function applySettings() {
   const aud = window._aurumAudio || document.querySelector('audio');
   if (aud && aud.playbackRate !== s.playbackSpeed) aud.playbackRate = s.playbackSpeed;
 
-  // Shake
-  s.shakeToSkip ? _attachShake() : _detachShake();
+  // Shake — only attach if logged in
+  if (s.shakeToSkip && window.userAuth && window.userAuth.isLoggedIn) {
+    _attachShake();
+  } else {
+    _detachShake();
+    // If somehow setting got saved as true but user not logged in, reset it
+    if (s.shakeToSkip && !(window.userAuth && window.userAuth.isLoggedIn)) {
+      appSettings.shakeToSkip = false;
+      localStorage.setItem('aurum_settings', JSON.stringify(appSettings));
+    }
+  }
 
   // Tab title
   if (!s.showTabTitle) document.title = 'Aurum';
@@ -487,6 +526,7 @@ function _doRender() {
   const body = document.getElementById('settings-body');
   if (!body) return;
   const s = appSettings;
+  const loggedIn = !!(window.userAuth && window.userAuth.isLoggedIn);
 
   const qL  = {auto:'Auto (Best)',high:'High (320kbps)',low:'Low (128kbps)'}[s.streamQuality] || 'Auto';
   const spL  = s.playbackSpeed === 1 ? 'Normal (1×)' : s.playbackSpeed + '×';
@@ -505,11 +545,21 @@ function _doRender() {
 
   const chev = () => `<svg class="settings-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>`;
 
-  // ── ✅ FIXED: _tog() now saves setting AND calls callback ──
-  // Usage: tog(key, currentValue, toastMsg_or_null)
-  // For simple boolean toggles that just need saveSetting
-  const tog = (key, chk, extra) =>
-    `<label class="settings-toggle"><input type="checkbox"${chk?' checked':''} onchange="_tog('${key}',this.checked,${extra})"><span class="settings-toggle-track"></span></label>`;
+  // Lock icon for premium features
+  const lockIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="rgba(184,150,64,0.7)" stroke-width="1.8" stroke-linecap="round" style="width:13px;height:13px;flex-shrink:0"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`;
+
+  // Premium badge for locked items
+  const premBadge = `<span style="font-size:9px;font-weight:700;color:var(--gold);background:rgba(184,150,64,0.12);border:1px solid rgba(184,150,64,0.25);padding:2px 7px;border-radius:100px;letter-spacing:0.05em;white-space:nowrap">PRO</span>`;
+
+  // Toggle — premium version shows lock + PRO badge instead of toggle when not logged in
+  const tog = (key, chk, extra) => {
+    const isPremKey = _PREMIUM_KEYS.includes(key);
+    if (isPremKey && !loggedIn) {
+      // Show PRO badge + lock, clicking will open login
+      return `<div style="display:flex;align-items:center;gap:6px;cursor:pointer" onclick="_premiumGate('${key}')">${premBadge}</div>`;
+    }
+    return `<label class="settings-toggle"><input type="checkbox"${chk?' checked':''} onchange="_tog('${key}',this.checked,${extra})"><span class="settings-toggle-track"></span></label>`;
+  };
 
   function sec(id, iconSvg, title, content) {
     return `
@@ -544,6 +594,23 @@ function _doRender() {
       </div></div>${chev()}</div>`;
   }
 
+  // Premium row — shows lock overlay if not logged in
+  function premRow(icon, title, sub, key, chk, active) {
+    if (!loggedIn) {
+      return `<div class="settings-item" onclick="_premiumGate('${key}')" style="cursor:pointer">
+        <div class="settings-item-left">
+          <div class="settings-item-icon" style="background:rgba(184,150,64,0.08)">${icon}</div>
+          <div class="settings-item-info">
+            <div class="settings-item-title" style="display:flex;align-items:center;gap:7px">${title} ${premBadge}</div>
+            <div class="settings-item-sub">${sub}</div>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">${lockIcon}</div>
+      </div>`;
+    }
+    return row(icon, title, sub, tog(key, chk, `()=>toggleAudioFX('${key}',this.checked)`), active);
+  }
+
   const I = {
     eq:   `<svg viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>`,
     bolt: `<svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>`,
@@ -575,9 +642,44 @@ function _doRender() {
     info: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`,
     srch: `<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>`,
     x:    `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`,
+    user: `<svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`,
+    star: `<svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>`,
   };
 
   const parts = [];
+
+  // ── ACCOUNT CARD (top of settings, Spotify-style) ─────────────────────────
+  if (loggedIn) {
+    const u = window.userAuth.user;
+    parts.push(`
+    <div class="settings-account-card" onclick="openUserMenu()">
+      <img class="settings-account-avatar" src="${u.picture || ''}" alt="avatar"
+           onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+      <div class="settings-account-avatar-placeholder" style="display:none">
+        ${I.user}
+      </div>
+      <div class="settings-account-info">
+        <div class="settings-account-name">${u.name || 'User'}</div>
+        <div class="settings-account-sub">${u.email || ''}</div>
+      </div>
+      <div class="settings-account-badge">✦ Pro</div>
+      ${chev()}
+    </div>`);
+  } else {
+    parts.push(`
+    <div class="settings-account-card" onclick="openLoginModal()">
+      <div class="settings-account-avatar-placeholder">
+        ${I.user}
+      </div>
+      <div class="settings-account-info">
+        <div class="settings-account-name">Sign in to Aurum</div>
+        <div class="settings-account-sub">Unlock Bass Boost, AI picks & more</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="font-size:11px;font-weight:700;color:var(--gold);background:linear-gradient(135deg,rgba(184,150,64,0.18),rgba(184,150,64,0.06));border:1px solid rgba(184,150,64,0.3);padding:5px 12px;border-radius:100px;white-space:nowrap">Sign In</span>
+      </div>
+    </div>`);
+  }
 
   // Live preview card
   parts.push(`
@@ -605,9 +707,9 @@ function _doRender() {
     ${link(I.wave,'Stream Quality',qL,'openStreamQualityPicker()')}
     ${row(I.bolt,'Data Saver',s.dataSaver?'128kbps · Low data':'Off',tog('dataSaver',s.dataSaver,`()=>toggleDataSaver(this.checked)`),s.dataSaver)}
     ${link(I.eq,'Equalizer',(s.eqEnabled?eqL:'Off')+' · 10-Band','openEQSheet()',s.eqEnabled)}
-    ${row(I.note,'Bass Boost','Enhance low frequencies',tog('bassBoost',s.bassBoost,`()=>toggleAudioFX('bassBoost',this.checked)`),s.bassBoost)}
-    ${row(I.hph,'Virtualizer','Spatial / 3D surround',tog('virtualizer',s.virtualizer,`()=>toggleAudioFX('virtualizer',this.checked)`),s.virtualizer)}
-    ${row(I.vol,'Loudness Enhancer','Boost perceived loudness',tog('loudnessEnhancer',s.loudnessEnhancer,`()=>toggleAudioFX('loudnessEnhancer',this.checked)`),s.loudnessEnhancer)}
+    ${premRow(I.note,'Bass Boost','Enhance low frequencies','bassBoost',s.bassBoost,s.bassBoost)}
+    ${premRow(I.hph,'Virtualizer','Spatial / 3D surround','virtualizer',s.virtualizer,s.virtualizer)}
+    ${premRow(I.vol,'Loudness Enhancer','Boost perceived loudness','loudnessEnhancer',s.loudnessEnhancer,s.loudnessEnhancer)}
     ${row(I.wave,'Volume Normalization','Smooth gain leveling',tog('volumeNormalize',s.volumeNormalize,`()=>{saveSetting('volumeNormalize',this.checked);if(typeof showToast==='function')showToast(this.checked?'Normalization on':'Normalization off')}`),s.volumeNormalize)}
     <div class="settings-item settings-item-expandable"><div class="settings-item-full">
       <div class="settings-item-row-top">
@@ -667,7 +769,19 @@ function _doRender() {
       </div>
       <label class="settings-toggle"><input type="checkbox"${s.smartSaver?' checked':''} onchange="_tog('smartSaver',this.checked,()=>applySmartSaver(this.checked))"><span class="settings-toggle-track"></span></label>
     </div>
-    ${row(I.shk,'Shake to Skip','Shake phone → next track',`<label class="settings-toggle"><input type="checkbox"${s.shakeToSkip?' checked':''} onchange="toggleShakeToSkip(this.checked)"><span class="settings-toggle-track"></span></label>`,s.shakeToSkip)}
+    ${loggedIn
+      ? row(I.shk,'Shake to Skip','Shake phone → next track',`<label class="settings-toggle"><input type="checkbox"${s.shakeToSkip?' checked':''} onchange="toggleShakeToSkip(this.checked)"><span class="settings-toggle-track"></span></label>`,s.shakeToSkip)
+      : `<div class="settings-item" onclick="_premiumGate('shakeToSkip')" style="cursor:pointer">
+          <div class="settings-item-left">
+            <div class="settings-item-icon" style="background:rgba(184,150,64,0.08)">${I.shk}</div>
+            <div class="settings-item-info">
+              <div class="settings-item-title" style="display:flex;align-items:center;gap:7px">Shake to Skip ${premBadge}</div>
+              <div class="settings-item-sub">Shake phone → next track</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center">${lockIcon}</div>
+        </div>`
+    }
     ${row(I.tap,'Haptic Feedback','Vibration on tap &amp; swipe',tog('hapticFeedback',s.hapticFeedback,`()=>saveSetting('hapticFeedback',this.checked)`),s.hapticFeedback)}
     ${row(I.hph,'Headphone Auto-Pause','Pause on disconnect',tog('headphoneAutoPause',s.headphoneAutoPause,`()=>saveSetting('headphoneAutoPause',this.checked)`),s.headphoneAutoPause)}
     ${row(I.duck,'Audio Ducking','Lower vol on notification',tog('audioDucking',s.audioDucking,`()=>saveSetting('audioDucking',this.checked)`),s.audioDucking)}
@@ -693,7 +807,7 @@ function _doRender() {
     <div class="settings-item">
       <div class="settings-item-left">
         <div class="settings-item-icon">${I.info}</div>
-        <div class="settings-item-info"><div class="settings-item-title">Aurum</div><div class="settings-item-sub">Version 3.1 · Made with ♪</div></div>
+        <div class="settings-item-info"><div class="settings-item-title">Aurum</div><div class="settings-item-sub">Version 3.2 · Made with ♪</div></div>
       </div>
     </div>
     <div class="settings-item settings-item-developer" onclick="window.open('https://www.instagram.com/shivam_shrma.01?igsh=c3gxNjFnb21xYTM1','_blank')">
@@ -721,12 +835,14 @@ function _doRender() {
   _calcStorage();
 }
 
-// ─── ✅ MAIN FIX: _tog() NOW SAVES SETTING ───────────────────────────────────
-// Old: only called haptic + callback (setting was NEVER persisted)
-// New: saves setting first, then runs optional callback
+// ─── _tog() — FIXED: saves + premium gate ─────────────────────────────────────
 function _tog(key, value, callback) {
   _haptic([8, 20, 8]);
-  saveSetting(key, value);            // ← THE FIX: persist to localStorage
+  // Block premium keys if not logged in
+  if (value && _PREMIUM_KEYS.includes(key)) {
+    if (_premiumGate(key)) return;
+  }
+  saveSetting(key, value);
   if (typeof callback === 'function') callback();
 }
 
@@ -948,6 +1064,8 @@ window._setEQBand = function(i, v) {
 };
 
 function toggleAudioFX(key, enabled) {
+  // Gate premium audio features
+  if (enabled && _premiumGate(key)) return;
   saveSetting(key, enabled); _initEQ(); _applyEQ();
   if (typeof showToast==='function') showToast(`${({bassBoost:'Bass Boost',virtualizer:'Virtualizer',loudnessEnhancer:'Loudness Enhancer'}[key])} ${enabled?'on':'off'}`);
   renderSettingsPage();
@@ -1042,6 +1160,7 @@ function _attachShake() {
   window.addEventListener('devicemotion', _shakeHandler, { passive:true });
   _skOn = true;
 }
+
 function _detachShake() {
   if (!_skOn) return;
   window.removeEventListener('devicemotion', _shakeHandler);
@@ -1049,31 +1168,104 @@ function _detachShake() {
 }
 
 function toggleShakeToSkip(enabled) {
+  // ── PREMIUM GATE ──
+  if (enabled && !(window.userAuth && window.userAuth.isLoggedIn)) {
+    // Force setting off + flip checkbox back
+    appSettings.shakeToSkip = false;
+    localStorage.setItem('aurum_settings', JSON.stringify(appSettings));
+    const cb = document.querySelector('input[onchange*="toggleShakeToSkip"]');
+    if (cb) cb.checked = false;
+    if (typeof checkFeatureAccess === 'function') checkFeatureAccess('default');
+    else if (typeof openLoginModal === 'function') openLoginModal();
+    return;
+  }
+
   if (enabled) {
     if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
       DeviceMotionEvent.requestPermission()
         .then(state => {
-          if (state === 'granted') { saveSetting('shakeToSkip', true); _attachShake(); if(typeof showToast==='function') showToast('Shake to skip · On'); }
-          else if (typeof showToast==='function') showToast('Motion permission denied');
+          if (state === 'granted') {
+            saveSetting('shakeToSkip', true); _attachShake();
+            if (typeof showToast==='function') showToast('Shake to skip · On');
+          } else {
+            // Permission denied — reset setting
+            saveSetting('shakeToSkip', false);
+            const cb = document.querySelector('input[onchange*="toggleShakeToSkip"]');
+            if (cb) cb.checked = false;
+            if (typeof showToast==='function') showToast('Motion permission denied');
+          }
           renderSettingsPage();
         })
-        .catch(() => { if(typeof showToast==='function') showToast('Permission error'); renderSettingsPage(); });
+        .catch(() => {
+          saveSetting('shakeToSkip', false);
+          if (typeof showToast==='function') showToast('Permission error');
+          renderSettingsPage();
+        });
     } else {
       saveSetting('shakeToSkip', true); _attachShake();
       if (typeof showToast==='function') showToast('Shake to skip · On');
       renderSettingsPage();
     }
   } else {
-    saveSetting('shakeToSkip', false); _detachShake();
+    // Turning OFF — always allowed, always detach
+    saveSetting('shakeToSkip', false);
+    _detachShake();
     if (typeof showToast==='function') showToast('Shake to skip · Off');
     renderSettingsPage();
   }
 }
 
+// Boot: only attach if BOTH setting is on AND user is logged in
 if (appSettings.shakeToSkip &&
-    (typeof DeviceMotionEvent === 'undefined' || typeof DeviceMotionEvent.requestPermission !== 'function')) {
+    window.userAuth && window.userAuth.isLoggedIn &&
+    (typeof DeviceMotionEvent === 'undefined' ||
+     typeof DeviceMotionEvent.requestPermission !== 'function')) {
   _attachShake();
 }
+
+// ─── CSS for account card (injected once) ─────────────────────────────────────
+(function _injectAccountCardCSS() {
+  if (document.getElementById('aurum-account-card-css')) return;
+  const st = document.createElement('style');
+  st.id = 'aurum-account-card-css';
+  st.textContent = `
+  .settings-account-card{
+    margin:12px 16px 4px;padding:14px 16px;
+    background:var(--surface2);
+    border:1px solid rgba(184,150,64,0.15);
+    border-radius:18px;
+    display:flex;align-items:center;gap:14px;
+    cursor:pointer;-webkit-tap-highlight-color:transparent;
+    transition:background 0.18s ease;
+  }
+  .settings-account-card:active{background:var(--surface3)}
+  .settings-account-avatar{
+    width:44px;height:44px;border-radius:50%;
+    object-fit:cover;border:2px solid rgba(184,150,64,0.4);flex-shrink:0;
+  }
+  .settings-account-avatar-placeholder{
+    width:44px;height:44px;border-radius:50%;
+    background:rgba(184,150,64,0.08);
+    border:1.5px dashed rgba(184,150,64,0.28);
+    display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  }
+  .settings-account-avatar-placeholder svg{
+    width:20px;height:20px;stroke:rgba(184,150,64,0.55);fill:none;
+    stroke-width:1.8;stroke-linecap:round;
+  }
+  .settings-account-info{flex:1;min-width:0}
+  .settings-account-name{
+    font-size:14px;font-weight:700;color:var(--text);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  }
+  .settings-account-sub{font-size:11px;color:var(--text3);margin-top:2px}
+  .settings-account-badge{
+    font-size:10px;font-weight:700;color:var(--gold);
+    background:rgba(184,150,64,0.1);border:1px solid rgba(184,150,64,0.2);
+    padding:3px 9px;border-radius:100px;white-space:nowrap;
+  }`;
+  document.head.appendChild(st);
+})();
 
 // ─── CLEAR / DATA ─────────────────────────────────────────────────────────────
 function confirmClearSearch() {
