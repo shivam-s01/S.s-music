@@ -3925,3 +3925,449 @@ button.add-playlist-btn {
   background: var(--gold-l);
   box-shadow: 0 0 6px var(--gold-glow);
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   AURUM — LOGIN MODAL & AUTH UI STYLES
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── Overlay ─────────────────────────────────────────────────── */
+#aurum-login-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(5, 5, 8, 0.72);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  opacity: 0;
+  transition: opacity 0.28s ease;
+}
+#aurum-login-overlay.open { opacity: 1; }
+
+/* ── Sheet ───────────────────────────────────────────────────── */
+.aurum-login-sheet {
+  position: relative;
+  width: 100%;
+  max-width: 480px;
+  background: var(--surface, #111118);
+  border-radius: 28px 28px 0 0;
+  padding: 28px 28px 44px;
+  border-top: 1px solid rgba(184,150,64,0.15);
+  transform: translateY(40px);
+  transition: transform 0.32s cubic-bezier(0.22,1,0.36,1);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+#aurum-login-overlay.open .aurum-login-sheet { transform: translateY(0); }
+
+/* ── Close button ────────────────────────────────────────────── */
+.aurum-login-close {
+  position: absolute;
+  top: 16px; right: 18px;
+  background: rgba(255,255,255,0.06);
+  border: none; border-radius: 50%;
+  width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; color: var(--text2, #908880);
+}
+.aurum-login-close svg { width: 16px; height: 16px; }
+.aurum-login-close:active { background: rgba(255,255,255,0.12); }
+
+/* ── Logo ────────────────────────────────────────────────────── */
+.aurum-login-logo {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 20px; font-weight: 800;
+  color: var(--text1, #ede8e0);
+  letter-spacing: -0.5px;
+}
+
+/* ── Title ───────────────────────────────────────────────────── */
+.aurum-login-title {
+  font-size: 22px; font-weight: 800;
+  color: var(--text1, #ede8e0);
+  text-align: center; margin: 0;
+}
+.aurum-login-sub {
+  font-size: 13px; color: var(--text3, #666);
+  text-align: center; margin: 0;
+}
+
+/* ── Perks list ──────────────────────────────────────────────── */
+.aurum-login-perks {
+  width: 100%;
+  background: rgba(255,255,255,0.03);
+  border-radius: 16px;
+  padding: 14px 18px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.aurum-perk {
+  display: flex; align-items: center; gap: 12px;
+  font-size: 13px; color: var(--text2, #c8c4bc); font-weight: 500;
+}
+.aurum-perk svg {
+  width: 18px; height: 18px; flex-shrink: 0;
+  stroke: var(--gold, #b89640);
+}
+
+/* ── Google button wrapper ───────────────────────────────────── */
+#aurum-google-btn-wrap {
+  margin-top: 4px;
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  width: 100%;
+}
+
+/* ── Footer text ─────────────────────────────────────────────── */
+.aurum-login-footer {
+  font-size: 10px; color: var(--text3, #555);
+  text-align: center; margin: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   USER AVATAR CHIP (top-right of home page)
+   ═══════════════════════════════════════════════════════════════ */
+#aurum-user-chip {
+  position: fixed;
+  top: 14px; right: 14px;
+  z-index: 900;
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  overflow: hidden;
+  cursor: pointer;
+  border: 2px solid rgba(184,150,64,0.5);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+  display: flex; align-items: center; justify-content: center;
+  transition: border-color 0.2s, transform 0.15s;
+}
+#aurum-user-chip:active { transform: scale(0.92); }
+#aurum-user-chip img {
+  width: 100%; height: 100%; object-fit: cover; border-radius: 50%;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   USER MENU SHEET
+   ═══════════════════════════════════════════════════════════════ */
+#aurum-user-menu {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(5,5,8,0.6);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  opacity: 0;
+  transition: opacity 0.24s ease;
+}
+#aurum-user-menu.open { opacity: 1; }
+
+.aurum-user-menu-sheet {
+  width: 100%; max-width: 420px;
+  background: var(--surface, #111118);
+  border-radius: 24px 24px 0 0;
+  padding: 20px 24px 48px;
+  border-top: 1px solid rgba(184,150,64,0.12);
+  transform: translateY(30px);
+  transition: transform 0.28s cubic-bezier(0.22,1,0.36,1);
+  display: flex; flex-direction: column; gap: 0;
+}
+#aurum-user-menu.open .aurum-user-menu-sheet { transform: translateY(0); }
+
+.aurum-menu-handle {
+  width: 36px; height: 4px;
+  background: rgba(255,255,255,0.12);
+  border-radius: 2px;
+  margin: 0 auto 20px;
+}
+
+.aurum-menu-profile {
+  display: flex; align-items: center; gap: 14px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  margin-bottom: 16px;
+}
+.aurum-menu-profile img {
+  width: 48px; height: 48px;
+  border-radius: 50%; object-fit: cover;
+  border: 2px solid rgba(184,150,64,0.4);
+}
+.aurum-menu-name  { font-size: 15px; font-weight: 700; color: var(--text1,#ede8e0); }
+.aurum-menu-email { font-size: 11px; color: var(--text3,#666); margin-top: 2px; }
+
+.aurum-menu-badge {
+  font-size: 11px; font-weight: 700;
+  color: var(--gold, #b89640);
+  letter-spacing: .6px; text-transform: uppercase;
+  margin-bottom: 14px;
+  background: rgba(184,150,64,0.08);
+  padding: 6px 14px; border-radius: 100px;
+  text-align: center;
+}
+
+.aurum-menu-item {
+  display: flex; align-items: center; gap: 14px;
+  padding: 15px 4px;
+  font-size: 14px; font-weight: 500;
+  color: var(--text1, #ede8e0);
+  background: none; border: none;
+  font-family: inherit; cursor: pointer; text-align: left;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.aurum-menu-item svg { width: 18px; height: 18px; flex-shrink: 0; stroke: var(--gold,#b89640); }
+.aurum-menu-item:active { opacity: 0.7; }
+.aurum-menu-signout { color: #e05555; border-bottom: none; margin-top: 6px; }
+.aurum-menu-signout svg { stroke: #e05555; }
+/* ═══════════════════════════════════════════════════════════════
+   AURUM — style_additions.css
+   FIX #3 — Hardware-accelerated overlays + AI Suggestion styles
+   INSTRUCTIONS: Paste at the END of your existing style.css
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── FIX #3 — Login Overlay: replace existing rules ─────────────────────── */
+/* DELETE old #aurum-login-overlay and .aurum-login-sheet blocks and use: */
+
+#aurum-login-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10002;                          /* explicit — clears all app layers */
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(5, 5, 8, 0.78);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  /* Hardware-accelerated opacity + visibility toggle */
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.4s cubic-bezier(0.33, 1, 0.68, 1),
+              visibility 0.4s cubic-bezier(0.33, 1, 0.68, 1);
+  will-change: opacity;
+}
+
+#aurum-login-overlay.open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: all;
+}
+
+.aurum-login-sheet {
+  position: relative;
+  width: 100%;
+  max-width: 480px;
+  background: var(--surface, #111118);
+  border-radius: 28px 28px 0 0;
+  padding: 28px 28px 44px;
+  border-top: 1px solid rgba(184,150,64,0.18);
+  /* Scale + translateY: scale(0.95) when closed → scale(1) when open */
+  transform: scale(0.95) translateY(100%);
+  transition: transform 0.4s cubic-bezier(0.33, 1, 0.68, 1);
+  will-change: transform;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+#aurum-login-overlay.open .aurum-login-sheet {
+  transform: scale(1) translateY(0);
+}
+
+/* ── FIX #3 — Profile Context Sheet (User Menu) ─────────────────────────── */
+/* DELETE old #aurum-user-menu and .aurum-user-menu-sheet blocks and use: */
+
+#aurum-user-menu {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(5, 5, 8, 0.65);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.4s cubic-bezier(0.33, 1, 0.68, 1),
+              visibility 0.4s cubic-bezier(0.33, 1, 0.68, 1);
+  will-change: opacity;
+}
+
+#aurum-user-menu.open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: all;
+}
+
+.aurum-user-menu-sheet {
+  width: 100%; max-width: 420px;
+  background: var(--surface, #111118);
+  border-radius: 24px 24px 0 0;
+  padding: 20px 24px 48px;
+  border-top: 1px solid rgba(184,150,64,0.14);
+  transform: scale(0.95) translateY(100%);
+  transition: transform 0.4s cubic-bezier(0.33, 1, 0.68, 1);
+  will-change: transform;
+  display: flex; flex-direction: column; gap: 0;
+}
+
+#aurum-user-menu.open .aurum-user-menu-sheet {
+  transform: scale(1) translateY(0);
+}
+
+/* ── AURUM AI SUGGESTION STRIP ──────────────────────────────────────────── */
+/* Paste the #aurum-ai-suggestions container anywhere in index.html          */
+/* and call window.aurumAI.render() after login                              */
+
+#aurum-ai-suggestions {
+  padding: 4px 0 12px;
+  margin-bottom: 8px;
+}
+
+.aurum-ai-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 10px;
+  color: var(--gold, #b89640);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.aurum-ai-header svg {
+  flex-shrink: 0;
+  stroke: var(--gold, #b89640);
+}
+
+.aurum-ai-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 20px;
+  background: linear-gradient(135deg, rgba(184,150,64,0.22), rgba(184,150,64,0.08));
+  border: 1px solid rgba(184,150,64,0.3);
+  color: var(--gold-l, #d4b85a);
+  vertical-align: middle;
+  margin-left: 4px;
+}
+
+/* Loading dots */
+.aurum-ai-loading {
+  display: flex;
+  gap: 6px;
+  padding: 12px 20px;
+  align-items: center;
+}
+
+.aurum-ai-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: rgba(184,150,64,0.4);
+  animation: aurumAiPulse 1.2s ease-in-out infinite;
+}
+.aurum-ai-dot:nth-child(2) { animation-delay: 0.2s; }
+.aurum-ai-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes aurumAiPulse {
+  0%, 80%, 100% { transform: scale(0.7); opacity: 0.4; }
+  40%           { transform: scale(1);   opacity: 1;   }
+}
+
+.aurum-ai-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.aurum-ai-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  transition: background 0.18s ease;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  cursor: default;
+}
+
+.aurum-ai-card:active {
+  background: rgba(184,150,64,0.06);
+}
+
+.aurum-ai-rank {
+  width: 20px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 800;
+  color: rgba(184,150,64,0.45);
+  flex-shrink: 0;
+  letter-spacing: -0.02em;
+}
+
+.aurum-ai-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.aurum-ai-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text1, #ede8e0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aurum-ai-artist {
+  font-size: 12px;
+  color: var(--text3, #777);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aurum-ai-reason {
+  font-size: 10px;
+  color: rgba(184,150,64,0.55);
+  margin-top: 3px;
+  font-style: italic;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aurum-ai-play {
+  flex-shrink: 0;
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(184,150,64,0.12);
+  color: var(--gold, #b89640);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  transition: background 0.18s ease, transform 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.aurum-ai-play:active {
+  background: rgba(184,150,64,0.28);
+  transform: scale(0.92);
+}
+
+.aurum-ai-empty {
+  font-size: 13px;
+  color: var(--text3, #777);
+  padding: 8px 20px;
+  font-style: italic;
+}
+
