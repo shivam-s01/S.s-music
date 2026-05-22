@@ -1,20 +1,3 @@
-// ═══════════════════════════════════════════════════════════════
-// tv-perf.js · Aurum TV Optimizer · v8.1 · BUG-FREE EDITION
-// ───────────────────────────────────────────────────────────────
-// Load BEFORE app.js + settings_addon.js
-//
-// Fixes over v8.0:
-//   • Unified TV detection (matches app.js — no dual-listener bug)
-//   • setupTVNavigation stub set IMMEDIATELY (before DOMContentLoaded)
-//   • _statePushed guard prevents history stack blowup
-//   • eval() replaced with safe function lookup for link items
-//   • Logo color interval removed (was firing even with no track change)
-//   • _aurumAudio fallback added everywhere W.audio is used
-//   • visibilitychange: audio resume uses W._aurumAudio fallback
-//   • section cache GC uses plain object key check (no Set — lighter)
-//   • All timers registered in _timers[] — zero leaks on unload
-// ═══════════════════════════════════════════════════════════════
-
 (function (W, D) {
   'use strict';
 
@@ -3318,7 +3301,7 @@ function _setupBgAudioPing() {
         src.connect(_bgAudioCtx.destination);
         src.start(0);
       } catch(e) {}
-    }, 25000);
+    }, 5000);
   } catch(e) {}
 }
 
