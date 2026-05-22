@@ -3546,3 +3546,218 @@ img.img-error { opacity: 1; }
   -webkit-tap-highlight-color: transparent;
 }
 .artist-link:active { color: var(--gold-l); }
+
+/* ─── HTML PATCH — new classes added in optimized index.html ────*/
+
+/* hidden utility — replaces all style="display:none" */
+.hidden { display: none !important; }
+
+/* page-bottom-spacer — replaces inline <div style="height:18px"> */
+.page-bottom-spacer { height: 18px; }
+
+/* liked-card — now a <button>, reset default button styles */
+button.liked-card {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* liked-card chevron — replaces inline SVG style */
+.liked-card-chevron {
+  width: 16px;
+  height: 16px;
+  stroke: var(--text3);
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* nav-btn — now <button>, reset */
+button.nav-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* mini-player — now <button>, reset */
+button#mini-player {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  display: flex;
+  align-items: center;
+}
+
+/* fp-play-circle — now <button> */
+button.fp-play-circle {
+  border: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* modal-option — now <button> */
+button.modal-option {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  display: flex;
+  align-items: center;
+}
+button.modal-option-danger span { color: #e05252; }
+
+/* modal-song-meta — replaces inline flex div */
+.modal-song-meta {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 14px;
+}
+.modal-song-art {
+  width: 48px;
+  height: 48px;
+  border-radius: 11px;
+  object-fit: cover;
+  background: var(--surface3);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.42);
+  flex-shrink: 0;
+}
+.modal-song-text { min-width: 0; }
+.modal-song-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+.modal-song-artist {
+  font-size: 11px;
+  color: var(--text2);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* add-playlist-options — replaces inline max-height/overflow */
+.add-playlist-options {
+  max-height: 340px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* fp-header-title — replaces h3 (wrong hierarchy) */
+.fp-header-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text2);
+  letter-spacing: 0.2px;
+}
+
+/* pl-detail-scroll — replaces inline overflow scroll div */
+.pl-detail-scroll {
+  overflow-y: auto;
+  height: 100%;
+  padding-bottom: calc(100px + var(--safe-bottom, 0px));
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+.pl-detail-title-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+/* pl-songs-list — replaces inline padding-bottom */
+.pl-songs-list { padding-bottom: 20px; }
+
+/* chip — now <button>, reset */
+button.chip {
+  background: none;
+  border: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* lib-tab — now <button>, reset */
+button.lib-tab {
+  background: none;
+  border: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* quality/dl options — now <button> */
+button.quality-option,
+button.dl-option {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  display: flex;
+  align-items: center;
+}
+
+/* ─── LYRICS BUTTON — premium redesign ─────────────────────────*/
+.fp-lyrics-btn {
+  display: flex !important;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  position: relative;
+}
+.fp-lyrics-icon {
+  width: 22px;
+  height: 22px;
+  stroke: currentColor;
+  transition: stroke 0.2s ease, filter 0.2s ease;
+}
+.fp-lyrics-btn-label {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  opacity: 0.6;
+  transition: opacity 0.2s ease;
+}
+/* active state — gold glow */
+.fp-lyrics-btn[aria-pressed="true"] .fp-lyrics-icon {
+  stroke: var(--gold-l);
+  filter: drop-shadow(0 0 6px rgba(184, 150, 64, 0.5));
+}
+.fp-lyrics-btn[aria-pressed="true"] .fp-lyrics-btn-label {
+  opacity: 1;
+  color: var(--gold-l);
+}
+/* active dot indicator */
+.fp-lyrics-btn[aria-pressed="true"]::after {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--gold-l);
+  box-shadow: 0 0 6px var(--gold-glow);
+}
+
