@@ -548,3 +548,101 @@ document.addEventListener('keydown', function(e) {
     if (menu && menu.style.display !== 'none') closeUserMenu();
   }
 });
+// ═══════════════════════════════════════════════════════════════════════════
+// AURUM — app.js PATCH  (apply to triggerDownload — line ~3166)
+//
+// INSTRUCTION: Replace the entire `async function triggerDownload(quality)`
+// block with the version below. Everything else in app.js stays untouched.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── FIND & REPLACE THIS EXACT FUNCTION IN app.js ──────────────────────────
+
+async function triggerDownload(quality) {
+  // ── FIX #2 — validateFeature gate at the very top ──────────────────
+  // Ringtone: always premium
+  if (quality === 'ringtone' && !window.validateFeature('ringtone')) return;
+  // Full + 320 kbps gift: also premium
+  if ((quality === 'full' || quality === 'gift') && !window.validateFeature('download')) return;
+  // ── (preview remains free for all users) ───────────────────────────
+
+  const song = _downloadSong || currentTrack;
+  _downloadSong = null;
+  if (!song) { showToast('No track selected'); return; }
+
+  const modal = document.getElementById('download-modal');
+  modal.classList.remove('open');
+  modal.style.display = 'none';
+
+  const cleanTitle  = (song.trackName  || 'audio').replace(/[/\\?%*:|"<>]/g, '-');
+  const cleanArtist = (song.artistName || '').replace(/[/\\?%*:|"<>]/g, '-');
+
+  if (quality === 'preview') {
+    try {
+      showToast('Downloading preview…');
+      const res = await fetch(song.previewUrl);
+      if (!res.ok) throw new Error('fetch failed');
+      const blob   = await res.blob();
+      const objUrl = URL.createObjectURL(blob);
+      const a      = document.createElement('a');
+      a.href       = objUrl;
+      a.download   = `${cleanTitle}_preview.m4a`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(objUrl), 5000);
+      haptic([10, 30, 10]);
+      showToast('Preview saved ✓');
+    } catch(e) { showToast('Download failed'); }
+    return;
+  }
+
+  if (quality === 'ringtone') {
+    try {
+      showToast('Saving ringtone…');
+      const res = await fetch(song.previewUrl);
+      if (!res.ok) throw new Error('fetch failed');
+      const blob   = await res.blob();
+      const objUrl = URL.createObjectURL(blob);
+      const a      = document.createElement('a');
+      a.href       = objUrl;
+      a.download   = `${cleanTitle}_ringtone.m4a`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(objUrl), 5000);
+      haptic([10, 30, 10]);
+      showToast('Ringtone saved ✓');
+    } catch(e) { showToast('Download failed'); }
+    return;
+  }
+
+  if (quality === 'full') {
+    showToast('Downloading full song…');
+    try {
+      const q      = encodeURIComponent(song.trackName  || '');
+      const artist = encodeURIComponent(song.artistName || '');
+      const dlUrl  = `/api/download?q=${q}&artist=${artist}&quality=full`;
+      const a      = document.createElement('a');
+      a.href       = dlUrl;
+      a.download   = `${cleanTitle} - ${cleanArtist}.mp3`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      haptic([10, 30, 10]);
+      showToast('Download started ✓');
+    } catch(e) { showToast('Download failed'); }
+    return;
+  }
+
+  if (quality === 'gift') {
+    showToast('Fetching 320 kbps…');
+    try {
+      const rawTitle  = (song.trackName  || '').replace(/\(.*?\)/g, '').trim();
+      const rawArtist = (song.artistName || '').split(/[&,]/)[0].trim();
+      const q      = encodeURIComponent(rawTitle);
+      const artist = encodeURIComponent(rawArtist);
+      const dlUrl  = `/api/download?q=${q}&artist=${artist}&quality=gift`;
+      const a      = document.createElement('a');
+      a.href       = dlUrl;
+      a.download   = `${cleanTitle} - ${cleanArtist}_320.mp3`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      haptic([10, 30, 10]);
+      showToast('320 kbps download started ✓');
+    } catch(e) { showToast('Owner Gift failed'); }
+    return;
+  }
+}
