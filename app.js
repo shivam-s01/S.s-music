@@ -3164,6 +3164,11 @@ function closeDownloadModal(e) {
 }
 
 async function triggerDownload(quality) {
+  // ── FIX #2 — validateFeature gate (auth.js) ──────────────────────────
+  if (quality === 'ringtone' && !window.validateFeature('ringtone')) return;
+  if ((quality === 'full' || quality === 'gift') && !window.validateFeature('download')) return;
+  // ─────────────────────────────────────────────────────────────────────
+
   const song = _downloadSong || currentTrack;
   _downloadSong = null;
   if (!song) { showToast('No track selected'); return; }
