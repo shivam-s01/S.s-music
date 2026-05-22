@@ -106,7 +106,61 @@
 }
 
 /* ─── LIGHT THEME ──────────────────────────────────────────────*/
-[data-theme="light"],
+[data-theme="light"] {
+  --bg: #fff;
+  --surface: #f7f4ef;
+  --surface2: #f0ece4;
+  --surface3: #e8e2d8;
+  --surface4: #ddd6ca;
+  --surface5: #d0c8ba;
+  --text: #121212;
+  --text2: #4a4540;
+  --text3: #7a736a;
+  --border: rgba(0, 0, 0, 0.08);
+  --border2: rgba(0, 0, 0, 0.12);
+  --glass: rgba(0, 0, 0, 0.024);
+  --glass2: rgba(0, 0, 0, 0.048);
+  --nav-bg: rgba(255, 255, 255, 0.98);
+  --mini-bg: rgba(250, 248, 244, 0.98);
+  --sheet-bg: #fff;
+  --modal-overlay: rgba(0, 0, 0, 0.32);
+  --search-bg: rgba(0, 0, 0, 0.055);
+  --chip-bg: rgba(0, 0, 0, 0.06);
+  --chip-color: rgba(18, 18, 18, 0.6);
+  --lib-tab-bg: rgba(0, 0, 0, 0.05);
+  --song-active: rgba(0, 0, 0, 0.04);
+  --fp-close-bg: rgba(0, 0, 0, 0.06);
+  --fp-close-color: rgba(18, 18, 18, 0.6);
+  --ph-icon-bg: rgba(0, 0, 0, 0.06);
+  --ph-icon-color: rgba(18, 18, 18, 0.55);
+  --ph-eyebrow: rgba(140, 108, 28, 0.8);
+  --body-bg: #eae5dc;
+  --nav-border: rgba(0, 0, 0, 0.08);
+  --fp-bg-filter: blur(20px) saturate(1.2) brightness(0.72);
+  --fp-overlay: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.72) 0%,
+    rgba(255, 255, 255, 0.52) 18%,
+    rgba(255, 255, 255, 0.7) 55%,
+    rgba(255, 255, 255, 0.92) 76%,
+    rgba(255, 255, 255, 0.97) 100%
+  );
+  --card-shadow: 0 1px 5px rgba(0, 0, 0, 0.08);
+  --mini-shadow: 0 -1px 10px rgba(184, 150, 64, 0.06),
+    0 0 0 0.5px rgba(0, 0, 0, 0.07),
+    inset 0 0.5px 0 rgba(255, 255, 255, 1);
+  --gold-dim: rgba(184, 150, 64, 0.07);
+  --gold-glow: rgba(184, 150, 64, 0.09);
+  --gold-glow2: rgba(184, 150, 64, 0.18);
+  --gold-glow3: rgba(184, 150, 64, 0.26);
+  --gold-subtle: rgba(184, 150, 64, 0.08);
+  --gold-focus: rgba(184, 150, 64, 0.1);
+  --gold-icon: rgba(184, 150, 64, 0.12);
+  --gold-border: rgba(184, 150, 64, 0.22);
+  --gold-ring: rgba(184, 150, 64, 0.28);
+  --gold-focus-ring: rgba(184, 150, 64, 0.38);
+}
+
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
     --bg: #fff;
@@ -3547,15 +3601,140 @@ img.img-error { opacity: 1; }
 }
 .artist-link:active { color: var(--gold-l); }
 
-/* ─── HTML PATCH — new classes added in optimized index.html ────*/
+/* ═══════════════════════════════════════════════════════════════
+   AURUM — COMPLETE BUG FIXES (merged patch)
+   Fix 1: .hidden no !important — JS tab toggle works
+   Fix 2: #mini-player div selector — nested button fix
+   Fix 3: h2 sheet titles (HTML uses h2, CSS had h3)
+   Fix 4: #search-clear id selector (HTML uses id not class)
+   Fix 5: btn-primary missing class
+   Fix 6: .bgift badge missing
+   Fix 7: quality-option q-dot style
+   Fix 8: lib sections explicit base
+   Fix 9: queue-panel h2 font
+   Fix 10: All button element resets for new HTML
+   ═══════════════════════════════════════════════════════════════ */
 
-/* hidden utility — replaces all style="display:none" */
-.hidden { display: none !important; }
+/* ─── FIX 1: .hidden — no !important ───────────────────────────
+   Without this, JS style.display='' can't show Liked/Downloads  */
+.hidden { display: none; }
 
-/* page-bottom-spacer — replaces inline <div style="height:18px"> */
-.page-bottom-spacer { height: 18px; }
+/* ─── FIX 2: mini-player selector fix ──────────────────────────
+   Works whether it's a <div> (correct) or <button> (old)        */
+#mini-player {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
 
-/* liked-card — now a <button>, reset default button styles */
+/* ─── FIX 3: sheet h2 titles ───────────────────────────────────
+   HTML uses <h2> inside input-sheet, quality-sheet, dl-sheet
+   CSS only had h3 — so titles were unstyled/wrong size          */
+.input-sheet h2,
+.quality-sheet h2,
+.dl-sheet h2 {
+  font-size: 16px;
+  font-weight: 800;
+  margin-bottom: 14px;
+  letter-spacing: -0.28px;
+  color: var(--text);
+}
+[data-theme="light"] .input-sheet h2,
+[data-theme="light"] .quality-sheet h2,
+[data-theme="light"] .dl-sheet h2 { color: #121212; }
+
+/* ─── FIX 4: #search-clear — id selector ───────────────────────
+   HTML has id="search-clear", CSS only had .search-clear class  */
+#search-clear {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  touch-action: manipulation;
+  transition: transform var(--t-spring);
+}
+#search-clear:active { transform: scale(0.78); }
+#search-clear svg {
+  width: 14px; height: 14px;
+  stroke: var(--text2);
+  fill: none;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+}
+
+/* ─── FIX 5: btn-primary — used in HTML but missing in CSS ─────
+   index.html create-playlist modal uses class="btn-primary"     */
+.btn-primary {
+  width: 100%;
+  padding: 13px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  border: none;
+  background: linear-gradient(138deg, var(--gold-xl), var(--gold));
+  color: #050508;
+  touch-action: manipulation;
+  transition: transform var(--t-spring), opacity var(--t-smooth);
+  font-family: inherit;
+  margin-top: 12px;
+}
+.btn-primary:active { transform: scale(0.96); opacity: 0.88; }
+
+/* ─── FIX 6: .dl-kbps-badge.bgift — missing variant ───────────
+   HTML download modal has class="dl-kbps-badge bgift"           */
+.dl-kbps-badge.bgift {
+  background: linear-gradient(135deg, var(--gold-glow2), var(--gold-dim));
+  color: var(--gold-xl);
+  border: 0.5px solid var(--gold-border);
+}
+
+/* ─── FIX 7: quality-option q-dot ──────────────────────────────
+   HTML quality options use <div class="q-dot"> not .qo-title    */
+.quality-option .q-dot {
+  font-size: 8px;
+  color: var(--text3);
+  flex-shrink: 0;
+  width: 12px;
+}
+.quality-option[id="q-badge-full"],
+.quality-option[id="q-badge-preview"] {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 0;
+  width: 100%;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: inherit;
+  touch-action: manipulation;
+}
+.quality-option[id="q-badge-full"] span,
+.quality-option[id="q-badge-preview"] span {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  text-align: left;
+}
+[data-theme="light"] .quality-option[id="q-badge-full"] span,
+[data-theme="light"] .quality-option[id="q-badge-preview"] span { color: #121212; }
+
+/* ─── FIX 8: lib sections base ─────────────────────────────────*/
+#lib-playlists,
+#lib-saved,
+#lib-downloads { min-height: 20px; }
+
+/* ─── FIX 9: queue-panel h2 font ───────────────────────────────*/
+.queue-panel-header h2 {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.3px;
+  color: var(--text);
+}
+
+/* ─── FIX 10: button element resets ────────────────────────────*/
 button.liked-card {
   width: 100%;
   text-align: left;
@@ -3565,11 +3744,8 @@ button.liked-card {
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
-
-/* liked-card chevron — replaces inline SVG style */
 .liked-card-chevron {
-  width: 16px;
-  height: 16px;
+  width: 16px; height: 16px;
   stroke: var(--text3);
   fill: none;
   stroke-width: 1.8;
@@ -3577,8 +3753,6 @@ button.liked-card {
   margin-left: auto;
   flex-shrink: 0;
 }
-
-/* nav-btn — now <button>, reset */
 button.nav-btn {
   background: none;
   border: none;
@@ -3588,27 +3762,11 @@ button.nav-btn {
   flex-direction: column;
   align-items: center;
 }
-
-/* mini-player — now <button>, reset */
-button#mini-player {
-  width: 100%;
-  text-align: left;
-  background: none;
-  border: none;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  display: flex;
-  align-items: center;
-}
-
-/* fp-play-circle — now <button> */
 button.fp-play-circle {
   border: none;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
-
-/* modal-option — now <button> */
 button.modal-option {
   width: 100%;
   text-align: left;
@@ -3620,8 +3778,37 @@ button.modal-option {
   align-items: center;
 }
 button.modal-option-danger span { color: #e05252; }
+button.chip {
+  background: none;
+  border: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+button.lib-tab {
+  background: none;
+  border: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+button.quality-option,
+button.dl-option {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  display: flex;
+  align-items: center;
+}
+button.add-playlist-btn {
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
 
-/* modal-song-meta — replaces inline flex div */
+/* ─── FIX 11: modal song meta (song options sheet header) ───────*/
 .modal-song-meta {
   display: flex;
   align-items: center;
@@ -3629,8 +3816,7 @@ button.modal-option-danger span { color: #e05252; }
   margin-bottom: 14px;
 }
 .modal-song-art {
-  width: 48px;
-  height: 48px;
+  width: 48px; height: 48px;
   border-radius: 11px;
   object-fit: cover;
   background: var(--surface3);
@@ -3656,14 +3842,14 @@ button.modal-option-danger span { color: #e05252; }
   text-overflow: ellipsis;
 }
 
-/* add-playlist-options — replaces inline max-height/overflow */
+/* ─── FIX 12: add-playlist-options scroll ───────────────────────*/
 .add-playlist-options {
   max-height: 340px;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
 
-/* fp-header-title — replaces h3 (wrong hierarchy) */
+/* ─── FIX 13: fp-header-title (HTML uses span.fp-header-title) ─*/
 .fp-header-title {
   font-size: 13px;
   font-weight: 600;
@@ -3671,7 +3857,7 @@ button.modal-option-danger span { color: #e05252; }
   letter-spacing: 0.2px;
 }
 
-/* pl-detail-scroll — replaces inline overflow scroll div */
+/* ─── FIX 14: playlist detail scroll wrapper ────────────────────*/
 .pl-detail-scroll {
   overflow-y: auto;
   height: 100%;
@@ -3679,66 +3865,47 @@ button.modal-option-danger span { color: #e05252; }
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
 }
-.pl-detail-title-wrap {
-  flex: 1;
-  min-width: 0;
-}
-
-/* pl-songs-list — replaces inline padding-bottom */
+.pl-detail-title-wrap { flex: 1; min-width: 0; }
 .pl-songs-list { padding-bottom: 20px; }
 
-/* chip — now <button>, reset */
-button.chip {
-  background: none;
-  border: none;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-}
+/* ─── FIX 15: page-bottom-spacer ───────────────────────────────*/
+.page-bottom-spacer { height: 18px; }
 
-/* lib-tab — now <button>, reset */
-button.lib-tab {
-  background: none;
-  border: none;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-}
-
-/* quality/dl options — now <button> */
-button.quality-option,
-button.dl-option {
-  width: 100%;
-  text-align: left;
-  background: none;
-  border: none;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-  display: flex;
-  align-items: center;
-}
-
-/* ─── LYRICS BUTTON — premium redesign ─────────────────────────*/
+/* ─── LYRICS BUTTON — complete override ────────────────────────*/
 .fp-lyrics-btn {
   display: flex !important;
   flex-direction: column;
   align-items: center;
   gap: 3px;
   position: relative;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 8px;
+  touch-action: manipulation;
+  transition: transform 0.2s cubic-bezier(0.33, 1, 0.68, 1);
 }
+.fp-lyrics-btn:active { transform: scale(0.82); }
 .fp-lyrics-icon {
-  width: 22px;
-  height: 22px;
-  stroke: currentColor;
+  width: 22px; height: 22px;
+  stroke: rgba(238, 232, 224, 0.28);
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
   transition: stroke 0.2s ease, filter 0.2s ease;
 }
+[data-theme="light"] .fp-lyrics-icon { stroke: var(--text3); }
 .fp-lyrics-btn-label {
   font-size: 8px;
   font-weight: 700;
   letter-spacing: 0.8px;
   text-transform: uppercase;
+  color: rgba(238, 232, 224, 0.28);
   opacity: 0.6;
-  transition: opacity 0.2s ease;
+  transition: opacity 0.2s ease, color 0.2s ease;
 }
-/* active state — gold glow */
+[data-theme="light"] .fp-lyrics-btn-label { color: var(--text3); }
 .fp-lyrics-btn[aria-pressed="true"] .fp-lyrics-icon {
   stroke: var(--gold-l);
   filter: drop-shadow(0 0 6px rgba(184, 150, 64, 0.5));
@@ -3747,17 +3914,14 @@ button.dl-option {
   opacity: 1;
   color: var(--gold-l);
 }
-/* active dot indicator */
 .fp-lyrics-btn[aria-pressed="true"]::after {
   content: '';
   position: absolute;
-  bottom: -6px;
+  bottom: -4px;
   left: 50%;
   transform: translateX(-50%);
-  width: 3px;
-  height: 3px;
+  width: 3px; height: 3px;
   border-radius: 50%;
   background: var(--gold-l);
   box-shadow: 0 0 6px var(--gold-glow);
 }
-
