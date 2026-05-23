@@ -15,7 +15,7 @@ window.userAuth = {
 const FREE_QUEUE_LIMIT = 5;
 
 // ─── 2. BOOT — restore session from localStorage ─────────────────────────────
-// FIX #5 — SESSION EXPIRE GUARD: parse JWT iat, flush if > 24h stale
+// SESSION EXPIRE GUARD: parse JWT iat, flush if > 7 days stale
 (function _restoreSession() {
   try {
     const saved = localStorage.getItem('aurum_user');
@@ -24,19 +24,17 @@ const FREE_QUEUE_LIMIT = 5;
     if (!u?.email) return;
 
     // ── JWT expiry check ──────────────────────────────────────
-    // Read the stored raw credential (set during handleGoogleCredential)
     const rawToken = localStorage.getItem('aurum_raw_token');
     if (rawToken) {
       try {
         const parts   = rawToken.split('.');
-        // base64url → base64 padding
         const pad     = s => s + '='.repeat((4 - s.length % 4) % 4);
         const payload = JSON.parse(atob(pad(parts[1].replace(/-/g, '+').replace(/_/g, '/'))));
         const issuedAt = payload.iat; // seconds epoch
         if (issuedAt) {
           const ageMs = Date.now() - issuedAt * 1000;
-          if (ageMs > 24 * 60 * 60 * 1000) {
-            // Token older than 24 h — silently flush without hard-refresh
+          // ✅ FIX: 24h → 7 days (was causing 1-second logout on page load)
+          if (ageMs > 7 * 24 * 60 * 60 * 1000) {
             window.signOutUser();
             return;
           }
@@ -70,7 +68,6 @@ window.handleGoogleCredential = function(response) {
     window.userAuth.token      = response.credential;
 
     localStorage.setItem('aurum_user', JSON.stringify(user));
-    // FIX #5 — store raw token for iat parsing on next boot
     localStorage.setItem('aurum_raw_token', response.credential);
 
     _applyLoggedInUI(user);
@@ -108,7 +105,7 @@ window.signOutUser = function() {
   window.userAuth.user       = null;
   window.userAuth.token      = null;
   localStorage.removeItem('aurum_user');
-  localStorage.removeItem('aurum_raw_token');  // FIX #5 — also clear raw token
+  localStorage.removeItem('aurum_raw_token');
 
   const chip = document.getElementById('aurum-user-chip');
   if (chip) chip.style.display = 'none';
@@ -118,13 +115,10 @@ window.signOutUser = function() {
   showToast('Signed out');
 };
 
-// ─── 6. DETERMINISTIC FEATURE VALIDATOR (FIX #2) ─────────────────────────────
-// Global gate — call window.validateFeature('ringtone') anywhere in app.js
-// Returns: true if logged in, false + shows overlay + toast if not
+// ─── 6. DETERMINISTIC FEATURE VALIDATOR ─────────────────────────────────────
 window.validateFeature = function(featureName) {
   if (window.userAuth.isLoggedIn) return true;
 
-  // Show overlay
   const headlines = {
     'ringtone' : 'Download Ringtone',
     'queue'    : 'Unlimited Queue',
@@ -142,7 +136,7 @@ window.validateFeature = function(featureName) {
     'default'  : 'Sign in to unlock all premium features.',
   };
 
-  const key = headlines[featureName] ? featureName : 'default';
+  const key      = headlines[featureName] ? featureName : 'default';
   const headline = document.getElementById('aurum-login-headline');
   const desc     = document.getElementById('aurum-login-desc');
   if (headline) headline.textContent = headlines[key];
@@ -150,12 +144,11 @@ window.validateFeature = function(featureName) {
 
   openLoginModal();
   haptic(15);
-  // Show toast as specified
   showToast('Premium feature: Please sign in');
   return false;
 };
 
-// Keep legacy alias for any existing calls in app.js
+// Keep legacy alias
 window.checkFeatureAccess = window.validateFeature;
 
 // ─── 7. LOGIN MODAL OPEN/CLOSE ───────────────────────────────────────────────
@@ -208,10 +201,8 @@ document.addEventListener('click', function(e) {
   }
 });
 
-// ─── 9. HARD QUEUE INTERCEPT (FIX #1) ────────────────────────────────────────
-// Override window.setQueue globally — trim to 5 for free users no matter source
+// ─── 9. HARD QUEUE INTERCEPT ─────────────────────────────────────────────────
 (function _installSetQueueInterceptor() {
-  // Expose original (may be set by app.js later — we wrap lazily)
   let _originalSetQueue = window.setQueue || null;
 
   Object.defineProperty(window, 'setQueue', {
@@ -223,18 +214,16 @@ document.addEventListener('click', function(e) {
           showToast('Free tier: Queue limited to 5 songs');
         }
         if (_originalSetQueue) return _originalSetQueue(newQueue);
-        // Fallback: directly assign to currentQueue if app.js hasn't registered yet
         if (typeof window.currentQueue !== 'undefined') window.currentQueue = newQueue;
       };
     },
     set: function(fn) {
-      // When app.js assigns window.setQueue = ..., capture it as original
       _originalSetQueue = fn;
     },
   });
 })();
 
-// ─── 10. QUEUE GUARD — wrap playSongs and fetchRecommendations ───────────────
+// ─── 10. QUEUE GUARD ─────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', function() {
   setTimeout(_installQueueGuard, 300);
 });
@@ -272,7 +261,7 @@ function _trimQueueToLimit() {
   }
 }
 
-// ─── 11. DOWNLOAD GATE — wrap triggerDownload (FIX #2 integration) ───────────
+// ─── 11. DOWNLOAD GATE ───────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', function() {
   setTimeout(_installDownloadGuard, 400);
 });
@@ -280,11 +269,9 @@ window.addEventListener('DOMContentLoaded', function() {
 function _installDownloadGuard() {
   const _origTrigger = window.triggerDownload;
   window.triggerDownload = async function(quality) {
-    // GATE: ringtone always requires sign-in
     if (quality === 'ringtone') {
       if (!window.validateFeature('ringtone')) return;
     }
-    // GATE: full/gift downloads also require sign-in
     if ((quality === 'full' || quality === 'gift')) {
       if (!window.validateFeature('download')) return;
     }
@@ -292,10 +279,10 @@ function _installDownloadGuard() {
   };
 }
 
-// ─── 12. CLOUD SYNC WITH EXPONENTIAL RETRY (FIX #4) ─────────────────────────
-const _SYNC_BUFFER_KEY = 'aurum_sync_buffer';
-const _SYNC_MAX_RETRIES = 3;
-const _SYNC_RETRY_DELAYS = [2000, 4000, 8000]; // exponential: 2s, 4s, 8s
+// ─── 12. CLOUD SYNC WITH EXPONENTIAL RETRY ───────────────────────────────────
+const _SYNC_BUFFER_KEY    = 'aurum_sync_buffer';
+const _SYNC_MAX_RETRIES   = 3;
+const _SYNC_RETRY_DELAYS  = [2000, 4000, 8000];
 
 window.syncStateToCloud = async function() {
   if (!window.userAuth.isLoggedIn || !window.userAuth.user) return;
@@ -324,26 +311,22 @@ window.syncStateToCloud = async function() {
         body: JSON.stringify(state),
       });
       if (!res.ok) throw new Error('HTTP ' + res.status);
-
-      // Clear buffer on success
       localStorage.removeItem(_SYNC_BUFFER_KEY);
-
     } catch(e) {
       attempt++;
       if (attempt < _SYNC_MAX_RETRIES) {
         console.warn(`[Aurum Sync] Retry ${attempt}/${_SYNC_MAX_RETRIES} in ${_SYNC_RETRY_DELAYS[attempt - 1]}ms`);
         setTimeout(_attempt, _SYNC_RETRY_DELAYS[attempt - 1]);
       } else {
-        // All retries exhausted — buffer in localStorage for next 30s cycle
         console.warn('[Aurum Sync] All retries failed — buffering payload');
         try {
           localStorage.setItem(_SYNC_BUFFER_KEY, JSON.stringify(state));
-        } catch(_) { /* storage full — skip */ }
+        } catch(_) {}
       }
     }
   };
 
-  // Flush any previously buffered payload first
+  // Flush buffered payload first
   const buffered = localStorage.getItem(_SYNC_BUFFER_KEY);
   if (buffered) {
     try {
@@ -356,7 +339,7 @@ window.syncStateToCloud = async function() {
         body: buffered,
       });
       localStorage.removeItem(_SYNC_BUFFER_KEY);
-    } catch(_) { /* buffered flush failed — will retry next cycle */ }
+    } catch(_) {}
   }
 
   await _attempt();
@@ -373,7 +356,7 @@ async function _fetchAndApplyCloudState() {
     const data = await r.json();
     if (!data?.songId) return;
 
-    const isTV       = !!window.__IS_TV__;
+    const isTV        = !!window.__IS_TV__;
     const savedDevice = data.device;
 
     if (isTV && savedDevice === 'mobile') { _resumeFromCloudState(data); }
@@ -421,13 +404,10 @@ setInterval(function() {
   }
 }, 30000);
 
-// ─── 15. AURUM AI SUGGESTIONS — Premium-only, data flows to your backend ─────
-// Renders a "Curated for You" strip powered by Claude (Anthropic API)
-// Gate: validateFeature('ai') blocks non-signed-in users completely
+// ─── 15. AURUM AI SUGGESTIONS ────────────────────────────────────────────────
 window.aurumAI = (function() {
   const AI_CONTAINER_ID = 'aurum-ai-suggestions';
 
-  // ── Internal: call your backend which proxies to Anthropic ──
   async function _fetchAISuggestions(contextSong) {
     const res = await fetch('/api/ai/suggestions', {
       method  : 'POST',
@@ -440,7 +420,6 @@ window.aurumAI = (function() {
         email    : window.userAuth.user?.email || null,
         track    : contextSong?.trackName  || null,
         artist   : contextSong?.artistName || null,
-        // Send listening history for personalisation
         history  : (window.currentQueue || []).slice(0, 10).map(s => ({
           t: s.trackName, a: s.artistName
         })),
@@ -448,12 +427,10 @@ window.aurumAI = (function() {
       }),
     });
     if (!res.ok) throw new Error('AI API ' + res.status);
-    return res.json(); // expects { suggestions: [{ trackName, artistName, reason }] }
+    return res.json();
   }
 
-  // ── Public: render AI strip ──────────────────────────────────
   async function render(targetEl, contextSong) {
-    // HARD GATE — non-logged users cannot bypass
     if (!window.validateFeature('ai')) return;
 
     targetEl = targetEl || document.getElementById(AI_CONTAINER_ID);
@@ -471,7 +448,7 @@ window.aurumAI = (function() {
       </div>`;
 
     try {
-      const data = await _fetchAISuggestions(contextSong);
+      const data  = await _fetchAISuggestions(contextSong);
       const songs = data?.suggestions || [];
 
       if (!songs.length) {
@@ -499,8 +476,6 @@ window.aurumAI = (function() {
 
       targetEl.querySelector('.aurum-ai-loading')?.remove();
       targetEl.appendChild(list);
-
-      // Store for playSuggestion
       window.aurumAI._lastSuggestions = songs;
 
     } catch(e) {
@@ -515,9 +490,23 @@ window.aurumAI = (function() {
     const songs = window.aurumAI._lastSuggestions || [];
     if (!songs[index]) return;
     const s = songs[index];
-    // Trigger search and play via existing app.js pattern
-    if (window.playSongs) {
-      window.playSongs([s], 0);
+    if (window.playSongs) window.playSongs([s], 0);
+  }
+
+  function togglePanel() {
+    if (!window.validateFeature('ai')) return;
+    const panel = document.getElementById('aurum-ai-panel');
+    if (!panel) return;
+    const isOpen = panel.classList.contains('open');
+    if (isOpen) {
+      panel.classList.remove('open');
+    } else {
+      const body = document.getElementById('aurum-ai-panel-body');
+      if (body && !body._loaded) {
+        body._loaded = true;
+        render(body, window.currentTrack || null);
+      }
+      panel.classList.add('open');
     }
   }
 
@@ -525,10 +514,10 @@ window.aurumAI = (function() {
     return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  return { render, playSuggestion, _lastSuggestions: [] };
+  return { render, playSuggestion, togglePanel, _lastSuggestions: [] };
 })();
 
-// ─── 16. SEND TOKEN TO BACKEND (optional) ────────────────────────────────────
+// ─── 16. SEND TOKEN TO BACKEND ───────────────────────────────────────────────
 async function _sendTokenToBackend(credential) {
   try {
     await fetch('/api/auth/google', {
@@ -536,7 +525,7 @@ async function _sendTokenToBackend(credential) {
       headers : { 'Content-Type': 'application/json' },
       body    : JSON.stringify({ credential }),
     });
-  } catch(e) { /* Non-critical */ }
+  } catch(e) {}
 }
 
 // ─── 17. KEYBOARD SHORTCUT: Escape ───────────────────────────────────────────
@@ -548,101 +537,3 @@ document.addEventListener('keydown', function(e) {
     if (menu && menu.style.display !== 'none') closeUserMenu();
   }
 });
-// ═══════════════════════════════════════════════════════════════════════════
-// AURUM — app.js PATCH  (apply to triggerDownload — line ~3166)
-//
-// INSTRUCTION: Replace the entire `async function triggerDownload(quality)`
-// block with the version below. Everything else in app.js stays untouched.
-// ═══════════════════════════════════════════════════════════════════════════
-
-// ─── FIND & REPLACE THIS EXACT FUNCTION IN app.js ──────────────────────────
-
-async function triggerDownload(quality) {
-  // ── FIX #2 — validateFeature gate at the very top ──────────────────
-  // Ringtone: always premium
-  if (quality === 'ringtone' && !window.validateFeature('ringtone')) return;
-  // Full + 320 kbps gift: also premium
-  if ((quality === 'full' || quality === 'gift') && !window.validateFeature('download')) return;
-  // ── (preview remains free for all users) ───────────────────────────
-
-  const song = _downloadSong || currentTrack;
-  _downloadSong = null;
-  if (!song) { showToast('No track selected'); return; }
-
-  const modal = document.getElementById('download-modal');
-  modal.classList.remove('open');
-  modal.style.display = 'none';
-
-  const cleanTitle  = (song.trackName  || 'audio').replace(/[/\\?%*:|"<>]/g, '-');
-  const cleanArtist = (song.artistName || '').replace(/[/\\?%*:|"<>]/g, '-');
-
-  if (quality === 'preview') {
-    try {
-      showToast('Downloading preview…');
-      const res = await fetch(song.previewUrl);
-      if (!res.ok) throw new Error('fetch failed');
-      const blob   = await res.blob();
-      const objUrl = URL.createObjectURL(blob);
-      const a      = document.createElement('a');
-      a.href       = objUrl;
-      a.download   = `${cleanTitle}_preview.m4a`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(objUrl), 5000);
-      haptic([10, 30, 10]);
-      showToast('Preview saved ✓');
-    } catch(e) { showToast('Download failed'); }
-    return;
-  }
-
-  if (quality === 'ringtone') {
-    try {
-      showToast('Saving ringtone…');
-      const res = await fetch(song.previewUrl);
-      if (!res.ok) throw new Error('fetch failed');
-      const blob   = await res.blob();
-      const objUrl = URL.createObjectURL(blob);
-      const a      = document.createElement('a');
-      a.href       = objUrl;
-      a.download   = `${cleanTitle}_ringtone.m4a`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(objUrl), 5000);
-      haptic([10, 30, 10]);
-      showToast('Ringtone saved ✓');
-    } catch(e) { showToast('Download failed'); }
-    return;
-  }
-
-  if (quality === 'full') {
-    showToast('Downloading full song…');
-    try {
-      const q      = encodeURIComponent(song.trackName  || '');
-      const artist = encodeURIComponent(song.artistName || '');
-      const dlUrl  = `/api/download?q=${q}&artist=${artist}&quality=full`;
-      const a      = document.createElement('a');
-      a.href       = dlUrl;
-      a.download   = `${cleanTitle} - ${cleanArtist}.mp3`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      haptic([10, 30, 10]);
-      showToast('Download started ✓');
-    } catch(e) { showToast('Download failed'); }
-    return;
-  }
-
-  if (quality === 'gift') {
-    showToast('Fetching 320 kbps…');
-    try {
-      const rawTitle  = (song.trackName  || '').replace(/\(.*?\)/g, '').trim();
-      const rawArtist = (song.artistName || '').split(/[&,]/)[0].trim();
-      const q      = encodeURIComponent(rawTitle);
-      const artist = encodeURIComponent(rawArtist);
-      const dlUrl  = `/api/download?q=${q}&artist=${artist}&quality=gift`;
-      const a      = document.createElement('a');
-      a.href       = dlUrl;
-      a.download   = `${cleanTitle} - ${cleanArtist}_320.mp3`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      haptic([10, 30, 10]);
-      showToast('320 kbps download started ✓');
-    } catch(e) { showToast('Owner Gift failed'); }
-    return;
-  }
-}
