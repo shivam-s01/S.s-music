@@ -1,9 +1,10 @@
-// ─── AURUM SETTINGS v3.2 · PREMIUM GATES EDITION ────────────────────────────
+// ─── AURUM SETTINGS v3.3 · SLIDER STYLE EDITION ──────────────────────────────
 // ✅ FIX: Shake to Skip stays OFF after toggle off — no ghost re-attach
 // ✅ FIX: Bass Boost, Virtualizer, Loudness Enhancer, Shake → login gate
 // ✅ FIX: _tog() persists setting correctly
 // ✅ FIX: blurredArtworkBg applies/removes in light+dark
 // ✅ FIX: smartSaver saves state before applying
+// ✅ NEW: Player Slider Style — Default / Wavy / Slim / Squiggly
 // ✅ All settings intact — nothing removed
 'use strict';
 
@@ -20,6 +21,7 @@ const DEFAULT_SETTINGS = {
   hapticFeedback:true, headphoneAutoPause:true, audioDucking:false,
   showTabTitle:true, historyLimit:20, saveHistory:true,
   sleepTimerEnd:null, sleepMode:'timer', smartSaver:false,
+  sliderStyle:'default',
 };
 
 let appSettings = Object.assign({}, DEFAULT_SETTINGS,
@@ -118,6 +120,14 @@ function _injectStyles() {
   if (_styleEl.textContent !== css) _styleEl.textContent = css;
 }
 
+// ─── SLIDER STYLE APPLY ───────────────────────────────────────────────────────
+function _applySliderStyle(style) {
+  const seekbar = document.getElementById('fp-seekbar');
+  if (!seekbar) return;
+  seekbar.classList.remove('slider-default','slider-wavy','slider-slim','slider-squiggly');
+  seekbar.classList.add('slider-' + (style || 'default'));
+}
+
 // ─── APPLY SETTINGS ───────────────────────────────────────────────────────────
 let _lastTheme = null, _lastAccent = null, _lastRadius = null;
 
@@ -204,6 +214,9 @@ function applySettings() {
 
   // Crossfade
   _setupCrossfade();
+
+  // Slider style
+  _applySliderStyle(s.sliderStyle || 'default');
 
   // CSS
   _injectStyles();
@@ -537,6 +550,7 @@ function _doRender() {
   const eqL  = {flat:'Flat',bass:'Bass Boost',vocal:'Vocal Clarity',pop:'Pop',rock:'Rock',classical:'Classical',custom:'Custom'}[s.eqPreset] || 'Flat';
   const slL  = _sleepLabel();
   const htL  = s.historyLimit === 0 ? 'Unlimited' : s.historyLimit + ' songs';
+  const ssL  = {default:'Default',wavy:'Wavy',slim:'Slim',squiggly:'Squiggly'}[s.sliderStyle||'default'] || 'Default';
 
   const acHex = {gold:'#b89640',rose:'#c05f7a',sky:'#4a9cc8',sage:'#5a9e72',violet:'#8b5fcf',ember:'#c4622d'}[s.accentColor] || '#b89640';
   const rrPx  = {rounded:'12px',pill:'24px',sharp:'4px'}[s.cornerRadius] || '12px';
@@ -555,7 +569,6 @@ function _doRender() {
   const tog = (key, chk, extra) => {
     const isPremKey = _PREMIUM_KEYS.includes(key);
     if (isPremKey && !loggedIn) {
-      // Show PRO badge + lock, clicking will open login
       return `<div style="display:flex;align-items:center;gap:6px;cursor:pointer" onclick="_premiumGate('${key}')">${premBadge}</div>`;
     }
     return `<label class="settings-toggle"><input type="checkbox"${chk?' checked':''} onchange="_tog('${key}',this.checked,${extra})"><span class="settings-toggle-track"></span></label>`;
@@ -644,11 +657,12 @@ function _doRender() {
     x:    `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`,
     user: `<svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`,
     star: `<svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>`,
+    sldr: `<svg viewBox="0 0 24 24"><line x1="2" y1="12" x2="22" y2="12" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/></svg>`,
   };
 
   const parts = [];
 
-  // ── ACCOUNT CARD (top of settings, Spotify-style) ─────────────────────────
+  // ── ACCOUNT CARD ──────────────────────────────────────────────────────────
   if (loggedIn) {
     const u = window.userAuth.user;
     parts.push(`
@@ -731,7 +745,7 @@ function _doRender() {
     ${link(I.moon,'Sleep Timer',slL,'openSleepTimerSheet()',(s.sleepTimerEnd||s.sleepMode==='track'))}
   `));
 
-  // Visuals
+  // Visuals — slider style row added after visualizer
   parts.push(sec('visuals', I.sun, 'Visuals & Theme', `
     ${link(I.moon,'Theme',thL,'openThemePicker()')}
     ${link(`<span class="accent-dot accent-${s.accentColor}"></span>`,'Accent Color',acL,'openAccentColorPicker()')}
@@ -754,6 +768,7 @@ function _doRender() {
     ${row(I.dot,'Dynamic Color','UI adapts to artwork',tog('dynamicColor',s.dynamicColor,`()=>saveSetting('dynamicColor',this.checked)`),s.dynamicColor)}
     ${row(I.edge,'Ambient Edge Glow','Screen edges glow with artwork',tog('ambientEdgeGlow',s.ambientEdgeGlow,`()=>saveSetting('ambientEdgeGlow',this.checked)`),s.ambientEdgeGlow)}
     ${link(I.wave,'Visualizer Style',vzL+' · '+(s.showVisualizer?'On':'Off'),'openVisualizerStylePicker()')}
+    ${link(I.sldr,'Player Slider Style',ssL,'openSliderStylePicker()',s.sliderStyle!=='default')}
     ${row(I.play,'Animations','Disable to improve performance',tog('animations',s.animations,`()=>saveSetting('animations',this.checked)`),s.animations)}
   `));
 
@@ -807,7 +822,7 @@ function _doRender() {
     <div class="settings-item">
       <div class="settings-item-left">
         <div class="settings-item-icon">${I.info}</div>
-        <div class="settings-item-info"><div class="settings-item-title">Aurum</div><div class="settings-item-sub">Version 3.2 · Made with ♪</div></div>
+        <div class="settings-item-info"><div class="settings-item-title">Aurum</div><div class="settings-item-sub">Version 3.3 · Made with ♪</div></div>
       </div>
     </div>
     <div class="settings-item settings-item-developer" onclick="window.open('https://www.instagram.com/shivam_shrma.01?igsh=c3gxNjFnb21xYTM1','_blank')">
@@ -838,7 +853,6 @@ function _doRender() {
 // ─── _tog() — FIXED: saves + premium gate ─────────────────────────────────────
 function _tog(key, value, callback) {
   _haptic([8, 20, 8]);
-  // Block premium keys if not logged in
   if (value && _PREMIUM_KEYS.includes(key)) {
     if (_premiumGate(key)) return;
   }
@@ -1064,7 +1078,6 @@ window._setEQBand = function(i, v) {
 };
 
 function toggleAudioFX(key, enabled) {
-  // Gate premium audio features
   if (enabled && _premiumGate(key)) return;
   saveSetting(key, enabled); _initEQ(); _applyEQ();
   if (typeof showToast==='function') showToast(`${({bassBoost:'Bass Boost',virtualizer:'Virtualizer',loudnessEnhancer:'Loudness Enhancer'}[key])} ${enabled?'on':'off'}`);
@@ -1092,6 +1105,95 @@ function openAccentColorPicker() {
 }
 window._setAccent = function(v) {
   saveSetting('accentColor', v); _removeEl('settings-picker-sheet'); renderSettingsPage(); _haptic([10,30,10]);
+};
+
+// ─── SLIDER STYLE PICKER ──────────────────────────────────────────────────────
+function openSliderStylePicker() {
+  _removeEl('slider-style-sheet');
+  const current = appSettings.sliderStyle || 'default';
+  const styles = [
+    {
+      value: 'default',
+      label: 'Default',
+      svg: `<svg viewBox="0 0 120 40" xmlns="http://www.w3.org/2000/svg">
+        <rect x="8" y="18" width="104" height="4" rx="2" fill="rgba(255,255,255,0.12)"/>
+        <rect x="8" y="18" width="52" height="4" rx="2" fill="var(--gold)"/>
+        <rect x="4" y="12" width="2" height="16" rx="1" fill="var(--gold)" opacity="0.7"/>
+        <circle cx="60" cy="20" r="6" fill="var(--gold-l,#d4af55)"/>
+      </svg>`,
+    },
+    {
+      value: 'wavy',
+      label: 'Wavy',
+      svg: `<svg viewBox="0 0 120 40" xmlns="http://www.w3.org/2000/svg">
+        <path d="M8,20 Q20,10 32,20 Q44,30 56,20" stroke="var(--gold)" stroke-width="3" fill="none" stroke-linecap="round"/>
+        <path d="M56,20 Q68,10 80,20 Q92,30 104,20 Q112,14 116,20" stroke="rgba(255,255,255,0.15)" stroke-width="3" fill="none" stroke-linecap="round"/>
+        <circle cx="56" cy="20" r="6" fill="var(--gold-l,#d4af55)"/>
+      </svg>`,
+    },
+    {
+      value: 'slim',
+      label: 'Slim',
+      svg: `<svg viewBox="0 0 120 40" xmlns="http://www.w3.org/2000/svg">
+        <rect x="8" y="19" width="104" height="2" rx="1" fill="rgba(255,255,255,0.12)"/>
+        <rect x="8" y="19" width="52" height="2" rx="1" fill="var(--gold)"/>
+        <circle cx="60" cy="20" r="4" fill="var(--gold-l,#d4af55)"/>
+      </svg>`,
+    },
+    {
+      value: 'squiggly',
+      label: 'Squiggly',
+      svg: `<svg viewBox="0 0 120 40" xmlns="http://www.w3.org/2000/svg">
+        <path d="M8,20 Q14,13 20,20 Q26,27 32,20 Q38,13 44,20 Q50,27 56,20" stroke="var(--gold)" stroke-width="3" fill="none" stroke-linecap="round"/>
+        <path d="M56,20 Q62,13 68,20 Q74,27 80,20 Q86,13 92,20 Q98,27 104,20 Q110,13 116,20" stroke="rgba(255,255,255,0.15)" stroke-width="3" fill="none" stroke-linecap="round"/>
+        <rect x="54" y="15" width="3" height="10" rx="1.5" fill="var(--gold-l,#d4af55)"/>
+      </svg>`,
+    },
+  ];
+
+  const m = document.createElement('div');
+  m.id = 'slider-style-sheet';
+  m.className = 'modal-overlay open';
+  m.innerHTML = `
+    <div class="modal-sheet picker-sheet" style="padding-bottom:calc(44px + var(--safe-bottom))">
+      <div class="modal-handle"></div>
+      <div class="picker-title" style="margin-bottom:16px">Player Slider Style</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:0 2px">
+        ${styles.map(st => `
+          <div onclick="_setSliderStyle('${st.value}')" style="
+            position:relative;background:var(--surface2);border-radius:16px;
+            padding:16px 12px 12px;cursor:pointer;
+            border:1.5px solid ${st.value === current ? 'var(--gold)' : 'transparent'};
+            background:${st.value === current ? 'var(--gold-dim)' : 'var(--surface2)'};
+            transition:border-color 0.2s,background 0.2s;
+            -webkit-tap-highlight-color:transparent">
+            <div style="width:100%;height:52px;display:flex;align-items:center;justify-content:center;margin-bottom:10px">
+              ${st.svg}
+            </div>
+            <div style="font-size:12px;font-weight:700;text-align:center;color:${st.value === current ? 'var(--gold-l)' : 'var(--text)'}">
+              ${st.label}
+            </div>
+            ${st.value === current ? `
+              <div style="position:absolute;top:8px;right:8px;width:20px;height:20px;border-radius:50%;background:var(--gold);display:flex;align-items:center;justify-content:center">
+                <svg viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.8" stroke-linecap="round" width="11" height="11"><polyline points="20 6 9 17 4 12"/></svg>
+              </div>` : ''}
+          </div>
+        `).join('')}
+      </div>
+    </div>`;
+  m.onclick = e => { if (e.target === m) m.remove(); };
+  document.body.appendChild(m);
+}
+
+window._setSliderStyle = function(value) {
+  saveSetting('sliderStyle', value);
+  _applySliderStyle(value);
+  _removeEl('slider-style-sheet');
+  _haptic([10, 30, 10]);
+  if (typeof showToast === 'function') showToast('Slider · ' + {
+    default:'Default', wavy:'Wavy', slim:'Slim', squiggly:'Squiggly'
+  }[value]);
+  renderSettingsPage();
 };
 
 let _pickerOpts = [], _pickerCb = null;
@@ -1168,9 +1270,7 @@ function _detachShake() {
 }
 
 function toggleShakeToSkip(enabled) {
-  // ── PREMIUM GATE ──
   if (enabled && !(window.userAuth && window.userAuth.isLoggedIn)) {
-    // Force setting off + flip checkbox back
     appSettings.shakeToSkip = false;
     localStorage.setItem('aurum_settings', JSON.stringify(appSettings));
     const cb = document.querySelector('input[onchange*="toggleShakeToSkip"]');
@@ -1188,7 +1288,6 @@ function toggleShakeToSkip(enabled) {
             saveSetting('shakeToSkip', true); _attachShake();
             if (typeof showToast==='function') showToast('Shake to skip · On');
           } else {
-            // Permission denied — reset setting
             saveSetting('shakeToSkip', false);
             const cb = document.querySelector('input[onchange*="toggleShakeToSkip"]');
             if (cb) cb.checked = false;
@@ -1207,7 +1306,6 @@ function toggleShakeToSkip(enabled) {
       renderSettingsPage();
     }
   } else {
-    // Turning OFF — always allowed, always detach
     saveSetting('shakeToSkip', false);
     _detachShake();
     if (typeof showToast==='function') showToast('Shake to skip · Off');
