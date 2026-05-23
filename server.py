@@ -854,6 +854,21 @@ def verify_ghost_pin():
     return jsonify({'success': False})
 
 # ═══════════════════════════════════════════════════════════════
+# ADMIN — View registered users
+# ═══════════════════════════════════════════════════════════════
+
+@app.route('/api/admin/users')
+def admin_users():
+    secret = request.args.get('key', '')
+    if secret != os.environ.get('ADMIN_KEY', 'changeme'):
+        return jsonify({'error': 'Unauthorized'}), 401
+    with get_db() as conn:
+        rows = conn.execute(
+            'SELECT name, email, picture, created_at FROM users ORDER BY created_at DESC'
+        ).fetchall()
+    return jsonify({'users': [dict(r) for r in rows], 'total': len(rows)})
+
+# ═══════════════════════════════════════════════════════════════
 # HEALTH
 # ═══════════════════════════════════════════════════════════════
 @app.route('/health')
