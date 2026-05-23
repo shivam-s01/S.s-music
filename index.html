@@ -39,11 +39,10 @@
   <style>
     /* ══════════════════════════════════════════════
        AURUM AI BUTTON — Settings ke baad, topbar
-       Ek jagah, ekdum premium
        ══════════════════════════════════════════════ */
 
     #aurum-ai-btn {
-      display: none; /* JS se flex hoga after login */
+      display: none;
       flex-direction: column;
       align-items: center;
       justify-content: center;
@@ -57,7 +56,6 @@
       min-width: 36px;
     }
 
-    /* Outer glow ring — always pulsing */
     #aurum-ai-btn::before {
       content: '';
       position: absolute;
@@ -76,11 +74,10 @@
       50%      { opacity: 1;   transform: translateX(-50%) scale(1.25); }
     }
 
-    /* The icon container — dark circle like app icon */
     #aurum-ai-btn .ai-icon-circle {
       width: 30px;
       height: 30px;
-      border-radius: 8px; /* square-ish like app icon */
+      border-radius: 8px;
       background: linear-gradient(145deg, #0d0d10 0%, #18140a 100%);
       border: 1px solid rgba(184,150,64,0.45);
       box-shadow:
@@ -94,7 +91,6 @@
       transition: border-color 0.2s ease, box-shadow 0.2s ease;
     }
 
-    /* Shimmer sweep on the icon */
     #aurum-ai-btn .ai-icon-circle::after {
       content: '';
       position: absolute;
@@ -115,21 +111,18 @@
       transform: scale(0.93);
     }
 
-    /* The SVG — Aurum "A" with waveform exactly like app icon */
     #aurum-ai-btn .ai-icon-circle svg {
       width: 18px;
       height: 18px;
       display: block;
     }
 
-    /* "Aurum AI" text label below */
     #aurum-ai-btn .ai-label {
       font-size: 8px;
       font-weight: 800;
       letter-spacing: 0.06em;
       text-transform: uppercase;
       line-height: 1;
-      /* Gold gradient text */
       background: linear-gradient(90deg, #b89640, #f0d070, #b89640);
       background-size: 200% auto;
       -webkit-background-clip: text;
@@ -138,46 +131,137 @@
       animation: aurumAiTextShine 3s linear infinite;
       white-space: nowrap;
     }
+    /* ── AI Sheet — bottom sheet styling ────────────────── */
+    #aurum-ai-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 10003;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      background: rgba(5,5,8,0.72);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+      transition: opacity 0.32s cubic-bezier(0.33,1,0.68,1),
+                  visibility 0.32s cubic-bezier(0.33,1,0.68,1);
+    }
+    #aurum-ai-overlay.open {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: all;
+    }
+    .aurum-ai-sheet {
+      width: 100%;
+      max-width: 480px;
+      background: var(--sheet-bg, #0f0f15);
+      border-radius: 26px 26px 0 0;
+      border-top: 1px solid rgba(184,150,64,0.18);
+      padding-bottom: calc(32px + env(safe-area-inset-bottom, 0px));
+      max-height: 75vh;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      transform: translateY(100%);
+      transition: transform 0.36s cubic-bezier(0.33,1,0.68,1);
+      will-change: transform;
+    }
+    #aurum-ai-overlay.open .aurum-ai-sheet {
+      transform: translateY(0);
+    }
+    .aurum-ai-sheet-handle {
+      width: 36px; height: 4px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 2px;
+      margin: 14px auto 0;
+    }
+    .aurum-ai-sheet-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 20px 8px;
+    }
+    .aurum-ai-sheet-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 15px;
+      font-weight: 800;
+      color: var(--text, #ede8e0);
+      letter-spacing: -0.2px;
+    }
+    .aurum-ai-sheet-close {
+      width: 30px; height: 30px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.06);
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: rgba(238,232,224,0.5);
+      -webkit-tap-highlight-color: transparent;
+      transition: background 0.18s ease;
+    }
+    .aurum-ai-sheet-close:active { background: rgba(255,255,255,0.12); }
+    .aurum-ai-sheet-close svg { width: 14px; height: 14px; }
+    [data-theme="light"] .aurum-ai-sheet {
+      background: #fff;
+      border-top-color: rgba(184,150,64,0.22);
+    }
+    [data-theme="light"] .aurum-ai-sheet-handle { background: rgba(0,0,0,0.1); }
+    [data-theme="light"] .aurum-ai-sheet-close {
+      background: rgba(0,0,0,0.055);
+      color: rgba(18,18,18,0.5);
+    }
+
+    /* ── Login modal + user menu — default hidden via CSS ── */
+    #aurum-login-overlay {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+    #aurum-login-overlay.open {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: all;
+    }
+    #aurum-user-menu {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+    #aurum-user-menu.open {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: all;
+    }
+
     @keyframes aurumAiTextShine {
       0%   { background-position: 0% center;   }
       100% { background-position: 200% center; }
     }
 
-    /* AI Suggestion Panel — slides up from bottom inside fullscreen */
-    #aurum-ai-panel {
+    /* ── PREMIUM LOGO GLOW ── */
+    .ph-logo-mark {
+      position: relative;
+    }
+    .ph-logo-mark::after {
+      content: '';
       position: absolute;
-      bottom: 0; left: 0; right: 0;
-      background: linear-gradient(to top, #050508 85%, rgba(5,5,8,0));
-      border-top: 1px solid rgba(184,150,64,0.12);
-      border-radius: 20px 20px 0 0;
-      padding: 16px 0 52px;
-      transform: translateY(100%);
-      transition: transform 0.42s cubic-bezier(0.33,1,0.68,1);
-      will-change: transform;
-      z-index: 20;
-      max-height: 58vh;
-      overflow-y: auto;
-      -webkit-overflow-scrolling: touch;
-    }
-    #aurum-ai-panel.open { transform: translateY(0); }
-
-    .aurum-ai-panel-handle {
-      width: 36px; height: 4px;
-      background: rgba(255,255,255,0.12);
-      border-radius: 2px;
-      margin: 0 auto 14px;
-    }
-    .aurum-ai-panel-close {
-      position: absolute; top: 12px; right: 14px;
-      background: rgba(255,255,255,0.05);
-      border: 1px solid rgba(255,255,255,0.08);
+      inset: -4px;
       border-radius: 50%;
-      width: 26px; height: 26px;
-      display: flex; align-items: center; justify-content: center;
-      cursor: pointer; color: rgba(255,255,255,0.35);
-      -webkit-tap-highlight-color: transparent;
+      background: radial-gradient(circle, rgba(184,150,64,0.18) 0%, transparent 70%);
+      animation: logoGlowPulse 3s ease-in-out infinite;
+      pointer-events: none;
     }
-    .aurum-ai-panel-close svg { width: 12px; height: 12px; }
+    @keyframes logoGlowPulse {
+      0%,100% { opacity: 0.4; transform: scale(1);    }
+      50%      { opacity: 1;   transform: scale(1.2);  }
+    }
+
+
   </style>
 </head>
 <body>
@@ -204,10 +288,58 @@
 
       <div class="ph-topbar">
         <div class="ph-wordmark">
+          <!-- PREMIUM LOGO SVG — same position as original, just upgraded -->
           <div class="ph-logo-mark" aria-hidden="true">
-            <svg viewBox="0 0 28 28" fill="none">
-              <path d="M4 23L10 7L14 16L18 7L24 23" stroke="rgba(184,150,64,0.28)" stroke-width="1" stroke-linecap="round"/>
-              <path d="M6.5 23L12 8.5L14 13" stroke="rgba(184,150,64,0.14)" stroke-width="0.8" stroke-linecap="round"/>
+            <svg viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg" width="28" height="28">
+              <defs>
+                <linearGradient id="lgGold" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%"   stop-color="#f0d070"/>
+                  <stop offset="50%"  stop-color="#c9a84c"/>
+                  <stop offset="100%" stop-color="#8a6010"/>
+                </linearGradient>
+                <linearGradient id="lgGold2" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%"   stop-color="#e8cc6a"/>
+                  <stop offset="100%" stop-color="#a07820"/>
+                </linearGradient>
+                <filter id="lgGlow" x="-40%" y="-40%" width="180%" height="180%">
+                  <feGaussianBlur stdDeviation="1" result="blur"/>
+                  <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+                </filter>
+              </defs>
+              <!-- Background faint A -->
+              <path d="M4 23L10 7L14 16L18 7L24 23"
+                    stroke="rgba(184,150,64,0.2)"
+                    stroke-width="0.8"
+                    stroke-linecap="round"/>
+              <!-- A left stroke — bright gold -->
+              <path d="M6.5 23L12 8.5L14 13"
+                    stroke="url(#lgGold)"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    filter="url(#lgGlow)"/>
+              <!-- A right stroke -->
+              <path d="M14 13L16 8.5L21.5 23"
+                    stroke="#b89640"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"/>
+              <!-- Crossbar -->
+              <line x1="10" y1="18" x2="18" y2="18"
+                    stroke="url(#lgGold)"
+                    stroke-width="1.2"
+                    stroke-linecap="round"
+                    opacity="0.6"/>
+              <!-- Waveform bars — like the app icon -->
+              <rect x="5"    y="21" width="1.3" height="2.5" rx="0.65" fill="url(#lgGold)" opacity="0.45"/>
+              <rect x="7.2"  y="19.5" width="1.3" height="4"   rx="0.65" fill="url(#lgGold)" opacity="0.62"/>
+              <rect x="9.4"  y="18"   width="1.3" height="5.5" rx="0.65" fill="url(#lgGold)" opacity="0.78"/>
+              <rect x="11.6" y="17"   width="1.3" height="6.5" rx="0.65" fill="url(#lgGold)" opacity="0.95"/>
+              <rect x="13.8" y="16"   width="1.3" height="7.5" rx="0.65" fill="url(#lgGold2)"/>
+              <rect x="16"   y="17"   width="1.3" height="6.5" rx="0.65" fill="url(#lgGold)" opacity="0.95"/>
+              <rect x="18.2" y="18"   width="1.3" height="5.5" rx="0.65" fill="url(#lgGold)" opacity="0.78"/>
+              <rect x="20.4" y="19.5" width="1.3" height="4"   rx="0.65" fill="url(#lgGold)" opacity="0.62"/>
+              <rect x="22.6" y="21"   width="1.3" height="2.5" rx="0.65" fill="url(#lgGold)" opacity="0.45"/>
             </svg>
           </div>
           <span class="ph-app-name">Aurum</span>
@@ -221,43 +353,40 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4 1.65 1.65 0 0 0 7.18 19l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0 .33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.5a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </button>
 
-          <!-- ═══════════════════════════════════════
-               AURUM AI — Sirf yahi ek jagah
-               Settings ke baad, icon + "Aurum AI" text
-               Login ke baad dikhta hai
-               ═══════════════════════════════════════ -->
+          <!-- AURUM AI BUTTON — Settings ke bilkul baad -->
           <button id="aurum-ai-btn"
-                  onclick="window.aurumAI.togglePanel()"
+                  onclick="openAISheet()"
                   aria-label="Aurum AI — Music Suggestions">
             <div class="ai-icon-circle" aria-hidden="true">
-              <!-- Exact Aurum "A" with waveform — matches app icon -->
               <svg viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <!-- Background subtle "A" outline -->
+                <defs>
+                  <linearGradient id="aiG" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%"   stop-color="#f0d070"/>
+                    <stop offset="100%" stop-color="#b89640"/>
+                  </linearGradient>
+                </defs>
                 <path d="M4 23L10 7L14 16L18 7L24 23"
-                      stroke="rgba(184,150,64,0.22)"
+                      stroke="rgba(184,150,64,0.18)"
                       stroke-width="1"
                       stroke-linecap="round"
                       stroke-linejoin="round"/>
-                <!-- Left stroke of A — gold light -->
                 <path d="M6.5 23L12 8.5L14 13"
-                      stroke="#d4b85a"
+                      stroke="url(#aiG)"
                       stroke-width="1.8"
                       stroke-linecap="round"
                       stroke-linejoin="round"/>
-                <!-- Right stroke of A — gold -->
                 <path d="M14 13L16 8.5L21.5 23"
                       stroke="#b89640"
                       stroke-width="1.8"
                       stroke-linecap="round"
                       stroke-linejoin="round"/>
-                <!-- Waveform bars — bottom, like app icon -->
-                <rect x="5"  y="20" width="1.4" height="3"   rx="0.7" fill="#b89640" opacity="0.55"/>
-                <rect x="7.4" y="18" width="1.4" height="5"  rx="0.7" fill="#c9a84c" opacity="0.75"/>
-                <rect x="9.8" y="16" width="1.4" height="7"  rx="0.7" fill="#d4b85a" opacity="0.9"/>
-                <rect x="12.2" y="14" width="1.4" height="9" rx="0.7" fill="#e8cc6a"/>
-                <rect x="14.6" y="16" width="1.4" height="7" rx="0.7" fill="#d4b85a" opacity="0.9"/>
-                <rect x="17"  y="18" width="1.4" height="5"  rx="0.7" fill="#c9a84c" opacity="0.75"/>
-                <rect x="19.4" y="20" width="1.4" height="3" rx="0.7" fill="#b89640" opacity="0.55"/>
+                <rect x="5"    y="20.5" width="1.4" height="2.5" rx="0.7" fill="url(#aiG)" opacity="0.5"/>
+                <rect x="7.4"  y="19"   width="1.4" height="4"   rx="0.7" fill="url(#aiG)" opacity="0.7"/>
+                <rect x="9.8"  y="17.5" width="1.4" height="5.5" rx="0.7" fill="url(#aiG)" opacity="0.85"/>
+                <rect x="12.2" y="16"   width="1.4" height="7"   rx="0.7" fill="url(#aiG)"/>
+                <rect x="14.6" y="17.5" width="1.4" height="5.5" rx="0.7" fill="url(#aiG)" opacity="0.85"/>
+                <rect x="17"   y="19"   width="1.4" height="4"   rx="0.7" fill="url(#aiG)" opacity="0.7"/>
+                <rect x="19.4" y="20.5" width="1.4" height="2.5" rx="0.7" fill="url(#aiG)" opacity="0.5"/>
               </svg>
             </div>
             <span class="ai-label">Aurum AI</span>
@@ -494,16 +623,6 @@
       </button>
     </div>
 
-    <!-- AI Panel — slides up inside fullscreen player when triggered from topbar -->
-    <div id="aurum-ai-panel" role="region" aria-label="Aurum AI Suggestions">
-      <div class="aurum-ai-panel-handle" aria-hidden="true"></div>
-      <button class="aurum-ai-panel-close" onclick="window.aurumAI.closePanel()" aria-label="Close AI panel">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-        </svg>
-      </button>
-      <div id="aurum-ai-panel-body"></div>
-    </div>
   </div>
 
   <div id="queue-panel" role="region" aria-label="Up next queue">
@@ -687,10 +806,31 @@
     </div>
   </div>
 
+  <!-- AURUM AI SHEET — bottom sheet, opens on AI button click -->
+  <div id="aurum-ai-overlay" style="display:none" role="dialog" aria-modal="true" aria-label="Aurum AI Suggestions">
+    <div class="aurum-ai-sheet">
+      <div class="aurum-ai-sheet-handle" aria-hidden="true"></div>
+      <div class="aurum-ai-sheet-header">
+        <div class="aurum-ai-sheet-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--gold)" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+          </svg>
+          Aurum AI <span class="aurum-ai-badge">For You</span>
+        </div>
+        <button class="aurum-ai-sheet-close" onclick="closeAISheet()" aria-label="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+      <div id="aurum-ai-suggestions"></div>
+    </div>
+  </div>
+
   <div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
   <!-- LOGIN OVERLAY -->
-  <div id="aurum-login-overlay" style="display:none" role="dialog" aria-modal="true" aria-label="Sign in to Aurum">
+  <div id="aurum-login-overlay" role="dialog" aria-modal="true" aria-label="Sign in to Aurum">
     <div class="aurum-login-sheet">
       <button class="aurum-login-close" onclick="closeLoginModal()" aria-label="Close">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -747,7 +887,7 @@
   </div>
 
   <!-- USER MENU -->
-  <div id="aurum-user-menu" style="display:none" role="dialog" aria-modal="true">
+  <div id="aurum-user-menu" role="dialog" aria-modal="true">
     <div class="aurum-user-menu-sheet">
       <div class="aurum-menu-handle"></div>
       <div class="aurum-menu-profile">
@@ -784,7 +924,6 @@
 
 </div>
 
-<!-- SCRIPTS — app.js PEHLE, auth.js BAAD MEIN -->
 <script src="tv-perf.js?v=__CACHEBUST__" defer></script>
 <script src="settings_addon.js?v=__CACHEBUST__" defer></script>
 <script src="app.js?v=__CACHEBUST__" defer></script>
@@ -793,7 +932,6 @@
 <script>
 document.addEventListener('DOMContentLoaded', function () {
 
-  // ── AI button show/hide based on login state ──────────────────────────────
   const userChip = document.getElementById('aurum-user-chip');
   const aiBtn    = document.getElementById('aurum-ai-btn');
 
@@ -806,47 +944,47 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     }).observe(userChip, { attributes: true });
 
-    // Sync initial state (for session restore)
     if (userChip.style.display !== 'none') aiBtn.style.display = 'flex';
   }
 
-  // ── aurumAI panel toggle + closePanel ─────────────────────────────────────
-  function _initAIPanel () {
-    if (!window.aurumAI) return;
-
-    window.aurumAI.togglePanel = function () {
-      if (!window.validateFeature('ai')) return;
-
-      // Make sure fullscreen player is open — AI panel lives inside it
-      const fp = document.getElementById('fullscreen-player');
-      if (fp && !fp.classList.contains('open') && !fp.classList.contains('active')) {
-        // If player not open, still show panel as a global overlay approach — just open it
+  // ── AI Sheet open/close ──────────────────────────────────
+  window.openAISheet = function() {
+    if (!window.validateFeature || !window.validateFeature('ai')) return;
+    const overlay = document.getElementById('aurum-ai-overlay');
+    if (!overlay) return;
+    overlay.style.display = 'flex';
+    requestAnimationFrame(() => requestAnimationFrame(() => overlay.classList.add('open')));
+    // Render suggestions into the sheet
+    const target = document.getElementById('aurum-ai-suggestions');
+    if (target && !target._loaded) {
+      target._loaded = true;
+      if (window.aurumAI && window.aurumAI.render) {
+        window.aurumAI.render(target, window.currentTrack || null);
       }
+    }
+  };
 
-      const panel = document.getElementById('aurum-ai-panel');
-      if (!panel) return;
+  window.closeAISheet = function() {
+    const overlay = document.getElementById('aurum-ai-overlay');
+    if (!overlay) return;
+    overlay.classList.remove('open');
+    setTimeout(() => { overlay.style.display = 'none'; }, 400);
+  };
 
-      if (panel.classList.contains('open')) {
-        panel.classList.remove('open');
-        return;
+  // Close on outside click
+  document.addEventListener('click', function(e) {
+    const overlay = document.getElementById('aurum-ai-overlay');
+    if (overlay && overlay.style.display !== 'none') {
+      if (!e.target.closest('.aurum-ai-sheet') && !e.target.closest('#aurum-ai-btn')) {
+        window.closeAISheet();
       }
+    }
+  });
 
-      const body = document.getElementById('aurum-ai-panel-body');
-      if (body && !body._loaded) {
-        body._loaded = true;
-        window.aurumAI.render(body, window.currentTrack || null);
-      }
-      panel.classList.add('open');
-    };
-
-    window.aurumAI.closePanel = function () {
-      const panel = document.getElementById('aurum-ai-panel');
-      if (panel) panel.classList.remove('open');
-    };
-  }
-
-  // aurumAI might load after DOMContentLoaded — wait a tick
-  setTimeout(_initAIPanel, 600);
+  // Escape key
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') window.closeAISheet && window.closeAISheet();
+  });
 });
 </script>
 
