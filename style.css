@@ -4371,18 +4371,51 @@ button.add-playlist-btn {
   font-style: italic;
 }
 /* ═══════════════════════════════════════════════════════════════
-   AURUM — PLAYER SLIDER STYLES (Default / Wavy / Slim / Squiggly)
-   Paste at the END of your style.css
+   AURUM — ANIMATED SEEKBAR PATCH v2.0
+   Replace the existing slider CSS blocks at the bottom of style.css
+   with this entire block. Delete everything from
+   "AURUM — PLAYER SLIDER STYLES" to end of file, paste this.
    ═══════════════════════════════════════════════════════════════ */
 
-/* ─── SLIDER STYLE PICKER GRID ──────────────────────────────── */
+/* ─── KEYFRAMES ──────────────────────────────────────────────── */
+
+/* Wave flows left to right continuously */
+@keyframes aurum-wave-flow {
+  0%   { -webkit-mask-position: 0px center; mask-position: 0px center; }
+  100% { -webkit-mask-position: 400px center; mask-position: 400px center; }
+}
+
+/* Squiggly — tighter, faster flow */
+@keyframes aurum-squiggle-flow {
+  0%   { -webkit-mask-position: 0px center; mask-position: 0px center; }
+  100% { -webkit-mask-position: 200px center; mask-position: 200px center; }
+}
+
+/* Gold shimmer that runs across the played portion */
+@keyframes aurum-shimmer {
+  0%   { background-position: -400px center; }
+  100% { background-position: 400px center; }
+}
+
+/* Gentle breathe — track pulses subtly */
+@keyframes aurum-breathe {
+  0%, 100% { opacity: 0.85; }
+  50%       { opacity: 1; }
+}
+
+/* Thumb glow pulse when touching */
+@keyframes aurum-thumb-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(184,150,64,0.0), 0 0 8px rgba(184,150,64,0.4); }
+  50%       { box-shadow: 0 0 0 6px rgba(184,150,64,0.15), 0 0 16px rgba(184,150,64,0.6); }
+}
+
+/* ─── SLIDER STYLE PICKER GRID (unchanged) ───────────────────── */
 .slider-style-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
   padding: 0 2px;
 }
-
 .slider-style-card {
   position: relative;
   background: var(--surface2);
@@ -4390,7 +4423,8 @@ button.add-playlist-btn {
   padding: 16px 12px 12px;
   cursor: pointer;
   border: 1.5px solid transparent;
-  transition: border-color 0.2s ease, background 0.18s ease, transform 0.15s cubic-bezier(0.33,1,0.68,1);
+  transition: border-color 0.2s ease, background 0.18s ease,
+              transform 0.15s cubic-bezier(0.33,1,0.68,1);
   -webkit-tap-highlight-color: transparent;
   overflow: hidden;
 }
@@ -4399,7 +4433,6 @@ button.add-playlist-btn {
   border-color: var(--gold);
   background: var(--gold-dim);
 }
-
 .slider-style-preview {
   width: 100%;
   height: 52px;
@@ -4408,11 +4441,7 @@ button.add-playlist-btn {
   justify-content: center;
   margin-bottom: 10px;
 }
-.slider-style-preview svg {
-  width: 100%;
-  height: 40px;
-}
-
+.slider-style-preview svg { width: 100%; height: 40px; }
 .slider-style-label {
   font-size: 12px;
   font-weight: 700;
@@ -4420,57 +4449,74 @@ button.add-playlist-btn {
   text-align: center;
   letter-spacing: -0.1px;
 }
-.slider-style-card.selected .slider-style-label {
-  color: var(--gold-l);
-}
-
+.slider-style-card.selected .slider-style-label { color: var(--gold-l); }
 .slider-style-check {
   position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 20px;
-  height: 20px;
+  top: 8px; right: 8px;
+  width: 20px; height: 20px;
   border-radius: 50%;
   background: var(--gold);
   display: flex;
   align-items: center;
   justify-content: center;
 }
-.slider-style-check svg {
-  width: 11px;
-  height: 11px;
-}
+.slider-style-check svg { width: 11px; height: 11px; }
 
-/* ─── DEFAULT SLIDER (original Aurum style) ─────────────────── */
-/* Already handled by existing .fp-seekbar — no extra CSS needed */
+/* ─── DEFAULT SLIDER — upgraded with shimmer ─────────────────── */
 .fp-seekbar.slider-default {
-  /* inherits existing styles */
+  /* base styles inherited from .fp-seekbar */
 }
-
-/* ─── SLIM SLIDER ────────────────────────────────────────────── */
-.fp-seekbar.slider-slim {
-  height: 2px !important;
-}
-.fp-seekbar.slider-slim::-webkit-slider-runnable-track {
-  height: 2px;
-  border-radius: 2px;
+.fp-seekbar.slider-default::-webkit-slider-runnable-track {
+  height: 3px;
+  border-radius: 3px;
   background: linear-gradient(
     to right,
     var(--gold) var(--prog, 0%),
     rgba(255,255,255,0.08) var(--prog, 0%)
   );
+  animation: aurum-breathe 3s ease-in-out infinite;
 }
-[data-theme="light"] .fp-seekbar.slider-slim::-webkit-slider-runnable-track {
+[data-theme="light"] .fp-seekbar.slider-default::-webkit-slider-runnable-track {
   background: linear-gradient(
     to right,
     var(--gold) var(--prog, 0%),
     rgba(0,0,0,0.08) var(--prog, 0%)
   );
 }
-.fp-seekbar.slider-slim:active,
-.fp-seekbar.slider-slim:focus {
-  height: 3px !important;
+
+/* ─── SLIM SLIDER — clean minimal with glow ──────────────────── */
+.fp-seekbar.slider-slim {
+  height: 2px !important;
+  background: transparent !important;
 }
+.fp-seekbar.slider-slim::-webkit-slider-runnable-track {
+  height: 2px;
+  border-radius: 2px;
+  /* Animated shimmer on the gold played section */
+  background:
+    linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255,255,255,0.28) 50%,
+      transparent 100%
+    ) no-repeat,
+    linear-gradient(
+      to right,
+      var(--gold) var(--prog, 0%),
+      rgba(255,255,255,0.07) var(--prog, 0%)
+    );
+  background-size: 200px 100%, 100% 100%;
+  animation: aurum-shimmer 2.4s linear infinite, aurum-breathe 3s ease-in-out infinite;
+}
+[data-theme="light"] .fp-seekbar.slider-slim::-webkit-slider-runnable-track {
+  background:
+    linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.35) 50%, transparent 100%) no-repeat,
+    linear-gradient(to right, var(--gold) var(--prog, 0%), rgba(0,0,0,0.07) var(--prog, 0%));
+  background-size: 200px 100%, 100% 100%;
+  animation: aurum-shimmer 2.4s linear infinite;
+}
+.fp-seekbar.slider-slim:active,
+.fp-seekbar.slider-slim:focus { height: 4px !important; }
 .fp-seekbar.slider-slim::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 0; height: 0; opacity: 0;
@@ -4481,139 +4527,167 @@ button.add-playlist-btn {
 }
 .fp-seekbar.slider-slim:active::-webkit-slider-thumb,
 .fp-seekbar.slider-slim:focus::-webkit-slider-thumb {
-  width: 12px; height: 12px; opacity: 1;
-  margin-top: -4.5px;
-}
-.fp-seekbar.slider-slim:active::-webkit-slider-thumb {
-  transform: scale(1.3);
+  width: 13px; height: 13px; opacity: 1;
+  margin-top: -5.5px;
+  animation: aurum-thumb-glow 1s ease-in-out infinite;
 }
 
-/* ─── WAVY SLIDER ────────────────────────────────────────────── */
-/*
-  Pure CSS wavy effect — uses SVG filter + clip-path trick.
-  The track gets a sine-wave appearance via SVG feTurbulence.
-  Works on all modern mobile WebKit (Chrome Android, Safari iOS).
-*/
+/* ─── WAVY SLIDER — living animated wave ────────────────────── */
 .fp-seekbar.slider-wavy {
-  height: 12px !important;
+  height: 14px !important;
   background: transparent !important;
   position: relative;
 }
-.fp-seekbar.slider-wavy::before {
-  /* Wavy track background */
-  content: '';
-  position: absolute;
-  top: 50%; left: 0; right: 0;
-  height: 4px;
-  transform: translateY(-50%);
-  border-radius: 4px;
-  background: rgba(255,255,255,0.08);
-  pointer-events: none;
-  clip-path: url(#wavy-clip);
-}
+
+/* The unplayed (grey) wavy background */
 .fp-seekbar.slider-wavy::-webkit-slider-runnable-track {
-  height: 4px;
-  border-radius: 4px;
-  background: linear-gradient(
-    to right,
-    var(--gold) var(--prog, 0%),
-    rgba(255,255,255,0.08) var(--prog, 0%)
-  );
-  /* SVG wavy mask inline */
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='8'%3E%3Cpath d='M0,4 Q12.5,0 25,4 Q37.5,8 50,4 Q62.5,0 75,4 Q87.5,8 100,4 Q112.5,0 125,4 Q137.5,8 150,4 Q162.5,0 175,4 Q187.5,8 200,4 Q212.5,0 225,4 Q237.5,8 250,4 Q262.5,0 275,4 Q287.5,8 300,4 Q312.5,0 325,4 Q337.5,8 350,4 Q362.5,0 375,4 Q387.5,8 400,4' stroke='white' stroke-width='4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-  -webkit-mask-size: 400px 8px;
+  height: 5px;
+  border-radius: 5px;
+  /* Gold shimmer on top of the wave */
+  background:
+    linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255,255,255,0.22) 50%,
+      transparent 100%
+    ) no-repeat,
+    linear-gradient(
+      to right,
+      var(--gold-l) var(--prog, 0%),
+      rgba(255,255,255,0.07) var(--prog, 0%)
+    );
+  background-size: 280px 100%, 100% 100%;
+
+  /* Animated wave mask — flows left to right */
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='800' height='10'%3E%3Cpath d='M0,5 Q25,0 50,5 Q75,10 100,5 Q125,0 150,5 Q175,10 200,5 Q225,0 250,5 Q275,10 300,5 Q325,0 350,5 Q375,10 400,5 Q425,0 450,5 Q475,10 500,5 Q525,0 550,5 Q575,10 600,5 Q625,0 650,5 Q675,10 700,5 Q725,0 750,5 Q775,10 800,5' stroke='white' stroke-width='5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  -webkit-mask-size: 800px 10px;
   -webkit-mask-repeat: repeat-x;
-  -webkit-mask-position: center;
-  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='8'%3E%3Cpath d='M0,4 Q12.5,0 25,4 Q37.5,8 50,4 Q62.5,0 75,4 Q87.5,8 100,4 Q112.5,0 125,4 Q137.5,8 150,4 Q162.5,0 175,4 Q187.5,8 200,4 Q212.5,0 225,4 Q237.5,8 250,4 Q262.5,0 275,4 Q287.5,8 300,4 Q312.5,0 325,4 Q337.5,8 350,4 Q362.5,0 375,4 Q387.5,8 400,4' stroke='white' stroke-width='4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-  mask-size: 400px 8px;
+  -webkit-mask-position: 0px center;
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='800' height='10'%3E%3Cpath d='M0,5 Q25,0 50,5 Q75,10 100,5 Q125,0 150,5 Q175,10 200,5 Q225,0 250,5 Q275,10 300,5 Q325,0 350,5 Q375,10 400,5 Q425,0 450,5 Q475,10 500,5 Q525,0 550,5 Q575,10 600,5 Q625,0 650,5 Q675,10 700,5 Q725,0 750,5 Q775,10 800,5' stroke='white' stroke-width='5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  mask-size: 800px 10px;
   mask-repeat: repeat-x;
-  mask-position: center;
+  mask-position: 0px center;
+
+  animation:
+    aurum-wave-flow 2.8s linear infinite,
+    aurum-shimmer 3s linear infinite;
 }
+
 [data-theme="light"] .fp-seekbar.slider-wavy::-webkit-slider-runnable-track {
-  background: linear-gradient(
-    to right,
-    var(--gold) var(--prog, 0%),
-    rgba(0,0,0,0.1) var(--prog, 0%)
-  );
+  background:
+    linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.35) 50%, transparent 100%) no-repeat,
+    linear-gradient(to right, var(--gold) var(--prog, 0%), rgba(0,0,0,0.08) var(--prog, 0%));
+  background-size: 280px 100%, 100% 100%;
+  animation: aurum-wave-flow 2.8s linear infinite, aurum-shimmer 3s linear infinite;
 }
+
+/* Paused state — wave slows down */
+#fullscreen-player:not(.playing) .fp-seekbar.slider-wavy::-webkit-slider-runnable-track {
+  animation:
+    aurum-wave-flow 5s linear infinite,
+    aurum-breathe 4s ease-in-out infinite;
+}
+
 .fp-seekbar.slider-wavy:active,
-.fp-seekbar.slider-wavy:focus {
-  height: 14px !important;
-}
+.fp-seekbar.slider-wavy:focus { height: 16px !important; }
+
 .fp-seekbar.slider-wavy::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 0; height: 0; opacity: 0;
   border-radius: 50%;
-  background: var(--gold-xl);
-  box-shadow: 0 0 8px var(--gold-focus-ring);
+  background: radial-gradient(circle, var(--gold-2xl) 0%, var(--gold) 100%);
+  box-shadow: 0 0 10px rgba(184,150,64,0.5);
   transition: width var(--t-spring), height var(--t-spring),
               opacity var(--t-spring), transform var(--t-spring);
 }
 .fp-seekbar.slider-wavy:active::-webkit-slider-thumb,
 .fp-seekbar.slider-wavy:focus::-webkit-slider-thumb {
-  width: 16px; height: 16px; opacity: 1;
-  margin-top: -6px;
+  width: 18px; height: 18px; opacity: 1;
+  margin-top: -6.5px;
+  animation: aurum-thumb-glow 0.9s ease-in-out infinite;
 }
-.fp-seekbar.slider-wavy:active::-webkit-slider-thumb {
-  transform: scale(1.3);
-}
+.fp-seekbar.slider-wavy:active::-webkit-slider-thumb { transform: scale(1.25); }
 
-/* ─── SQUIGGLY SLIDER ────────────────────────────────────────── */
-/* Tighter, faster wave — more squiggly than wavy */
+/* ─── SQUIGGLY SLIDER — tight fast animated squiggle ────────── */
 .fp-seekbar.slider-squiggly {
-  height: 12px !important;
+  height: 14px !important;
   background: transparent !important;
 }
+
 .fp-seekbar.slider-squiggly::-webkit-slider-runnable-track {
-  height: 4px;
+  height: 5px;
   border-radius: 0;
-  background: linear-gradient(
-    to right,
-    var(--gold) var(--prog, 0%),
-    rgba(255,255,255,0.08) var(--prog, 0%)
-  );
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='8'%3E%3Cpath d='M0,4 Q6.25,1 12.5,4 Q18.75,7 25,4 Q31.25,1 37.5,4 Q43.75,7 50,4 Q56.25,1 62.5,4 Q68.75,7 75,4 Q81.25,1 87.5,4 Q93.75,7 100,4 Q106.25,1 112.5,4 Q118.75,7 125,4 Q131.25,1 137.5,4 Q143.75,7 150,4 Q156.25,1 162.5,4 Q168.75,7 175,4 Q181.25,1 187.5,4 Q193.75,7 200,4 Q206.25,1 212.5,4 Q218.75,7 225,4 Q231.25,1 237.5,4 Q243.75,7 250,4 Q256.25,1 262.5,4 Q268.75,7 275,4 Q281.25,1 287.5,4 Q293.75,7 300,4 Q306.25,1 312.5,4 Q318.75,7 325,4 Q331.25,1 337.5,4 Q343.75,7 350,4 Q356.25,1 362.5,4 Q368.75,7 375,4 Q381.25,1 387.5,4 Q393.75,7 400,4' stroke='white' stroke-width='3.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-  -webkit-mask-size: 400px 8px;
+  background:
+    linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255,255,255,0.25) 50%,
+      transparent 100%
+    ) no-repeat,
+    linear-gradient(
+      to right,
+      var(--gold-l) var(--prog, 0%),
+      rgba(255,255,255,0.07) var(--prog, 0%)
+    );
+  background-size: 200px 100%, 100% 100%;
+
+  /* Tighter squiggle mask */
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='10'%3E%3Cpath d='M0,5 Q12.5,1 25,5 Q37.5,9 50,5 Q62.5,1 75,5 Q87.5,9 100,5 Q112.5,1 125,5 Q137.5,9 150,5 Q162.5,1 175,5 Q187.5,9 200,5 Q212.5,1 225,5 Q237.5,9 250,5 Q262.5,1 275,5 Q287.5,9 300,5 Q312.5,1 325,5 Q337.5,9 350,5 Q362.5,1 375,5 Q387.5,9 400,5' stroke='white' stroke-width='4.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  -webkit-mask-size: 400px 10px;
   -webkit-mask-repeat: repeat-x;
-  -webkit-mask-position: center;
-  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='8'%3E%3Cpath d='M0,4 Q6.25,1 12.5,4 Q18.75,7 25,4 Q31.25,1 37.5,4 Q43.75,7 50,4 Q56.25,1 62.5,4 Q68.75,7 75,4 Q81.25,1 87.5,4 Q93.75,7 100,4 Q106.25,1 112.5,4 Q118.75,7 125,4 Q131.25,1 137.5,4 Q143.75,7 150,4 Q156.25,1 162.5,4 Q168.75,7 175,4 Q181.25,1 187.5,4 Q193.75,7 200,4 Q206.25,1 212.5,4 Q218.75,7 225,4 Q231.25,1 237.5,4 Q243.75,7 250,4 Q256.25,1 262.5,4 Q268.75,7 275,4 Q281.25,1 287.5,4 Q293.75,7 300,4 Q306.25,1 312.5,4 Q318.75,7 325,4 Q331.25,1 337.5,4 Q343.75,7 350,4 Q356.25,1 362.5,4 Q368.75,7 375,4 Q381.25,1 387.5,4 Q393.75,7 400,4' stroke='white' stroke-width='3.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
-  mask-size: 400px 8px;
+  -webkit-mask-position: 0px center;
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='10'%3E%3Cpath d='M0,5 Q12.5,1 25,5 Q37.5,9 50,5 Q62.5,1 75,5 Q87.5,9 100,5 Q112.5,1 125,5 Q137.5,9 150,5 Q162.5,1 175,5 Q187.5,9 200,5 Q212.5,1 225,5 Q237.5,9 250,5 Q262.5,1 275,5 Q287.5,9 300,5 Q312.5,1 325,5 Q337.5,9 350,5 Q362.5,1 375,5 Q387.5,9 400,5' stroke='white' stroke-width='4.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  mask-size: 400px 10px;
   mask-repeat: repeat-x;
-  mask-position: center;
+  mask-position: 0px center;
+
+  animation:
+    aurum-squiggle-flow 1.4s linear infinite,
+    aurum-shimmer 2s linear infinite;
 }
+
 [data-theme="light"] .fp-seekbar.slider-squiggly::-webkit-slider-runnable-track {
-  background: linear-gradient(
-    to right,
-    var(--gold) var(--prog, 0%),
-    rgba(0,0,0,0.1) var(--prog, 0%)
-  );
+  background:
+    linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.35) 50%, transparent 100%) no-repeat,
+    linear-gradient(to right, var(--gold) var(--prog, 0%), rgba(0,0,0,0.08) var(--prog, 0%));
+  background-size: 200px 100%, 100% 100%;
+  animation: aurum-squiggle-flow 1.4s linear infinite, aurum-shimmer 2s linear infinite;
 }
+
+/* Paused = slower squiggle */
+#fullscreen-player:not(.playing) .fp-seekbar.slider-squiggly::-webkit-slider-runnable-track {
+  animation:
+    aurum-squiggle-flow 3s linear infinite,
+    aurum-breathe 4s ease-in-out infinite;
+}
+
 .fp-seekbar.slider-squiggly:active,
-.fp-seekbar.slider-squiggly:focus {
-  height: 14px !important;
-}
+.fp-seekbar.slider-squiggly:focus { height: 16px !important; }
+
 .fp-seekbar.slider-squiggly::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 0; height: 0; opacity: 0;
-  border-radius: 2px; /* slight square on squiggly — subtle detail */
+  border-radius: 3px;
   background: var(--gold-xl);
-  box-shadow: 0 0 8px var(--gold-focus-ring);
+  box-shadow: 0 0 10px rgba(184,150,64,0.5);
   transition: width var(--t-spring), height var(--t-spring),
               opacity var(--t-spring), transform var(--t-spring);
 }
 .fp-seekbar.slider-squiggly:active::-webkit-slider-thumb,
 .fp-seekbar.slider-squiggly:focus::-webkit-slider-thumb {
-  width: 4px; height: 16px; opacity: 1;
-  border-radius: 2px;
-  margin-top: -6px;
+  width: 5px; height: 18px; opacity: 1;
+  border-radius: 3px;
+  margin-top: -6.5px;
+  animation: aurum-thumb-glow 0.8s ease-in-out infinite;
 }
-.fp-seekbar.slider-squiggly:active::-webkit-slider-thumb {
-  transform: scale(1.2);
-}
+.fp-seekbar.slider-squiggly:active::-webkit-slider-thumb { transform: scaleY(1.15); }
 
-/* ─── Smart Saver override — flatten all styles ─────────────── */
+/* ─── Smart Saver — kill all animations ─────────────────────── */
 .smart-saver-active ~ * .fp-seekbar,
 [data-smart-saver="true"] .fp-seekbar {
   height: 2px !important;
 }
-
+.smart-saver-active ~ * .fp-seekbar::-webkit-slider-runnable-track,
+[data-smart-saver="true"] .fp-seekbar::-webkit-slider-runnable-track {
+  animation: none !important;
+}
