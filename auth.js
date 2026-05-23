@@ -152,9 +152,12 @@ window.validateFeature = function(featureName) {
 window.checkFeatureAccess = window.validateFeature;
 
 // ─── 7. LOGIN MODAL OPEN/CLOSE ───────────────────────────────────────────────
+window._loginModalJustOpened = false;
 window.openLoginModal = function() {
   const overlay = document.getElementById('aurum-login-overlay');
   if (!overlay) return;
+  window._loginModalJustOpened = true;
+  setTimeout(() => { window._loginModalJustOpened = false; }, 400);
   overlay.style.display = 'flex';
   requestAnimationFrame(() => {
     requestAnimationFrame(() => overlay.classList.add('open'));
@@ -171,6 +174,12 @@ window.closeLoginModal = function() {
 document.addEventListener('click', function(e) {
   const overlay = document.getElementById('aurum-login-overlay');
   if (overlay && overlay.style.display !== 'none') {
+    if (window._loginModalJustOpened) return;
+    // Ignore clicks from Google GSI button/iframe
+    if (e.target.closest('#credential_picker_container') ||
+        e.target.closest('[data-google-signin]') ||
+        e.target.closest('.nsm7Bb-HzV7m-LgbsSe') ||
+        e.target.tagName === 'IFRAME') return;
     if (!e.target.closest('.aurum-login-sheet')) closeLoginModal();
   }
 });
