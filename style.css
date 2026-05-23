@@ -4543,7 +4543,6 @@ button.add-playlist-btn {
 .fp-seekbar.slider-wavy::-webkit-slider-runnable-track {
   height: 5px;
   border-radius: 5px;
-  /* Gold shimmer on top of the wave */
   background:
     linear-gradient(
       90deg,
@@ -4558,19 +4557,16 @@ button.add-playlist-btn {
     );
   background-size: 280px 100%, 100% 100%;
 
-  /* Animated wave mask — flows left to right */
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='800' height='10'%3E%3Cpath d='M0,5 Q25,0 50,5 Q75,10 100,5 Q125,0 150,5 Q175,10 200,5 Q225,0 250,5 Q275,10 300,5 Q325,0 350,5 Q375,10 400,5 Q425,0 450,5 Q475,10 500,5 Q525,0 550,5 Q575,10 600,5 Q625,0 650,5 Q675,10 700,5 Q725,0 750,5 Q775,10 800,5' stroke='white' stroke-width='5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
   -webkit-mask-size: 800px 10px;
   -webkit-mask-repeat: repeat-x;
-  -webkit-mask-position: 0px center;
+  -webkit-mask-position: var(--wave-offset, 0px) center !important;
   mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='800' height='10'%3E%3Cpath d='M0,5 Q25,0 50,5 Q75,10 100,5 Q125,0 150,5 Q175,10 200,5 Q225,0 250,5 Q275,10 300,5 Q325,0 350,5 Q375,10 400,5 Q425,0 450,5 Q475,10 500,5 Q525,0 550,5 Q575,10 600,5 Q625,0 650,5 Q675,10 700,5 Q725,0 750,5 Q775,10 800,5' stroke='white' stroke-width='5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
   mask-size: 800px 10px;
   mask-repeat: repeat-x;
-  mask-position: 0px center;
+  mask-position: var(--wave-offset, 0px) center !important;
 
-  animation:
-    aurum-wave-flow 2.8s linear infinite,
-    aurum-shimmer 3s linear infinite;
+  animation: aurum-shimmer 3s linear infinite;
 }
 
 [data-theme="light"] .fp-seekbar.slider-wavy::-webkit-slider-runnable-track {
@@ -4631,19 +4627,16 @@ button.add-playlist-btn {
     );
   background-size: 200px 100%, 100% 100%;
 
-  /* Tighter squiggle mask */
   -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='10'%3E%3Cpath d='M0,5 Q12.5,1 25,5 Q37.5,9 50,5 Q62.5,1 75,5 Q87.5,9 100,5 Q112.5,1 125,5 Q137.5,9 150,5 Q162.5,1 175,5 Q187.5,9 200,5 Q212.5,1 225,5 Q237.5,9 250,5 Q262.5,1 275,5 Q287.5,9 300,5 Q312.5,1 325,5 Q337.5,9 350,5 Q362.5,1 375,5 Q387.5,9 400,5' stroke='white' stroke-width='4.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
   -webkit-mask-size: 400px 10px;
   -webkit-mask-repeat: repeat-x;
-  -webkit-mask-position: 0px center;
+  -webkit-mask-position: var(--squig-offset, 0px) center !important;
   mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='10'%3E%3Cpath d='M0,5 Q12.5,1 25,5 Q37.5,9 50,5 Q62.5,1 75,5 Q87.5,9 100,5 Q112.5,1 125,5 Q137.5,9 150,5 Q162.5,1 175,5 Q187.5,9 200,5 Q212.5,1 225,5 Q237.5,9 250,5 Q262.5,1 275,5 Q287.5,9 300,5 Q312.5,1 325,5 Q337.5,9 350,5 Q362.5,1 375,5 Q387.5,9 400,5' stroke='white' stroke-width='4.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
   mask-size: 400px 10px;
   mask-repeat: repeat-x;
-  mask-position: 0px center;
+  mask-position: var(--squig-offset, 0px) center !important;
 
-  animation:
-    aurum-squiggle-flow 1.4s linear infinite,
-    aurum-shimmer 2s linear infinite;
+  animation: aurum-shimmer 2s linear infinite;
 }
 
 [data-theme="light"] .fp-seekbar.slider-squiggly::-webkit-slider-runnable-track {
