@@ -1090,6 +1090,12 @@ audio.addEventListener('timeupdate', () => {
   if (now - _lastTuTime < 250) return;
   _lastTuTime = now;
   if (_uiHidden) return;
+  const seekbar = document.getElementById('fp-seekbar');
+  if (seekbar) {
+    const offset = audio.currentTime * 120;
+    seekbar.style.setProperty('--wave-offset', offset + 'px');
+    seekbar.style.setProperty('--squig-offset', offset + 'px');
+  }
   const dur = isFinite(audio.duration) && audio.duration > 0 ? audio.duration : (currentQuality === 'full' ? 0 : 30);
   const p = dur ? audio.currentTime / dur * 100 : 0;
   const mpb = document.getElementById('mini-progress-bar');
@@ -2892,24 +2898,40 @@ async function _warnIfStorageNotPersisted() {
   const granted = await navigator.storage.persist();
   if (!granted) showToast('Tip: Add to Home Screen for permanent downloads');
 }
-
 async function downloadSongOffline(song, customUrl, customQuality) {
-  const url     = customUrl || (_currentSaavnUrl && currentQuality === 'full' ? _currentSaavnUrl : null) || song.previewUrl;
-  const quality = customQuality || _currentSaavnQuality || 'preview';
+  const rawUrl = customUrl || song.previewUrl;
+  const quality = customQuality || 'preview';
   await _warnIfStorageNotPersisted();
-  showToast('Saving offline…');
+  showToast('Saving to app…');
   try {
-    const r = await fetch(url);
-    if (!r.ok) throw new Error('fetch failed');
-    const blob = await r.blob();
+    let blob = null;
+    const urls = [rawUrl, song.previewUrl].filter(Boolean);
+    for (const url of urls) {
+      try {
+        const r = await fetch(url);
+        if (r.ok) { blob = await r.blob(); break; }
+      } catch(e) { continue; }
+    }
+    if (!blob) throw new Error('All URLs failed');
     await saveToDb({ ...song, _quality: quality }, blob);
-    const metas = JSON.parse(localStorage.getItem('aurum_dl_meta') || '[]').filter(s => String(s.trackId) !== String(song.trackId));
-    metas.unshift({ trackId:song.trackId, trackName:song.trackName, artistName:song.artistName, artworkUrl100:song.artworkUrl100, _quality:quality, _savedAt:Date.now() });
+    const metas = JSON.parse(localStorage.getItem('aurum_dl_meta') || '[]')
+      .filter(s => String(s.trackId) !== String(song.trackId));
+    metas.unshift({
+      trackId: song.trackId,
+      trackName: song.trackName,
+      artistName: song.artistName,
+      artworkUrl100: song.artworkUrl100,
+      _quality: quality,
+      _savedAt: Date.now()
+    });
     localStorage.setItem('aurum_dl_meta', JSON.stringify(metas));
-    haptic([20,50,20]);
-    showToast('Saved offline ✓');
+    haptic([20, 50, 20]);
+    showToast('Saved to app ✓');
     renderLibrary();
-  } catch(e) { showToast('Download failed — try again'); }
+  } catch(e) {
+    showToast('Save failed — check connection');
+    console.error('[Offline Save]', e);
+  }
 }
 
 async function playDownloadedSong(trackId) {
@@ -3217,20 +3239,35 @@ async function triggerDownload(quality) {
   }
 
   if (quality === 'full') {
-    showToast('Downloading full song…');
-    try {
-      const q      = encodeURIComponent(song.trackName  || '');
-      const artist = encodeURIComponent(song.artistName || '');
-      const dlUrl  = `/api/download?q=${q}&artist=${artist}&quality=full`;
-      const a      = document.createElement('a');
-      a.href       = dlUrl;
-      a.download   = `${cleanTitle} - ${cleanArtist}.mp3`;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      haptic([10, 30, 10]);
-      showToast('Download started ✓');
-    } catch(e) { showToast('Download failed'); }
-    return;
+  const modal = document.getElementById('download-modal');
+  modal.classList.remove('open');
+  modal.style.display = 'none';
+
+  // App ke andar save (IndexedDB)
+  downloadSongOffline(song, _currentSaavnUrl, _currentSaavnQuality);
+
+  // Device pe bhi file download
+  try {
+    const cleanTitle  = (song.trackName  || 'audio').replace(/[/\?%*:|"<>]/g, '-');
+    const cleanArtist = (song.artistName || '').replace(/[/\?%*:|"<>]/g, '-');
+    const q      = encodeURIComponent(song.trackName  || '');
+    const artist = encodeURIComponent(song.artistName || '');
+    const dlUrl  = `/api/download?q=${q}&artist=${artist}&quality=full`;
+    const a      = document.createElement('a');
+    a.href       = dlUrl;
+    a.download   = `${cleanTitle} - ${cleanArtist}.mp3`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    haptic([10, 30, 10]);
+    showToast('Saving to app & downloading…');
+  } catch(e) {
+    showToast('Saved to app ✓');
   }
+
+  _downloadSong = null;
+  return;
+}
 
   if (quality === 'gift') {
     showToast('Fetching 320 kbps…');
