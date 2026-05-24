@@ -170,6 +170,33 @@
       cursor: pointer; color: rgba(255,255,255,0.4);
     }
     .aurum-ai-panel-close svg { width: 14px; height: 14px; }
+
+    /* ── FIXES FOR AVATAR CHIP LAYOUT ── */
+    /* Home page topbar right layout alignment */
+    .ph-actions {
+      display: flex !important;
+      align-items: center !important;
+      gap: 10px !important;
+    }
+    #aurum-user-chip {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      flex-shrink: 0;
+    }
+    #aurum-user-avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      object-fit: cover;
+      border: 1px solid rgba(184,150,64,0.4);
+    }
+    /* Hide avatar chip completely when Fullscreen player is active */
+    body:has(#fullscreen-player.open) #aurum-user-chip {
+      display: none !important;
+    }
   </style>
 </head>
 <body>
@@ -207,7 +234,6 @@
           <button class="ph-icon-btn ph-settings-btn" onclick="openSettings()" aria-label="Open settings">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4 1.65 1.65 0 0 0 7.18 19l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0 .33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.5a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </button>
-          
           <button id="aurum-ai-chip"
                   onclick="(function(){var c=document.getElementById('aurum-user-chip');if(!c||c.style.display==='none'){if(window.openLoginModal)window.openLoginModal('ai');else{var o=document.getElementById('aurum-login-overlay');if(o){o.style.display='flex';requestAnimationFrame(function(){o.classList.add('open')});}}}else{window.aurumAI&&window.aurumAI.togglePanel&&window.aurumAI.togglePanel();}})()"
                   aria-label="Aurum AI Suggestions">
@@ -219,6 +245,9 @@
             </svg>
             <span>Aurum AI</span>
           </button>
+          <div id="aurum-user-chip" style="display:none" onclick="openUserMenu()" aria-label="Account">
+            <img id="aurum-user-avatar" src="" alt="avatar">
+          </div>
         </div>
       </div>
       <div class="ph-chips-scroll" role="tablist" aria-label="Music genres">
@@ -719,10 +748,6 @@
       </div>
       <p class="aurum-login-footer">By signing in you agree to our Terms · Free forever</p>
     </div>
-  </div>
-
-  <div id="aurum-user-chip" style="display:none" onclick="openUserMenu()" aria-label="Account">
-    <img id="aurum-user-avatar" src="" alt="avatar">
   </div>
 
   <div id="aurum-user-menu" style="display:none" role="dialog" aria-modal="true">
