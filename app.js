@@ -903,7 +903,7 @@ async function _autoFetchFullSong(song) {
     const fallbackQ = encodeURIComponent(`${cleanTitle} ${cleanArtist}`);
     const artistQ   = encodeURIComponent(cleanArtist);
 
-    const r = await fetch(`/api/saavn?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`, { signal: ctrl.signal });
+    const r = await fetch(`/api/resolve?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`, { signal: ctrl.signal });
     if (!r.ok) throw new Error('api-err');
     const d = await r.json();
 
@@ -911,12 +911,14 @@ async function _autoFetchFullSong(song) {
     if (currentTrack?.trackId !== requested.trackId) return;
     if (!d.success || !d.url) return;
 
-    if (!_titleMatches(d.title, requested.trackName)) {
+    // Title match only for saavn — piped/invidious titles differ slightly
+    if (d.source === 'saavn' && !_titleMatches(d.title, requested.trackName)) {
       console.warn(`[Mismatch] Asked="${requested.trackName}" Got="${d.title}" — staying on preview`);
       return;
     }
 
-    const proxyUrl = `/api/stream?url=${encodeURIComponent(d.url)}`;
+    // /api/resolve already returns proxy URL — no double wrap needed
+    const proxyUrl = d.url;
     _currentSaavnUrl     = proxyUrl;
     _currentSaavnQuality = d.quality || 'unknown';
     _updateDlSheetQuality(d.quality);
@@ -2579,7 +2581,18 @@ function makeSongRow(s, i, queue) {
   row.appendChild(img);
 
   const info = document.createElement('div'); info.className = 'song-row-info';
-  info.innerHTML = `<div class="song-row-title">${esc(s.trackName)}</div><div class="song-row-artist"><span class="artist-link" onclick="event.stopPropagation();openArtistPageFromName('${esc(s.artistName?.split(/[&,]/)[0].trim()||'')}')">${esc(s.artistName)}</span></div>`;
+  const titleDiv = document.createElement('div'); titleDiv.className = 'song-row-title'; titleDiv.textContent = s.trackName || '';
+  const artistDiv = document.createElement('div'); artistDiv.className = 'song-row-artist';
+  const artistSpan = document.createElement('span'); artistSpan.className = 'artist-link'; artistSpan.textContent = s.artistName || '';
+  artistSpan.addEventListener('click', e => {
+    e.stopPropagation();
+    e.preventDefault();
+    const name = (s.artistName || '').split(/[&,]/)[0].trim();
+    if (name) openArtistPageFromName(name);
+  });
+  artistDiv.appendChild(artistSpan);
+  info.appendChild(titleDiv);
+  info.appendChild(artistDiv);
   row.appendChild(info);
 
   const right = document.createElement('div'); right.className = 'song-row-right';
