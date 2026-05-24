@@ -797,6 +797,37 @@ let _dismissedTrackId    = null;
 let lyricsViewActive = false;
 let originalArtworkHTML = null;
 
+// ─── LISTEN HISTORY / ALGORITHM ──────────────────────────────────────────────
+let _listenHistory = JSON.parse(localStorage.getItem('aurum_listen_history') || '{}');
+
+function _trackListen(song) {
+  if (!song?.artistName) return;
+  const artists = song.artistName.split(/[&,]|feat\.|ft\./i).map(a => a.trim()).filter(Boolean);
+  artists.forEach(artist => {
+    if (!_listenHistory[artist]) _listenHistory[artist] = { count: 0, lastSeen: 0, songs: [] };
+    _listenHistory[artist].count++;
+    _listenHistory[artist].lastSeen = Date.now();
+    const existing = _listenHistory[artist].songs;
+    if (!existing.find(s => String(s.trackId) === String(song.trackId))) {
+      existing.unshift(song);
+      if (existing.length > 20) existing.pop();
+    }
+  });
+  const keys = Object.keys(_listenHistory);
+  if (keys.length > 50) {
+    const oldest = keys.sort((a, b) => _listenHistory[a].lastSeen - _listenHistory[b].lastSeen)[0];
+    delete _listenHistory[oldest];
+  }
+  localStorage.setItem('aurum_listen_history', JSON.stringify(_listenHistory));
+}
+
+function _getTopArtists(limit = 5) {
+  return Object.entries(_listenHistory)
+    .sort((a, b) => b[1].count - a[1].count)
+    .slice(0, limit)
+    .map(([artist, data]) => ({ artist, ...data }));
+}
+
 // ─── AUDIO ENGINE ─────────────────────────────────────────────────────────────
 const audio = new Audio();
 audio.preload = 'none';
@@ -903,22 +934,55 @@ async function _autoFetchFullSong(song) {
     const fallbackQ = encodeURIComponent(`${cleanTitle} ${cleanArtist}`);
     const artistQ   = encodeURIComponent(cleanArtist);
 
-    const r = await fetch(`/api/resolve?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`, { signal: ctrl.signal });
-    if (!r.ok) throw new Error('api-err');
-    const d = await r.json();
+    // ── Step 1: /api/saavn try karo ──────────────────────────────
+    let d        = null;
+    let proxyUrl = null;
+
+    try {
+      const r1 = await fetch(`/api/saavn?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`, { signal: ctrl.signal });
+      if (r1.ok) {
+        const j1 = await r1.json();
+        if (j1.success && j1.url) {
+          // Title check sirf saavn ke liye
+          if (j1.source === 'saavn' && !_titleMatches(j1.title, requested.trackName)) {
+            console.warn(`[Mismatch/Saavn] Asked="${requested.trackName}" Got="${j1.title}" — trying resolve`);
+          } else {
+            d        = j1;
+            proxyUrl = `/api/stream?url=${encodeURIComponent(j1.url)}`;
+            console.info(`[AutoFetch] Saavn ✓ quality=${j1.quality}`);
+          }
+        }
+      }
+    } catch(e1) {
+      if (e1.name === 'AbortError') return;
+      console.info('[AutoFetch] Saavn failed, trying resolve:', e1.message);
+    }
+
+    // ── Step 2: /api/resolve fallback (Piped/Invidious) ──────────
+    if (!proxyUrl) {
+      try {
+        const r2 = await fetch(`/api/resolve?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`, { signal: ctrl.signal });
+        if (r2.ok) {
+          const j2 = await r2.json();
+          if (j2.success && j2.url) {
+            d        = j2;
+            proxyUrl = j2.url; // resolve already /api/stream proxy URL deta hai
+            console.info(`[AutoFetch] Resolve ✓ source=${j2.source} quality=${j2.quality}`);
+          }
+        }
+      } catch(e2) {
+        if (e2.name === 'AbortError') return;
+        console.info('[AutoFetch] Resolve also failed:', e2.message);
+      }
+    }
 
     if (ctrl.signal.aborted) return;
     if (currentTrack?.trackId !== requested.trackId) return;
-    if (!d.success || !d.url) return;
-
-    // Title match only for saavn — piped/invidious titles differ slightly
-    if (d.source === 'saavn' && !_titleMatches(d.title, requested.trackName)) {
-      console.warn(`[Mismatch] Asked="${requested.trackName}" Got="${d.title}" — staying on preview`);
+    if (!d || !proxyUrl) {
+      console.info('[AutoFetch] No source found — staying on preview');
       return;
     }
 
-    // /api/resolve already returns proxy URL — no double wrap needed
-    const proxyUrl = d.url;
     _currentSaavnUrl     = proxyUrl;
     _currentSaavnQuality = d.quality || 'unknown';
     _updateDlSheetQuality(d.quality);
@@ -942,10 +1006,9 @@ async function _autoFetchFullSong(song) {
     const wasPlaying = isPlaying;
     const pos = audio.currentTime;
 
-    const onMeta = () => {
+    audio.addEventListener('loadedmetadata', () => {
       if (isFinite(pos) && pos > 0 && pos < audio.duration) audio.currentTime = pos;
-    };
-    audio.addEventListener('loadedmetadata', onMeta, { once: true });
+    }, { once: true });
 
     audio.src = proxyUrl;
 
@@ -2355,21 +2418,30 @@ function addToRecentlyPlayed(song) {
   recentlyPlayed.unshift(song);
   if (recentlyPlayed.length > 20) recentlyPlayed = recentlyPlayed.slice(0, 20);
   localStorage.setItem('aurum_recent_played', JSON.stringify(recentlyPlayed));
+  _trackListen(song); // ← algorithm tracking
   renderQuickResume();
 }
 
 // ─── HOME SECTIONS ────────────────────────────────────────────────────────────
 const SECTION_POOL = [
-  { id:'recent',   title:'Continue Listening', type:'wide',     fn: getRecentlyPlayedSongs },
+  { id:'recent',   title:'Continue Listening', type:'wide',  fn: getRecentlyPlayedSongs },
   { id:'featured', title:'Made For You',       type:'featured', queries:['top bollywood songs hits','best hindi songs','latest bollywood hits','top hindi songs trending','best bollywood songs playlist'] },
-  { id:'trending', title:'Trending Now',       type:'cards',    queries:['trending hindi songs chart','bollywood chart toppers','top hindi songs this week','most popular bollywood songs'] },
-  { id:'mood',     title:'Mood: Late Night',   type:'bw',       queries:['sad emotional bollywood songs','heartbreak hindi songs arijit','late night slow songs hindi','emotional romantic songs hindi'] },
-  { id:'classic',  title:'Golden Era',         type:'bw',       queries:['90s bollywood romantic classic songs','80s hindi classic songs','old is gold bollywood songs kishore kumar','retro bollywood hits lata mangeshkar'] },
-  { id:'hiphop',   title:'Desi Hip-Hop',       type:'cards',    queries:['divine emiway bantai rap hindi','desi hip hop india rap songs','yo yo honey singh badshah rap','india rap gully boy songs'] },
-  { id:'lofi',     title:'Lo-Fi Chill',        type:'cards',    queries:['lofi chill beats hindi songs','lofi bollywood remix chill','lo-fi hindi songs study chill','lofi beats india relaxing'] },
-  { id:'arijit',   title:'Arijit Singh',       type:'rows',     queries:['arijit singh best romantic songs','arijit singh top hits','arijit singh soulful songs','arijit singh emotional hits'] },
-  { id:'workout',  title:'Energy Boost',       type:'cards',    queries:['workout hindi songs gym','upbeat dance bollywood songs','party hindi songs badshah','high energy bollywood beats'] },
-  { id:'new',      title:'New Releases',       type:'cards',    queries:['new hindi songs latest','new bollywood songs released','latest hindi songs hits','new bollywood songs trending'] },
+  { id:'trending', title:'Trending Now',       type:'cards', queries:['trending hindi songs chart','bollywood chart toppers','top hindi songs this week','most popular bollywood songs'] },
+  { id:'mood',     title:'Mood: Late Night',   type:'bw',    queries:['sad emotional bollywood songs','heartbreak hindi songs arijit','late night slow songs hindi','emotional romantic songs hindi'] },
+  { id:'romantic', title:'Bollywood Romantic', type:'bw',    queries:['bollywood romantic songs hits','best romantic hindi songs','love songs bollywood','romantic songs arijit atif'] },
+  { id:'classic',  title:'Golden Era',         type:'bw',    queries:['90s bollywood romantic classic songs','80s hindi classic songs','old is gold bollywood songs kishore kumar','retro bollywood hits lata mangeshkar'] },
+  { id:'hiphop',   title:'Desi Hip-Hop',       type:'cards', queries:['divine emiway bantai rap hindi','desi hip hop india rap songs','yo yo honey singh badshah rap','india rap gully boy songs'] },
+  { id:'lofi',     title:'Lo-Fi Chill',        type:'cards', queries:['lofi chill beats hindi songs','lofi bollywood remix chill','lo-fi hindi songs study chill','lofi beats india relaxing'] },
+  { id:'arijit',   title:'Arijit Singh',       type:'rows',  queries:['arijit singh best romantic songs','arijit singh top hits','arijit singh soulful songs','arijit singh emotional hits'] },
+  { id:'atif',     title:'Atif Aslam',         type:'rows',  queries:['atif aslam best songs','atif aslam top hits hindi','atif aslam romantic songs','atif aslam soulful'] },
+  { id:'shreya',   title:'Shreya Ghoshal',     type:'rows',  queries:['shreya ghoshal best songs','shreya ghoshal romantic hits','shreya ghoshal top songs'] },
+  { id:'neha',     title:'Neha Kakkar',        type:'rows',  queries:['neha kakkar best songs','neha kakkar hits','neha kakkar popular songs'] },
+  { id:'kumar',    title:'Kumar Sanu',         type:'rows',  queries:['kumar sanu 90s hits','kumar sanu best songs','kumar sanu alka yagnik duets'] },
+  { id:'kishore',  title:'Kishore Kumar',      type:'rows',  queries:['kishore kumar best songs','kishore kumar classics','kishore kumar evergreen hits'] },
+  { id:'workout',  title:'Energy Boost',       type:'cards', queries:['workout hindi songs gym','upbeat dance bollywood songs','party hindi songs badshah','high energy bollywood beats'] },
+  { id:'sad',      title:'Heartbreak',         type:'bw',    queries:['sad hindi songs breakup','dil tod ke chali gayi','heartbreak bollywood songs','tere bina hindi sad songs'] },
+  { id:'party',    title:'Party Hits',         type:'cards', queries:['bollywood party songs dance','badshah party hits','punjabi party songs','hindi dance floor hits'] },
+  { id:'new',      title:'New Releases',       type:'cards', queries:['new hindi songs latest','new bollywood songs released','latest hindi songs hits','new bollywood songs trending'] },
 ];
 
 const genreMap = {
@@ -2449,22 +2521,64 @@ async function buildHomeSections(genre = 'all') {
   container.innerHTML = '';
   currentGenre = genre;
 
-  let sections;
+  let sections = [];
+
   if (genre === 'all') {
-    const pinned = [SECTION_POOL[0], SECTION_POOL[1]];
-    const rest   = SECTION_POOL.slice(2).sort(() => Math.random() - 0.5).slice(0, 6);
-    sections = [...pinned, ...rest];
+    // ── Always pinned ──────────────────────────────────────────
+    sections.push(SECTION_POOL.find(s => s.id === 'recent'));
+    sections.push(SECTION_POOL.find(s => s.id === 'featured'));
+
+    // ── Algorithm: top artists from listen history ─────────────
+    const topArtists = _getTopArtists(3);
+    topArtists.forEach(({ artist, count }) => {
+      const id = 'artist_' + artist.replace(/\s+/g, '_').toLowerCase();
+      // Agar already SECTION_POOL mein hai to use wahi
+      const existing = SECTION_POOL.find(s => s.title === artist);
+      if (existing) {
+        sections.push(existing);
+      } else {
+        // Dynamic section banao
+        sections.push({
+          id,
+          title: artist,
+          type: 'rows',
+          queries: [
+            `${artist} best songs`,
+            `${artist} top hits`,
+            `${artist} popular songs`,
+          ],
+          _isAlgo: true,
+          _listenCount: count,
+        });
+      }
+    });
+
+    // ── Trending always aaye ───────────────────────────────────
+    sections.push(SECTION_POOL.find(s => s.id === 'trending'));
+
+    // ── Baaki sections random rotate karo (history ke artists remove kar ke) ──
+    const usedIds = new Set(sections.map(s => s?.id));
+    const rest = SECTION_POOL
+      .filter(s => s && !usedIds.has(s.id))
+      .sort(() => Math.random() - 0.5)
+      .slice(0, 4);
+    sections.push(...rest);
+
   } else {
     const ids = genreSections[genre] || ['featured','trending','new','classic'];
-    sections  = ids.map(id => SECTION_POOL.find(s => s.id === id)).filter(Boolean);
+    sections = ids.map(id => SECTION_POOL.find(s => s.id === id)).filter(Boolean);
   }
+
+  sections = sections.filter(Boolean);
 
   sections.forEach(sec => {
     const wrap = document.createElement('div'); wrap.className = 'section'; wrap.id = 'sec-wrap-' + sec.id;
     if (sec.id === 'recent' && !recentlyPlayed.length) wrap.style.display = 'none';
     const type      = sec.type === 'featured' ? 'cards' : sec.type;
     const typeCount = type === 'bw' ? 5 : type === 'wide' ? 5 : type === 'rows' ? 0 : 5;
-    wrap.innerHTML  = `<div class="section-head"><h2>${sec.title}</h2><span onclick="refreshSection('${sec.id}')">Refresh</span></div><div id="sec-${sec.id}">${type === 'rows' ? renderRowSkeleton() : renderSkeletonSection(type, typeCount)}</div>`;
+    // Algorithm section ke liye badge dikhao
+    const badge = sec._isAlgo ? ` <span style="font-size:9px;background:rgba(184,150,64,0.15);color:var(--gold);padding:2px 7px;border-radius:20px;font-weight:700;vertical-align:middle;">FOR YOU</span>` : '';
+    wrap.innerHTML  = `<div class="section-head"><h2>${sec.title}${badge}</h2><span onclick="refreshSection('${sec.id}')">Refresh</span></div><div id="sec-${sec.id}">${type === 'rows' ? renderRowSkeleton() : renderSkeletonSection(type, typeCount)}</div>`;
     container.appendChild(wrap);
     _renderSection(sec, wrap);
   });
@@ -2584,15 +2698,8 @@ function makeSongRow(s, i, queue) {
   const titleDiv = document.createElement('div'); titleDiv.className = 'song-row-title'; titleDiv.textContent = s.trackName || '';
   const artistDiv = document.createElement('div'); artistDiv.className = 'song-row-artist';
   const artistSpan = document.createElement('span'); artistSpan.className = 'artist-link'; artistSpan.textContent = s.artistName || '';
-  artistSpan.addEventListener('click', e => {
-    e.stopPropagation();
-    e.preventDefault();
-    const name = (s.artistName || '').split(/[&,]/)[0].trim();
-    if (name) openArtistPageFromName(name);
-  });
   artistDiv.appendChild(artistSpan);
-  info.appendChild(titleDiv);
-  info.appendChild(artistDiv);
+  info.appendChild(titleDiv); info.appendChild(artistDiv);
   row.appendChild(info);
 
   const right = document.createElement('div'); right.className = 'song-row-right';
@@ -2614,37 +2721,68 @@ function makeSongRow(s, i, queue) {
   row.appendChild(right);
 
   if (isTV) row.tabIndex = 0;
-  row.onclick = () => { playSongs(queue, i); haptic(8); };
   row._song = s;
 
-  if (!isTV) {
-    let pt = null;
-    let longPressTriggered = false;
+  // ── Pointer tracking — artist click vs row click vs long press ──
+  let _pt        = null;
+  let _longFired = false;
+  let _moved     = false;
+  let _downX     = 0;
+  let _downY     = 0;
 
-    row.addEventListener('pointerdown', () => {
-      longPressTriggered = false;
-      pt = setTimeout(() => {
-        longPressTriggered = true;
-        row.classList.add('long-press-active');
-        haptic([20, 40, 20]);
-        openSongModal(s);
-        setTimeout(() => row.classList.remove('long-press-active'), 300);
-      }, 480);
-    });
+  row.addEventListener('pointerdown', e => {
+    _longFired = false;
+    _moved     = false;
+    _downX     = e.clientX;
+    _downY     = e.clientY;
+    if (isTV) return;
+    _pt = setTimeout(() => {
+      if (_moved) return;
+      _longFired = true;
+      row.classList.add('long-press-active');
+      haptic([20, 40, 20]);
+      openSongModal(s);
+      setTimeout(() => row.classList.remove('long-press-active'), 300);
+    }, 480);
+  }, { passive: true });
 
-    row.addEventListener('pointermove', () => {
-      if (pt) { clearTimeout(pt); pt = null; }
-    });
+  row.addEventListener('pointermove', e => {
+    const dx = Math.abs(e.clientX - _downX);
+    const dy = Math.abs(e.clientY - _downY);
+    if (dx > 8 || dy > 8) {
+      _moved = true;
+      if (_pt) { clearTimeout(_pt); _pt = null; }
+    }
+  }, { passive: true });
 
-    row.addEventListener('pointerup', () => {
-      if (pt) { clearTimeout(pt); pt = null; }
-    });
+  row.addEventListener('pointerup', () => {
+    if (_pt) { clearTimeout(_pt); _pt = null; }
+  }, { passive: true });
 
-    row.addEventListener('pointercancel', () => {
-      if (pt) { clearTimeout(pt); pt = null; }
-      row.classList.remove('long-press-active');
-    });
-  }
+  row.addEventListener('pointercancel', () => {
+    if (_pt) { clearTimeout(_pt); _pt = null; }
+    row.classList.remove('long-press-active');
+    _moved = false;
+  }, { passive: true });
+
+  // ── Click — artist span check karo pehle ────────────────────────
+  row.addEventListener('click', e => {
+    if (_longFired) return;
+    if (_moved) return;
+    if (e.target.closest('.song-row-heart') || e.target.closest('.song-row-more')) return;
+
+    // Artist span click — playlist open karo
+    if (e.target === artistSpan || artistSpan.contains(e.target)) {
+      e.stopPropagation();
+      const name = (s.artistName || '').split(/[&,]/)[0].trim();
+      if (name) openArtistPageFromName(name);
+      return;
+    }
+
+    // Baaki jagah click — song play karo
+    playSongs(queue, i);
+    haptic(8);
+  });
 
   return row;
 }
