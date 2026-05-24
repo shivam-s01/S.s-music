@@ -4684,3 +4684,34 @@ button.add-playlist-btn {
 [data-smart-saver="true"] .fp-seekbar::-webkit-slider-runnable-track {
   animation: none !important;
 }
+/* ═══════════════════════════════════════════════════════════════
+   AURUM WAVE SYNC PATCH — Paste at END of style.css
+   Wave/squiggly mask-position now JS-driven via --wave-offset
+   and --squig-offset CSS variables set in app.js timeupdate.
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ── WAVY: override mask-position to use JS variable ─────────── */
+.fp-seekbar.slider-wavy::-webkit-slider-runnable-track {
+  -webkit-mask-position: var(--wave-offset, 0px) center !important;
+  mask-position: var(--wave-offset, 0px) center !important;
+  animation: aurum-shimmer 3s linear infinite !important;
+}
+[data-theme="light"] .fp-seekbar.slider-wavy::-webkit-slider-runnable-track {
+  animation: aurum-shimmer 3s linear infinite !important;
+}
+#fullscreen-player:not(.playing) .fp-seekbar.slider-wavy::-webkit-slider-runnable-track {
+  animation: aurum-breathe 4s ease-in-out infinite !important;
+}
+
+/* ── SQUIGGLY: override mask-position to use JS variable ─────── */
+.fp-seekbar.slider-squiggly::-webkit-slider-runnable-track {
+  -webkit-mask-position: var(--squig-offset, 0px) center !important;
+  mask-position: var(--squig-offset, 0px) center !important;
+  animation: aurum-shimmer 2s linear infinite !important;
+}
+[data-theme="light"] .fp-seekbar.slider-squiggly::-webkit-slider-runnable-track {
+  animation: aurum-shimmer 2s linear infinite !important;
+}
+#fullscreen-player:not(.playing) .fp-seekbar.slider-squiggly::-webkit-slider-runnable-track {
+  animation: aurum-breathe 4s ease-in-out infinite !important;
+}
