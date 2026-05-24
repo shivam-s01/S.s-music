@@ -197,6 +197,137 @@
     body:has(#fullscreen-player.open) #aurum-user-chip {
       display: none !important;
     }
+
+    /* ── Open in App Banner ─────────────────────────────────────────────── */
+    @keyframes bannerSlide {
+      from { transform: translateY(100%); opacity: 0; }
+      to   { transform: translateY(0);   opacity: 1; }
+    }
+    @keyframes bannerGlow {
+      0%,100% { box-shadow: 0 -1px 30px rgba(184,150,64,0.08), 0 -8px 40px rgba(0,0,0,0.7); }
+      50%     { box-shadow: 0 -1px 40px rgba(184,150,64,0.16), 0 -8px 40px rgba(0,0,0,0.7); }
+    }
+    #aurum-app-banner {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      z-index: 99999;
+      background: linear-gradient(160deg, rgba(12,11,9,0.98) 0%, rgba(8,7,5,0.99) 100%);
+      border-top: 1px solid rgba(184,150,64,0.2);
+      backdrop-filter: blur(24px) saturate(1.4);
+      -webkit-backdrop-filter: blur(24px) saturate(1.4);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 13px 16px;
+      padding-bottom: calc(13px + env(safe-area-inset-bottom, 0px));
+      transform: translateY(100%);
+      animation: bannerSlide 0.55s cubic-bezier(0.22,1,0.36,1) 1.8s forwards,
+                 bannerGlow 3s ease-in-out 2.5s infinite;
+      /* Push mini-player up — handled via JS below */
+    }
+    #aurum-app-banner::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(184,150,64,0.45), transparent);
+    }
+    /* Icon wrap */
+    #aurum-app-banner .banner-icon {
+      width: 42px; height: 42px;
+      border-radius: 12px;
+      background: linear-gradient(145deg, rgba(184,150,64,0.18), rgba(184,150,64,0.06));
+      border: 1px solid rgba(184,150,64,0.25);
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+    }
+    /* Text block */
+    #aurum-app-banner .banner-text {
+      flex: 1;
+      min-width: 0;
+    }
+    #aurum-app-banner .banner-title {
+      font-family: 'Sora', sans-serif;
+      font-size: 13px;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.2px;
+      line-height: 1.2;
+    }
+    #aurum-app-banner .banner-sub {
+      font-family: 'Sora', sans-serif;
+      font-size: 10.5px;
+      font-weight: 500;
+      color: rgba(184,150,64,0.65);
+      margin-top: 2px;
+      letter-spacing: 0.01em;
+    }
+    /* CTA button */
+    #aurum-app-banner .banner-cta {
+      flex-shrink: 0;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: linear-gradient(135deg, #d4b85a 0%, #b89640 60%, #a07c2c 100%);
+      color: #0a0800;
+      font-family: 'Sora', sans-serif;
+      font-weight: 800;
+      font-size: 12px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      text-decoration: none;
+      border: none;
+      border-radius: 22px;
+      padding: 9px 16px;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      box-shadow: 0 2px 18px rgba(184,150,64,0.4), inset 0 1px 0 rgba(255,255,255,0.18);
+      transition: transform 0.14s ease, box-shadow 0.14s ease;
+      white-space: nowrap;
+      position: relative;
+      overflow: hidden;
+    }
+    #aurum-app-banner .banner-cta::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.12), transparent);
+      transform: translateX(-100%);
+      animation: ctaShimmer 2.4s ease-in-out 2.5s infinite;
+    }
+    @keyframes ctaShimmer {
+      0%   { transform: translateX(-100%); }
+      40%  { transform: translateX(100%); }
+      100% { transform: translateX(100%); }
+    }
+    #aurum-app-banner .banner-cta:active {
+      transform: scale(0.93);
+      box-shadow: 0 1px 8px rgba(184,150,64,0.25);
+    }
+    #aurum-app-banner .banner-cta svg {
+      width: 11px; height: 11px;
+      fill: #0a0800;
+    }
+    /* Close button */
+    #aurum-app-banner .banner-close {
+      flex-shrink: 0;
+      width: 26px; height: 26px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      color: rgba(255,255,255,0.3);
+      font-size: 16px;
+      line-height: 1;
+      -webkit-tap-highlight-color: transparent;
+      transition: background 0.15s, color 0.15s;
+    }
+    #aurum-app-banner .banner-close:active {
+      background: rgba(255,255,255,0.1);
+      color: rgba(255,255,255,0.6);
+    }
   </style>
 </head>
 <body>
@@ -795,7 +926,10 @@
 
 <script src="tv-perf.js?v=__CACHEBUST__" defer></script>
 <script src="settings_addon.js?v=__CACHEBUST__" defer></script>
-<script src="app.js?v=__CACHEBUST__" defer></script>   <script src="auth.js?v=__CACHEBUST__" defer></script>  <script>
+<script src="app.js?v=__CACHEBUST__" defer></script>
+<script src="auth.js?v=__CACHEBUST__" defer></script>
+
+<script>
   document.addEventListener('DOMContentLoaded', function() {
 
     // Hook into auth.js login flow via MutationObserver on user chip
@@ -851,5 +985,92 @@
     });
   }
 </script>
+
+<!-- ═══════════════════════════════════════════════════════════════
+     AURUM — Open in App Banner
+     Shows only in browser. Auto-hides in PWA/installed app.
+     Dismissed state stored in sessionStorage.
+════════════════════════════════════════════════════════════════ -->
+<div id="aurum-app-banner" role="complementary" aria-label="Download Aurum App">
+  <!-- Aurum logo icon -->
+  <div class="banner-icon" aria-hidden="true">
+    <svg viewBox="0 0 28 28" fill="none" width="24" height="24">
+      <path d="M4 23L10 7L14 16L18 7L24 23" stroke="rgba(184,150,64,0.3)" stroke-width="1" stroke-linecap="round"/>
+      <path d="M6.5 23L12 8.5L14 13" stroke="#d4b85a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M14 13L16 8.5L21.5 23" stroke="#b89640" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </div>
+  <!-- Text -->
+  <div class="banner-text">
+    <div class="banner-title">Get the Aurum App</div>
+    <div class="banner-sub">Better experience · Android</div>
+  </div>
+  <!-- CTA -->
+  <a class="banner-cta"
+     href="https://dub.sh/ullyuuE"
+     target="_blank"
+     rel="noopener noreferrer"
+     aria-label="Download Aurum App">
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 16l-4-4h3V4h2v8h3l-4 4zM4 20h16v2H4z"/>
+    </svg>
+    Open App
+  </a>
+  <!-- Close -->
+  <button class="banner-close"
+          onclick="(function(){document.getElementById('aurum-app-banner').style.cssText='display:none!important';sessionStorage.setItem('aurumAppBanner','dismissed');})()"
+          aria-label="Dismiss app banner">×</button>
+</div>
+
+<script>
+  /* Banner logic — runs immediately, no DOMContentLoaded needed
+     since the script is at the bottom after the element */
+  (function () {
+    var banner = document.getElementById('aurum-app-banner');
+    if (!banner) return;
+
+    // 1. Already dismissed this session?
+    if (sessionStorage.getItem('aurumAppBanner') === 'dismissed') {
+      banner.style.cssText = 'display:none!important';
+      return;
+    }
+
+    // 2. Running as installed PWA / standalone? Hide banner.
+    var isStandalone =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      window.matchMedia('(display-mode: fullscreen)').matches ||
+      window.navigator.standalone === true;
+
+    if (isStandalone) {
+      banner.style.cssText = 'display:none!important';
+      return;
+    }
+
+    // 3. Nudge mini-player up so banner doesn't overlap it
+    //    mini-player has bottom:72px by default (above nav);
+    //    we add extra once banner animates in
+    var BANNER_H = 72; // approximate banner height px
+    setTimeout(function () {
+      var mini = document.getElementById('mini-player');
+      if (mini) {
+        var cur = parseInt(getComputedStyle(mini).bottom) || 72;
+        mini.style.transition = 'bottom 0.4s cubic-bezier(0.33,1,0.68,1)';
+        mini.style.bottom = (cur + BANNER_H) + 'px';
+      }
+    }, 1900); // after animation completes (1.8s delay + buffer)
+
+    // 4. Restore mini-player position when banner is dismissed
+    var closeBtn = banner.querySelector('.banner-close');
+    if (closeBtn) {
+      closeBtn.addEventListener('click', function () {
+        var mini = document.getElementById('mini-player');
+        if (mini) {
+          mini.style.bottom = '';
+        }
+      }, { once: true });
+    }
+  })();
+</script>
+
 </body>
 </html>
