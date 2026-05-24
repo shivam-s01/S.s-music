@@ -42,14 +42,144 @@
   <link rel="stylesheet" href="style.css?v=__CACHEBUST__">
   <link rel="stylesheet" href="queue-panel.css?v=__CACHEBUST__">
   <link rel="stylesheet" href="settings.css?v=__CACHEBUST__">
-
-  <!-- Aurum AI + Overlay animations — paste style_additions.css content here OR keep as separate file -->
   <link rel="stylesheet" href="style_additions.css?v=__CACHEBUST__">
 
   <style>
-    /* ── Aurum AI Chip — topbar gold pill ───────────────────────────────── */
+    /* ═══════════════════════════════════════════════════
+       FIX 1 — TOPBAR: Sirf Settings + AI + Profile
+       ═══════════════════════════════════════════════════ */
+    .ph-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* ═══════════════════════════════════════════════════
+       FIX 2 — PROFILE PHOTO: Fullscreen mein HIDE
+       ═══════════════════════════════════════════════════ */
+    body.fp-open #aurum-user-chip {
+      display: none !important;
+      pointer-events: none !important;
+    }
+
+    /* ═══════════════════════════════════════════════════
+       FIX 3 — PAGE TRANSITIONS: Smooth fade+slide
+       ═══════════════════════════════════════════════════ */
+    .page {
+      opacity: 0;
+      transform: translateY(6px);
+      transition: opacity 0.28s cubic-bezier(0.33,1,0.68,1),
+                  transform 0.28s cubic-bezier(0.33,1,0.68,1);
+      pointer-events: none;
+    }
+    .page.active {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: all;
+    }
+
+    /* ═══════════════════════════════════════════════════
+       FIX 4 — SHIMMER: Left-to-right premium shimmer
+       ═══════════════════════════════════════════════════ */
+    @keyframes shimmerSlide {
+      0%   { background-position: -200% 0; }
+      100% { background-position: 200% 0; }
+    }
+    .sk-art,
+    .sk-line,
+    .bw-sk-cover,
+    .bw-sk-line,
+    .wide-sk-cover,
+    .wide-sk-line,
+    .quick-sk-cover {
+      background: linear-gradient(
+        90deg,
+        rgba(255,255,255,0.04) 0%,
+        rgba(255,255,255,0.10) 40%,
+        rgba(255,255,255,0.04) 100%
+      ) !important;
+      background-size: 200% 100% !important;
+      animation: shimmerSlide 1.6s ease-in-out infinite !important;
+    }
+
+    /* ═══════════════════════════════════════════════════
+       FIX 5 — MINI PLAYER: Blurred artwork background
+       ═══════════════════════════════════════════════════ */
+    #mini-player {
+      position: relative;
+      overflow: hidden;
+      isolation: isolate;
+    }
+    #mini-player::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image: var(--mini-art-url, none);
+      background-size: cover;
+      background-position: center;
+      filter: blur(18px) brightness(0.22) saturate(1.6);
+      transform: scale(1.1);
+      z-index: 0;
+      transition: background-image 0.4s ease;
+    }
+    #mini-player > * {
+      position: relative;
+      z-index: 1;
+    }
+
+    /* ═══════════════════════════════════════════════════
+       FIX 6 — SEEKBAR: Premium pill style
+       ═══════════════════════════════════════════════════ */
+    .fp-seekbar {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 4px;
+      border-radius: 4px;
+      background: rgba(255,255,255,0.12);
+      outline: none;
+      cursor: pointer;
+      transition: height 0.18s ease;
+      position: relative;
+    }
+    .fp-seekbar:active,
+    .fp-seekbar:focus {
+      height: 6px;
+    }
+    .fp-seekbar::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 0 8px rgba(0,0,0,0.4);
+      opacity: 0;
+      transition: opacity 0.18s ease, transform 0.18s ease;
+      transform: scale(0.7);
+    }
+    .fp-seekbar:active::-webkit-slider-thumb,
+    .fp-seekbar:focus::-webkit-slider-thumb {
+      opacity: 1;
+      transform: scale(1);
+    }
+
+    /* ═══════════════════════════════════════════════════
+       FIX 7 — ARTWORK TRANSITION: Smooth crossfade
+       ═══════════════════════════════════════════════════ */
+    .fp-art {
+      transition: opacity 0.32s cubic-bezier(0.33,1,0.68,1),
+                  transform 0.32s cubic-bezier(0.33,1,0.68,1);
+    }
+    .fp-art.changing {
+      opacity: 0;
+      transform: scale(0.94);
+    }
+
+    /* ═══════════════════════════════════════════════════
+       FIX 8 — AURUM AI CHIP
+       ═══════════════════════════════════════════════════ */
     #aurum-ai-chip {
-      display: flex; /* always visible */
+      display: flex;
       align-items: center;
       gap: 5px;
       padding: 5px 10px 5px 7px;
@@ -97,51 +227,40 @@
       50%     { opacity: 0.4; transform: scale(0.65); }
     }
 
-    /* ── Aurum AI Player Button — fp-bottom row ─────────────────────────── */
-    #fp-ai-btn {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 3px;
-      background: none;
-      border: none;
+    /* ═══════════════════════════════════════════════════
+       FIX 9 — USER CHIP: Topbar mein inline
+       ═══════════════════════════════════════════════════ */
+    #aurum-user-chip {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      overflow: hidden;
       cursor: pointer;
-      -webkit-tap-highlight-color: transparent;
-      padding: 6px 8px;
-      border-radius: 12px;
-      position: relative;
-      transition: background 0.18s ease;
+      border: 1.5px solid rgba(184,150,64,0.45);
+      box-shadow: 0 0 0 2px rgba(184,150,64,0.12);
+      transition: transform 0.18s ease, box-shadow 0.18s ease;
+      flex-shrink: 0;
     }
-    #fp-ai-btn:active { background: rgba(184,150,64,0.1); }
-    #fp-ai-btn .fp-ai-icon-wrap {
-      width: 28px; height: 28px;
-      border-radius: 50%;
-      background: linear-gradient(135deg, rgba(184,150,64,0.2), rgba(184,150,64,0.06));
-      border: 1px solid rgba(184,150,64,0.35);
-      display: flex; align-items: center; justify-content: center;
-      position: relative;
-      transition: border-color 0.2s ease;
+    #aurum-user-chip:active {
+      transform: scale(0.92);
     }
-    #fp-ai-btn:active .fp-ai-icon-wrap { border-color: rgba(184,150,64,0.7); }
-    #fp-ai-btn .fp-ai-icon-wrap svg { width: 14px; height: 14px; stroke: var(--gold, #b89640); }
-    #fp-ai-btn .fp-ai-icon-wrap::after {
-      content: '';
-      position: absolute;
-      inset: -2px;
-      border-radius: 50%;
-      border: 1px solid rgba(184,150,64,0.18);
-      animation: aiRingPulse 2s ease-in-out infinite;
-    }
-    @keyframes aiRingPulse {
-      0%,100% { transform: scale(1); opacity: 0.6; }
-      50%     { transform: scale(1.18); opacity: 0; }
-    }
-    #fp-ai-btn span {
-      font-size: 9px; font-weight: 700; letter-spacing: 0.06em;
-      color: var(--gold-l, #d4b85a); text-transform: uppercase;
+    #aurum-user-chip img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
     }
 
-    /* ── AI Suggestion Panel (slides up from bottom of fullscreen) ──────── */
+    /* ═══════════════════════════════════════════════════
+       FIX 10 — FULLSCREEN OPEN/CLOSE: Smooth slide
+       ═══════════════════════════════════════════════════ */
+    #fullscreen-player {
+      transition: transform 0.42s cubic-bezier(0.33,1,0.68,1);
+    }
+
+    /* ═══════════════════════════════════════════════════
+       FIX 11 — AI PANEL (inside fullscreen)
+       ═══════════════════════════════════════════════════ */
     #aurum-ai-panel {
       position: absolute;
       bottom: 0; left: 0; right: 0;
@@ -172,6 +291,92 @@
       cursor: pointer; color: rgba(255,255,255,0.4);
     }
     .aurum-ai-panel-close svg { width: 14px; height: 14px; }
+
+    /* ═══════════════════════════════════════════════════
+       FIX 12 — SONG ROW: Better active/hover state
+       ═══════════════════════════════════════════════════ */
+    .song-row {
+      transition: background 0.15s ease, transform 0.15s ease;
+    }
+    .song-row:active {
+      background: rgba(255,255,255,0.04);
+      transform: scale(0.99);
+    }
+
+    /* ═══════════════════════════════════════════════════
+       FIX 13 — CARDS: Premium press feel
+       ═══════════════════════════════════════════════════ */
+    .quick-card,
+    .wide-card,
+    .bw-card {
+      transition: transform 0.18s cubic-bezier(0.34,1.56,0.64,1),
+                  box-shadow 0.18s ease !important;
+    }
+    .quick-card:active,
+    .wide-card:active,
+    .bw-card:active {
+      transform: scale(0.95) !important;
+    }
+
+    /* ═══════════════════════════════════════════════════
+       FIX 14 — TOAST: Premium pill style
+       ═══════════════════════════════════════════════════ */
+    #toast {
+      border-radius: 100px !important;
+      padding: 10px 20px !important;
+      font-size: 13px !important;
+      font-weight: 600 !important;
+      letter-spacing: -0.2px !important;
+      backdrop-filter: blur(20px) !important;
+      -webkit-backdrop-filter: blur(20px) !important;
+      background: rgba(30,28,24,0.92) !important;
+      border: 1px solid rgba(255,255,255,0.08) !important;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4) !important;
+    }
+
+    /* ═══════════════════════════════════════════════════
+       FIX 15 — NAV BAR: Floating pill style
+       ═══════════════════════════════════════════════════ */
+    #nav {
+      border-radius: 20px 20px 0 0;
+      overflow: hidden;
+    }
+
+    /* ═══════════════════════════════════════════════════
+       FIX 16 — PLAY CIRCLE: Premium pulse on playing
+       ═══════════════════════════════════════════════════ */
+    @keyframes playingPulse {
+      0%,100% { box-shadow: 0 0 0 0 rgba(255,255,255,0.12); }
+      50%     { box-shadow: 0 0 0 8px rgba(255,255,255,0); }
+    }
+    #fullscreen-player.playing .fp-play-circle {
+      animation: playingPulse 2s ease-in-out infinite;
+    }
+
+    /* ═══════════════════════════════════════════════════
+       FIX 17 — LIKE BUTTON: Heart fill animation
+       ═══════════════════════════════════════════════════ */
+    @keyframes heartPop {
+      0%   { transform: scale(1); }
+      40%  { transform: scale(1.35); }
+      70%  { transform: scale(0.88); }
+      100% { transform: scale(1); }
+    }
+    .song-row-heart.saved svg {
+      animation: heartPop 0.38s cubic-bezier(0.34,1.56,0.64,1);
+    }
+
+    /* ═══════════════════════════════════════════════════
+       FIX 18 — OFFLINE BANNER: Smooth slide
+       ═══════════════════════════════════════════════════ */
+    #offline-banner {
+      transition: transform 0.3s cubic-bezier(0.33,1,0.68,1),
+                  opacity 0.3s ease;
+    }
+    #offline-banner:not(.show) {
+      transform: translateY(-100%);
+      opacity: 0;
+    }
   </style>
 </head>
 <body>
@@ -188,6 +393,7 @@
     <div class="orb orb-3"></div>
   </div>
 
+  <!-- ═══════════════ HOME PAGE ═══════════════ -->
   <main class="page active" id="page-home" role="main" aria-label="Home">
     <div class="ph-wrap" id="ph-wrap">
       <div class="ph-ambient" aria-hidden="true">
@@ -205,14 +411,19 @@
           </div>
           <span class="ph-app-name">Aurum</span>
         </div>
+
+        <!-- ✦ FIXED TOPBAR: Sirf Settings + AI + Profile -->
         <div class="ph-actions">
-          <button class="ph-icon-btn" onclick="refreshHomeSections()" aria-label="Refresh home">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-          </button>
+
+          <!-- Settings -->
           <button class="ph-icon-btn ph-settings-btn" onclick="openSettings()" aria-label="Open settings">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4 1.65 1.65 0 0 0 7.18 19l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0 .33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.5a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4 1.65 1.65 0 0 0 7.18 19l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0 .33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.5a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
           </button>
-          <!-- ✦ AURUM AI CHIP — always visible, login required to use -->
+
+          <!-- Aurum AI Chip -->
           <button id="aurum-ai-chip"
                   onclick="(function(){var c=document.getElementById('aurum-user-chip');if(!c||c.style.display==='none'){if(window.openLoginModal)window.openLoginModal('ai');else{var o=document.getElementById('aurum-login-overlay');if(o){o.style.display='flex';requestAnimationFrame(function(){o.classList.add('open')});}}}else{window.aurumAI&&window.aurumAI.togglePanel&&window.aurumAI.togglePanel();}})()"
                   aria-label="Aurum AI Suggestions">
@@ -224,11 +435,15 @@
             </svg>
             <span>Aurum AI</span>
           </button>
-          <button class="ph-icon-btn" onclick="goPage('library',document.getElementById('nav-library'))" aria-label="Open library">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-          </button>
+
+          <!-- ✦ Profile Photo — topbar mein, fullscreen pe hide hoga -->
+          <div id="aurum-user-chip" style="display:none" onclick="openUserMenu()" aria-label="Account">
+            <img id="aurum-user-avatar" src="" alt="avatar">
+          </div>
+
         </div>
       </div>
+
       <div class="ph-chips-scroll" role="tablist" aria-label="Music genres">
         <div class="ph-chips" id="home-chips">
           <button class="chip active" role="tab" aria-selected="true"  onclick="filterHome('all',this)">For You</button>
@@ -244,13 +459,12 @@
       <div class="ph-fade-edge" aria-hidden="true"></div>
     </div>
 
-    <!-- ✦ AURUM AI HOME STRIP — appears below chips when logged in -->
     <div id="aurum-ai-suggestions" style="display:none"></div>
-
     <div id="home-sections"></div>
     <div class="page-bottom-spacer"></div>
   </main>
 
+  <!-- ═══════════════ SEARCH PAGE ═══════════════ -->
   <div class="page" id="page-search" role="region" aria-label="Search">
     <div class="page-header">
       <div class="page-title">Search</div>
@@ -270,6 +484,7 @@
     <div id="search-body"></div>
   </div>
 
+  <!-- ═══════════════ LIBRARY PAGE ═══════════════ -->
   <div class="page" id="page-library" role="region" aria-label="Library">
     <div class="page-header">
       <div class="page-title">Library</div>
@@ -308,6 +523,7 @@
     </div>
   </div>
 
+  <!-- ═══════════════ BOTTOM NAV ═══════════════ -->
   <nav id="nav" aria-label="Main navigation">
     <button class="nav-btn active" onclick="goPage('home',this)" id="nav-home" aria-label="Home" aria-current="page">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
@@ -323,6 +539,7 @@
     </button>
   </nav>
 
+  <!-- ═══════════════ MINI PLAYER ═══════════════ -->
   <div id="mini-player" onclick="openFullscreen()" role="button" tabindex="0" aria-label="Open full player">
     <img class="mini-art" id="mini-art" src="" alt="Album art">
     <div class="mini-info">
@@ -345,6 +562,7 @@
     </div>
   </div>
 
+  <!-- ═══════════════ FULLSCREEN PLAYER ═══════════════ -->
   <div id="fullscreen-player" role="region" aria-label="Now playing">
     <div id="fp-bg" aria-hidden="true">
       <img id="fp-bg-art" src="" alt="" role="presentation" crossorigin="anonymous">
@@ -472,12 +690,10 @@
       </button>
     </div>
 
-    <!-- ✦ AURUM AI PANEL — slides up inside fullscreen player -->
+    <!-- Aurum AI Panel -->
     <div id="aurum-ai-panel" role="region" aria-label="AI Suggestions">
       <div class="aurum-ai-panel-handle" aria-hidden="true"></div>
-      <button class="aurum-ai-panel-close"
-              onclick="window.aurumAI.togglePanel()"
-              aria-label="Close AI panel">
+      <button class="aurum-ai-panel-close" onclick="window.aurumAI.togglePanel()" aria-label="Close AI panel">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
         </svg>
@@ -486,6 +702,7 @@
     </div>
   </div>
 
+  <!-- ═══════════════ QUEUE PANEL ═══════════════ -->
   <div id="queue-panel" role="region" aria-label="Up next queue">
     <div class="queue-panel-handle" id="queue-drag-handle" aria-hidden="true"></div>
     <div class="queue-panel-header">
@@ -495,6 +712,7 @@
     <div class="queue-panel-body" id="queue-panel-body"></div>
   </div>
 
+  <!-- ═══════════════ PLAYLIST DETAIL ═══════════════ -->
   <div id="playlist-detail" role="region" aria-label="Playlist">
     <div class="pl-detail-scroll">
       <div class="pl-detail-header">
@@ -529,6 +747,9 @@
     </div>
   </div>
 
+  <!-- ═══════════════ MODALS ═══════════════ -->
+
+  <!-- Song options modal -->
   <div class="modal-overlay" id="song-modal" onclick="closeSongModal(event)" role="dialog" aria-modal="true" aria-label="Song options">
     <div class="modal-sheet" role="document">
       <div class="modal-handle" aria-hidden="true"></div>
@@ -558,6 +779,7 @@
     </div>
   </div>
 
+  <!-- Add to playlist modal -->
   <div class="modal-overlay" id="add-playlist-modal" onclick="closeAddToPlaylistModal(event)" role="dialog" aria-modal="true" aria-label="Add to playlist">
     <div class="modal-sheet">
       <div class="modal-handle" aria-hidden="true"></div>
@@ -566,6 +788,7 @@
     </div>
   </div>
 
+  <!-- Create playlist modal -->
   <div class="input-modal" id="create-playlist-modal" style="display:none"
        role="dialog" aria-modal="true" aria-label="Create playlist">
     <div class="input-sheet">
@@ -578,6 +801,7 @@
     </div>
   </div>
 
+  <!-- Rename playlist modal -->
   <div class="input-modal" id="rename-modal" style="display:none"
        role="dialog" aria-modal="true" aria-label="Rename playlist">
     <div class="input-sheet">
@@ -590,6 +814,7 @@
     </div>
   </div>
 
+  <!-- Playlist options modal -->
   <div class="modal-overlay" id="playlist-opts-modal"
        onclick="closePlaylistOpts(event)"
        role="dialog" aria-modal="true" aria-label="Playlist options">
@@ -607,6 +832,7 @@
     </div>
   </div>
 
+  <!-- Quality modal -->
   <div class="modal-overlay" id="quality-modal"
        onclick="closeQualitySheet(event)"
        role="dialog" aria-modal="true" aria-label="Audio quality">
@@ -625,6 +851,7 @@
     </div>
   </div>
 
+  <!-- Download modal -->
   <div class="modal-overlay" id="download-modal"
        onclick="closeDownloadModal(event)"
        role="dialog" aria-modal="true" aria-label="Download options">
@@ -677,9 +904,7 @@
 
   <div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
-  <!-- ═══════════════════════════════════════════
-       AURUM LOGIN MODAL — Google OAuth Gate
-       ═══════════════════════════════════════════ -->
+  <!-- ═══════════════ LOGIN MODAL ═══════════════ -->
   <div id="aurum-login-overlay" style="display:none"
        role="dialog" aria-modal="true" aria-label="Sign in to Aurum">
     <div class="aurum-login-sheet">
@@ -734,12 +959,7 @@
     </div>
   </div>
 
-  <!-- Logged-in user avatar chip -->
-  <div id="aurum-user-chip" style="display:none" onclick="openUserMenu()" aria-label="Account">
-    <img id="aurum-user-avatar" src="" alt="avatar">
-  </div>
-
-  <!-- User menu dropdown -->
+  <!-- User menu -->
   <div id="aurum-user-menu" style="display:none" role="dialog" aria-modal="true">
     <div class="aurum-user-menu-sheet">
       <div class="aurum-menu-handle"></div>
@@ -768,6 +988,7 @@
     </div>
   </div>
 
+  <!-- Settings panel -->
   <div id="settings-panel" role="region" aria-label="Settings">
     <div class="settings-header">
       <button class="settings-back" onclick="closeSettings()" aria-label="Back">
@@ -781,63 +1002,99 @@
     <div id="settings-body"></div>
   </div>
 
-</div>
+</div><!-- #app -->
 
 <!-- ═══════════════════════════════════════════════════════════
-     SCRIPT LOAD ORDER — FIXED: app.js BEFORE auth.js
-     auth.js needs showToast, haptic etc from app.js
+     SCRIPTS — Fixed load order
      ═══════════════════════════════════════════════════════════ -->
 <script src="tv-perf.js?v=__CACHEBUST__" defer></script>
 <script src="settings_addon.js?v=__CACHEBUST__" defer></script>
-<script src="app.js?v=__CACHEBUST__" defer></script>   <!-- ← FIRST -->
-<script src="auth.js?v=__CACHEBUST__" defer></script>  <!-- ← SECOND (needs app.js ready) -->
+<script src="app.js?v=__CACHEBUST__" defer></script>
+<script src="auth.js?v=__CACHEBUST__" defer></script>
 
-<!-- ✦ aurumAI.togglePanel — wires up the AI panel open/close -->
 <script>
-  document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', function() {
 
-    // Hook into auth.js login flow via MutationObserver on user chip
-    const chipEl = document.getElementById('aurum-user-chip');
-    if (chipEl) {
-      new MutationObserver(function(muts) {
-        muts.forEach(function(m) {
-          if (m.type === 'attributes' && m.attributeName === 'style') {
-            const visible = chipEl.style.display !== 'none';
-            const aiStrip = document.getElementById('aurum-ai-suggestions');
-            if (aiStrip) aiStrip.style.display = visible ? 'block' : 'none';
-            // Auto-render home strip on login
-            if (visible && window.aurumAI) {
-              const stripEl = document.getElementById('aurum-ai-suggestions');
-              if (stripEl && !stripEl._loaded) {
-                stripEl._loaded = true;
-                window.aurumAI.render(stripEl, window.currentTrack || null);
-              }
+  // ── FIX: openFullscreen / closeFullscreen pe body class toggle
+  //         (profile photo hide/show)
+  const _origOpen  = window.openFullscreen;
+  const _origClose = window.closeFullscreen;
+
+  window.openFullscreen = function() {
+    if (typeof _origOpen === 'function') _origOpen();
+    document.body.classList.add('fp-open');
+  };
+
+  window.closeFullscreen = function() {
+    if (typeof _origClose === 'function') _origClose();
+    document.body.classList.remove('fp-open');
+  };
+
+  // ── FIX: Mini player blurred bg — art change pe CSS var update
+  const _origSetImgSrc = window.setImgSrc;
+  window.setImgSrc = function(img, src) {
+    if (typeof _origSetImgSrc === 'function') _origSetImgSrc(img, src);
+    if (img && img.id === 'mini-art' && src) {
+      const mp = document.getElementById('mini-player');
+      if (mp) mp.style.setProperty('--mini-art-url', `url('${src}')`);
+    }
+  };
+
+  // ── FIX: Artwork crossfade on track change
+  const _origUpdatePlayerUI = window.updatePlayerUI;
+  window.updatePlayerUI = function() {
+    const fpArt = document.getElementById('fp-art');
+    if (fpArt) {
+      fpArt.classList.add('changing');
+      setTimeout(() => {
+        if (typeof _origUpdatePlayerUI === 'function') _origUpdatePlayerUI();
+        fpArt.classList.remove('changing');
+      }, 160);
+    } else {
+      if (typeof _origUpdatePlayerUI === 'function') _origUpdatePlayerUI();
+    }
+  };
+
+  // ── AI Panel toggle wiring
+  const chipEl = document.getElementById('aurum-user-chip');
+  if (chipEl) {
+    new MutationObserver(function(muts) {
+      muts.forEach(function(m) {
+        if (m.type === 'attributes' && m.attributeName === 'style') {
+          const visible = chipEl.style.display !== 'none';
+          const aiStrip = document.getElementById('aurum-ai-suggestions');
+          if (aiStrip) aiStrip.style.display = visible ? 'block' : 'none';
+          if (visible && window.aurumAI) {
+            const stripEl = document.getElementById('aurum-ai-suggestions');
+            if (stripEl && !stripEl._loaded) {
+              stripEl._loaded = true;
+              window.aurumAI.render(stripEl, window.currentTrack || null);
             }
           }
-        });
-      }).observe(chipEl, { attributes: true });
-    }
-
-    // togglePanel — slides AI panel inside fullscreen player
-    if (window.aurumAI) {
-      window.aurumAI.togglePanel = function() {
-        if (!window.validateFeature('ai')) return;
-        const panel = document.getElementById('aurum-ai-panel');
-        if (!panel) return;
-        const isOpen = panel.classList.contains('open');
-        if (isOpen) {
-          panel.classList.remove('open');
-        } else {
-          const body = document.getElementById('aurum-ai-panel-body');
-          if (body && !body._loaded) {
-            body._loaded = true;
-            window.aurumAI.render(body, window.currentTrack || null);
-          }
-          panel.classList.add('open');
         }
-      };
-    }
-  });
+      });
+    }).observe(chipEl, { attributes: true });
+  }
+
+  if (window.aurumAI) {
+    window.aurumAI.togglePanel = function() {
+      if (!window.validateFeature('ai')) return;
+      const panel = document.getElementById('aurum-ai-panel');
+      if (!panel) return;
+      const isOpen = panel.classList.contains('open');
+      if (isOpen) {
+        panel.classList.remove('open');
+      } else {
+        const body = document.getElementById('aurum-ai-panel-body');
+        if (body && !body._loaded) {
+          body._loaded = true;
+          window.aurumAI.render(body, window.currentTrack || null);
+        }
+        panel.classList.add('open');
+      }
+    };
+  }
+});
 </script>
 
 <script>
