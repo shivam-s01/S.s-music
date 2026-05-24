@@ -359,7 +359,23 @@
               <path d="M6.5 23L12 8.5L14 13" stroke="rgba(184,150,64,0.14)" stroke-width="0.8" stroke-linecap="round"/>
             </svg>
           </div>
-          <span class="ph-app-name">Aurum</span>
+          <div style="display:flex;flex-direction:column;gap:3px;">
+            <span class="ph-app-name">Aurum</span>
+            <a id="aurum-dl-strip" href="https://dub.sh/ullyuuE" target="_blank" rel="noopener noreferrer"
+               style="display:inline-flex;align-items:center;gap:5px;text-decoration:none;
+                      background:linear-gradient(90deg,rgba(184,150,64,0.15),rgba(184,150,64,0.05));
+                      border:1px solid rgba(184,150,64,0.25);border-radius:8px;
+                      padding:3px 10px 3px 7px;width:fit-content;">
+              <svg viewBox="0 0 24 24" width="11" height="11" fill="#b89640" aria-hidden="true">
+                <path d="M12 16l-4-4h3V4h2v8h3l-4 4zM4 20h16v2H4z"/>
+              </svg>
+              <span style="font-family:'Sora',sans-serif;font-size:10px;font-weight:700;
+                           letter-spacing:0.04em;
+                           background:linear-gradient(135deg,#ecd9b0,#c8a858);
+                           -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+                           background-clip:text;">Download App</span>
+            </a>
+          </div>
         </div>
         <div class="ph-actions">
           <button class="ph-icon-btn ph-settings-btn" onclick="openSettings()" aria-label="Open settings">
@@ -1068,6 +1084,19 @@
           mini.style.bottom = '';
         }
       }, { once: true });
+    }
+  })();
+</script>
+
+<script>
+  // Hide permanent download strip in PWA/standalone mode
+  (function(){
+    var isPWA = window.matchMedia('(display-mode: standalone)').matches
+             || window.matchMedia('(display-mode: fullscreen)').matches
+             || window.navigator.standalone === true;
+    if(isPWA){
+      var el = document.getElementById('aurum-dl-strip');
+      if(el) el.style.display = 'none';
     }
   })();
 </script>
