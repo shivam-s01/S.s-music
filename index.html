@@ -41,13 +41,12 @@
   <link rel="stylesheet" href="style.css?v=__CACHEBUST__">
   <link rel="stylesheet" href="queue-panel.css?v=__CACHEBUST__">
   <link rel="stylesheet" href="settings.css?v=__CACHEBUST__">
-
   <link rel="stylesheet" href="style_additions.css?v=__CACHEBUST__">
 
   <style>
     /* ── Aurum AI Chip — topbar gold pill ───────────────────────────────── */
     #aurum-ai-chip {
-      display: flex; /* always visible */
+      display: flex;
       align-items: center;
       gap: 5px;
       padding: 5px 10px 5px 7px;
@@ -139,7 +138,7 @@
       color: var(--gold-l, #d4b85a); text-transform: uppercase;
     }
 
-    /* ── AI Suggestion Panel (slides up from bottom of fullscreen) ──────── */
+    /* ── AI Suggestion Panel ────────────────────────────────────────────── */
     #aurum-ai-panel {
       position: absolute;
       bottom: 0; left: 0; right: 0;
@@ -152,6 +151,7 @@
       z-index: 20;
       max-height: 55vh;
       overflow-y: auto;
+      overflow-x: hidden; /* FIX #11: prevent horizontal clip */
       -webkit-overflow-scrolling: touch;
     }
     #aurum-ai-panel.open { transform: translateY(0); }
@@ -172,7 +172,6 @@
     .aurum-ai-panel-close svg { width: 14px; height: 14px; }
 
     /* ── FIXES FOR AVATAR CHIP LAYOUT ── */
-    /* Home page topbar right layout alignment */
     .ph-actions {
       display: flex !important;
       align-items: center !important;
@@ -193,7 +192,6 @@
       object-fit: cover;
       border: 1px solid rgba(184,150,64,0.4);
     }
-    /* Hide avatar chip completely when Fullscreen player is active */
     body:has(#fullscreen-player.open) #aurum-user-chip {
       display: none !important;
     }
@@ -207,8 +205,9 @@
       0%,100% { box-shadow: 0 -1px 30px rgba(184,150,64,0.08), 0 -8px 40px rgba(0,0,0,0.7); }
       50%     { box-shadow: 0 -1px 40px rgba(184,150,64,0.16), 0 -8px 40px rgba(0,0,0,0.7); }
     }
+    /* FIX #8: Banner inside app container, not fixed to viewport */
     #aurum-app-banner {
-      position: fixed;
+      position: absolute;
       bottom: 0; left: 0; right: 0;
       z-index: 99999;
       background: linear-gradient(160deg, rgba(12,11,9,0.98) 0%, rgba(8,7,5,0.99) 100%);
@@ -223,7 +222,6 @@
       transform: translateY(100%);
       animation: bannerSlide 0.55s cubic-bezier(0.22,1,0.36,1) 1.8s forwards,
                  bannerGlow 3s ease-in-out 2.5s infinite;
-      /* Push mini-player up — handled via JS below */
     }
     #aurum-app-banner::before {
       content: '';
@@ -232,7 +230,6 @@
       height: 1px;
       background: linear-gradient(90deg, transparent, rgba(184,150,64,0.45), transparent);
     }
-    /* Icon wrap */
     #aurum-app-banner .banner-icon {
       width: 42px; height: 42px;
       border-radius: 12px;
@@ -242,56 +239,33 @@
       flex-shrink: 0;
       box-shadow: 0 2px 12px rgba(0,0,0,0.4);
     }
-    /* Text block */
-    #aurum-app-banner .banner-text {
-      flex: 1;
-      min-width: 0;
-    }
+    #aurum-app-banner .banner-text { flex: 1; min-width: 0; }
     #aurum-app-banner .banner-title {
       font-family: 'Sora', sans-serif;
-      font-size: 13px;
-      font-weight: 700;
-      color: #fff;
-      letter-spacing: -0.2px;
-      line-height: 1.2;
+      font-size: 13px; font-weight: 700; color: #fff;
+      letter-spacing: -0.2px; line-height: 1.2;
     }
     #aurum-app-banner .banner-sub {
       font-family: 'Sora', sans-serif;
-      font-size: 10.5px;
-      font-weight: 500;
-      color: rgba(184,150,64,0.65);
-      margin-top: 2px;
-      letter-spacing: 0.01em;
+      font-size: 10.5px; font-weight: 500;
+      color: rgba(184,150,64,0.65); margin-top: 2px; letter-spacing: 0.01em;
     }
-    /* CTA button */
     #aurum-app-banner .banner-cta {
       flex-shrink: 0;
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
+      display: inline-flex; align-items: center; gap: 5px;
       background: linear-gradient(135deg, #d4b85a 0%, #b89640 60%, #a07c2c 100%);
       color: #0a0800;
-      font-family: 'Sora', sans-serif;
-      font-weight: 800;
-      font-size: 12px;
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      text-decoration: none;
-      border: none;
-      border-radius: 22px;
-      padding: 9px 16px;
-      cursor: pointer;
-      -webkit-tap-highlight-color: transparent;
+      font-family: 'Sora', sans-serif; font-weight: 800; font-size: 12px;
+      letter-spacing: 0.05em; text-transform: uppercase; text-decoration: none;
+      border: none; border-radius: 22px; padding: 9px 16px;
+      cursor: pointer; -webkit-tap-highlight-color: transparent;
       box-shadow: 0 2px 18px rgba(184,150,64,0.4), inset 0 1px 0 rgba(255,255,255,0.18);
       transition: transform 0.14s ease, box-shadow 0.14s ease;
-      white-space: nowrap;
-      position: relative;
-      overflow: hidden;
+      white-space: nowrap; position: relative; overflow: hidden;
     }
     #aurum-app-banner .banner-cta::after {
       content: '';
-      position: absolute;
-      inset: 0;
+      position: absolute; inset: 0;
       background: linear-gradient(90deg, transparent, rgba(255,255,255,0.12), transparent);
       transform: translateX(-100%);
       animation: ctaShimmer 2.4s ease-in-out 2.5s infinite;
@@ -305,22 +279,13 @@
       transform: scale(0.93);
       box-shadow: 0 1px 8px rgba(184,150,64,0.25);
     }
-    #aurum-app-banner .banner-cta svg {
-      width: 11px; height: 11px;
-      fill: #0a0800;
-    }
-    /* Close button */
+    #aurum-app-banner .banner-cta svg { width: 11px; height: 11px; fill: #0a0800; }
     #aurum-app-banner .banner-close {
-      flex-shrink: 0;
-      width: 26px; height: 26px;
-      border-radius: 50%;
-      background: rgba(255,255,255,0.05);
-      border: 1px solid rgba(255,255,255,0.08);
+      flex-shrink: 0; width: 26px; height: 26px; border-radius: 50%;
+      background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08);
       display: flex; align-items: center; justify-content: center;
-      cursor: pointer;
-      color: rgba(255,255,255,0.3);
-      font-size: 16px;
-      line-height: 1;
+      cursor: pointer; color: rgba(255,255,255,0.3);
+      font-size: 16px; line-height: 1;
       -webkit-tap-highlight-color: transparent;
       transition: background 0.15s, color 0.15s;
     }
@@ -328,6 +293,31 @@
       background: rgba(255,255,255,0.1);
       color: rgba(255,255,255,0.6);
     }
+
+    /* FIX #1 & #2: Login overlay and user menu — visibility toggle fix */
+    #aurum-login-overlay,
+    #aurum-user-menu {
+      display: flex !important; /* always flex, visibility controls show/hide */
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+    #aurum-login-overlay.open,
+    #aurum-user-menu.open {
+      opacity: 1;
+      visibility: visible;
+      pointer-events: all;
+    }
+
+    /* FIX #5: fp-next-strip — remove hidden class effect when JS shows it */
+    #fp-next-strip.hidden { display: none; }
+    #fp-next-strip:not(.hidden) { display: flex; }
+
+    /* FIX #6: search-clear — hidden class support */
+    #search-clear.hidden { display: none !important; }
+    #search-clear:not(.hidden) { display: flex !important; }
+
+    /* FIX #14: aria-current page — visual cue handled via nav-btn.active in CSS */
   </style>
 </head>
 <body>
@@ -381,8 +371,9 @@
           <button class="ph-icon-btn ph-settings-btn" onclick="openSettings()" aria-label="Open settings">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4 1.65 1.65 0 0 0 7.18 19l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0 .33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.5a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </button>
+          <!-- FIX #7: AI chip onclick moved to separate JS function to avoid inline quote nesting -->
           <button id="aurum-ai-chip"
-                  onclick="(function(){var c=document.getElementById('aurum-user-chip');if(!c||c.style.display==='none'){if(window.openLoginModal)window.openLoginModal('ai');else{var o=document.getElementById('aurum-login-overlay');if(o){o.style.display='flex';requestAnimationFrame(function(){o.classList.add('open')});}}}else{window.aurumAI&&window.aurumAI.togglePanel&&window.aurumAI.togglePanel();}})()"
+                  onclick="handleAiChipClick()"
                   aria-label="Aurum AI Suggestions">
             <div class="ai-chip-dot" aria-hidden="true"></div>
             <svg viewBox="0 0 28 28" fill="none" aria-hidden="true">
@@ -392,7 +383,7 @@
             </svg>
             <span>Aurum AI</span>
           </button>
-          <div id="aurum-user-chip" style="display:none" onclick="openUserMenu()" aria-label="Account">
+          <div id="aurum-user-chip" style="display:none" onclick="openUserMenu()" aria-label="Account" role="button" tabindex="0">
             <img id="aurum-user-avatar" src="" alt="avatar">
           </div>
         </div>
@@ -429,7 +420,8 @@
         <input type="text" id="search-input" placeholder="Search songs, artists..."
                inputmode="search" autocomplete="off" autocorrect="off"
                spellcheck="false" aria-label="Search songs and artists">
-        <button id="search-clear" class="search-clear hidden" onclick="clearSearch()" aria-label="Clear search">
+        <!-- FIX #6: removed 'hidden' class, JS controls display via classList -->
+        <button id="search-clear" style="display:none" onclick="clearSearch()" aria-label="Clear search">
           <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
@@ -476,15 +468,16 @@
   </div>
 
   <nav id="nav" aria-label="Main navigation">
+    <!-- FIX #14: aria-current updated via JS goPage() — handled in script below -->
     <button class="nav-btn active" onclick="goPage('home',this)" id="nav-home" aria-label="Home" aria-current="page">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
       <span>Home</span>
     </button>
-    <button class="nav-btn" onclick="goPage('search',this)" id="nav-search" aria-label="Search">
+    <button class="nav-btn" onclick="goPage('search',this)" id="nav-search" aria-label="Search" aria-current="false">
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
       <span>Search</span>
     </button>
-    <button class="nav-btn" onclick="goPage('library',this)" id="nav-library" aria-label="Library">
+    <button class="nav-btn" onclick="goPage('library',this)" id="nav-library" aria-label="Library" aria-current="false">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
       <span>Library</span>
     </button>
@@ -514,7 +507,8 @@
 
   <div id="fullscreen-player" role="region" aria-label="Now playing">
     <div id="fp-bg" aria-hidden="true">
-      <img id="fp-bg-art" src="" alt="" role="presentation" crossorigin="anonymous">
+      <!-- FIX #15: crossorigin removed — iTunes artwork does not support CORS -->
+      <img id="fp-bg-art" src="" alt="" role="presentation">
       <div id="fp-bg-overlay"></div>
       <div id="fp-ambient-glow"></div>
     </div>
@@ -581,7 +575,8 @@
       </button>
     </div>
 
-    <button class="fp-next-strip hidden" id="fp-next-strip" onclick="openQueuePanel()" aria-label="Open queue">
+    <!-- FIX #5: removed 'hidden' class — JS controls display directly -->
+    <button class="fp-next-strip" id="fp-next-strip" style="display:none" onclick="openQueuePanel()" aria-label="Open queue">
       <div class="fp-next-tag" aria-hidden="true">UP<br>NEXT</div>
       <img class="fp-next-art" id="fp-next-art" src="" alt="Next song art">
       <div class="fp-next-info">
@@ -642,7 +637,7 @@
     <div id="aurum-ai-panel" role="region" aria-label="AI Suggestions">
       <div class="aurum-ai-panel-handle" aria-hidden="true"></div>
       <button class="aurum-ai-panel-close"
-              onclick="window.aurumAI.togglePanel()"
+              onclick="window.aurumAI && window.aurumAI.togglePanel && window.aurumAI.togglePanel()"
               aria-label="Close AI panel">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
           <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
@@ -670,12 +665,14 @@
         <div class="pl-detail-title-wrap">
           <h1 id="pl-detail-name">Playlist</h1>
         </div>
-        <button class="pl-more" onclick="openPlaylistOpts(event,currentPlaylistIndex)" aria-label="Playlist options">
+        <!-- FIX #4: optsPlaylistIndex set before modal opens — handled via JS patch below -->
+        <button class="pl-more" onclick="openPlaylistOptsFromDetail()" aria-label="Playlist options">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/></svg>
         </button>
       </div>
       <div class="pl-cover-wrap">
-        <div id="pl-big-cover" aria-hidden="true"></div>
+        <!-- FIX #9: placeholder div with min dimensions to prevent layout shift -->
+        <div id="pl-big-cover" aria-hidden="true" style="width:100%;max-width:248px;aspect-ratio:1;border-radius:20px;background:var(--surface2);margin:0 auto;"></div>
         <div class="pl-detail-meta">
           <h2 id="pl-detail-title">Playlist</h2>
           <p id="pl-detail-sub">0 songs</p>
@@ -843,7 +840,8 @@
 
   <div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
-  <div id="aurum-login-overlay" style="display:none"
+  <!-- FIX #1: display:none removed — CSS visibility controls open/close state -->
+  <div id="aurum-login-overlay"
        role="dialog" aria-modal="true" aria-label="Sign in to Aurum">
     <div class="aurum-login-sheet">
       <button class="aurum-login-close" onclick="closeLoginModal()" aria-label="Close">
@@ -870,7 +868,7 @@
         </div>
         <div class="aurum-perk">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-          <span>Ringtone export & download</span>
+          <span>Ringtone export &amp; download</span>
         </div>
         <div class="aurum-perk">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
@@ -897,7 +895,8 @@
     </div>
   </div>
 
-  <div id="aurum-user-menu" style="display:none" role="dialog" aria-modal="true">
+  <!-- FIX #2: display:none removed — CSS visibility controls open/close state -->
+  <div id="aurum-user-menu" role="dialog" aria-modal="true">
     <div class="aurum-user-menu-sheet">
       <div class="aurum-menu-handle"></div>
       <div class="aurum-menu-profile">
@@ -912,7 +911,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
         Sync across devices
       </button>
-      <button class="aurum-menu-item" onclick="closeUserMenu();window.aurumAI.togglePanel()">
+      <button class="aurum-menu-item" onclick="closeUserMenu();window.aurumAI && window.aurumAI.togglePanel && window.aurumAI.togglePanel()">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
           <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
         </svg>
@@ -938,7 +937,35 @@
     <div id="settings-body"></div>
   </div>
 
-</div>
+  <!-- FIX #8: Banner moved inside #app so it respects max-width:430px -->
+  <div id="aurum-app-banner" role="complementary" aria-label="Download Aurum App">
+    <div class="banner-icon" aria-hidden="true">
+      <svg viewBox="0 0 28 28" fill="none" width="24" height="24">
+        <path d="M4 23L10 7L14 16L18 7L24 23" stroke="rgba(184,150,64,0.3)" stroke-width="1" stroke-linecap="round"/>
+        <path d="M6.5 23L12 8.5L14 13" stroke="#d4b85a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M14 13L16 8.5L21.5 23" stroke="#b89640" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
+    <div class="banner-text">
+      <div class="banner-title">Get the Aurum App</div>
+      <div class="banner-sub">Better experience · Android</div>
+    </div>
+    <a class="banner-cta"
+       href="https://dub.sh/ullyuuE"
+       target="_blank"
+       rel="noopener noreferrer"
+       aria-label="Download Aurum App">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 16l-4-4h3V4h2v8h3l-4 4zM4 20h16v2H4z"/>
+      </svg>
+      Open App
+    </a>
+    <button class="banner-close"
+            onclick="dismissBanner()"
+            aria-label="Dismiss app banner">×</button>
+  </div>
+
+</div><!-- end #app -->
 
 <script src="tv-perf.js?v=__CACHEBUST__" defer></script>
 <script src="settings_addon.js?v=__CACHEBUST__" defer></script>
@@ -946,159 +973,169 @@
 <script src="auth.js?v=__CACHEBUST__" defer></script>
 
 <script>
-  document.addEventListener('DOMContentLoaded', function() {
+/* ─── FIX #3: aurumAI race condition — safe init wrapper ─────── */
+window._aurumAIQueue = [];
+if (!window.aurumAI) {
+  window.aurumAI = {
+    togglePanel: function() { window._aurumAIQueue.push('togglePanel'); },
+    render: function(el, track) { window._aurumAIQueue.push({fn:'render', el:el, track:track}); }
+  };
+}
 
-    // Hook into auth.js login flow via MutationObserver on user chip
-    const chipEl = document.getElementById('aurum-user-chip');
-    if (chipEl) {
-      new MutationObserver(function(muts) {
-        muts.forEach(function(m) {
-          if (m.type === 'attributes' && m.attributeName === 'style') {
-            const visible = chipEl.style.display !== 'none';
-            const aiStrip = document.getElementById('aurum-ai-suggestions');
-            if (aiStrip) aiStrip.style.display = visible ? 'block' : 'none';
-            // Auto-render home strip on login
-            if (visible && window.aurumAI) {
-              const stripEl = document.getElementById('aurum-ai-suggestions');
-              if (stripEl && !stripEl._loaded) {
-                stripEl._loaded = true;
-                window.aurumAI.render(stripEl, window.currentTrack || null);
-              }
+/* ─── FIX #7: AI chip click handler (replaces long inline onclick) */
+function handleAiChipClick() {
+  var chip = document.getElementById('aurum-user-chip');
+  var isLoggedIn = chip && chip.style.display !== 'none';
+  if (!isLoggedIn) {
+    if (window.openLoginModal) {
+      window.openLoginModal('ai');
+    } else {
+      var overlay = document.getElementById('aurum-login-overlay');
+      if (overlay) overlay.classList.add('open');
+    }
+  } else {
+    if (window.aurumAI && window.aurumAI.togglePanel) {
+      window.aurumAI.togglePanel();
+    }
+  }
+}
+
+/* ─── FIX #4: openPlaylistOptsFromDetail — keeps optsPlaylistIndex safe */
+function openPlaylistOptsFromDetail() {
+  if (typeof currentPlaylistIndex !== 'undefined' && currentPlaylistIndex !== null) {
+    if (typeof openPlaylistOpts === 'function') {
+      openPlaylistOpts(event, currentPlaylistIndex);
+    }
+  }
+}
+
+/* ─── FIX #8: Banner dismiss helper ─────────────────────────────*/
+function dismissBanner() {
+  var banner = document.getElementById('aurum-app-banner');
+  if (banner) banner.style.cssText = 'display:none!important';
+  try { sessionStorage.setItem('aurumAppBanner', 'dismissed'); } catch(e) {}
+  var mini = document.getElementById('mini-player');
+  if (mini) { mini.style.transition = ''; mini.style.bottom = ''; }
+}
+
+/* ─── FIX #14: aria-current page update ─────────────────────────
+   Monkey-patch goPage once app.js loads to also update aria-current */
+document.addEventListener('DOMContentLoaded', function() {
+  var _originalGoPage = window.goPage;
+  if (typeof _originalGoPage === 'function') {
+    window.goPage = function(name, btn) {
+      _originalGoPage(name, btn);
+      document.querySelectorAll('.nav-btn').forEach(function(b) {
+        b.setAttribute('aria-current', 'false');
+      });
+      var activeBtn = document.getElementById('nav-' + name);
+      if (activeBtn) activeBtn.setAttribute('aria-current', 'page');
+    };
+  }
+
+  /* ─── FIX #3: DOMContentLoaded — aurumAI togglePanel safe init */
+  var chipEl = document.getElementById('aurum-user-chip');
+  if (chipEl) {
+    new MutationObserver(function(muts) {
+      muts.forEach(function(m) {
+        if (m.type === 'attributes' && m.attributeName === 'style') {
+          var visible = chipEl.style.display !== 'none';
+          var aiStrip = document.getElementById('aurum-ai-suggestions');
+          if (aiStrip) aiStrip.style.display = visible ? 'block' : 'none';
+          if (visible && window.aurumAI) {
+            var stripEl = document.getElementById('aurum-ai-suggestions');
+            if (stripEl && !stripEl._loaded) {
+              stripEl._loaded = true;
+              window.aurumAI.render(stripEl, window.currentTrack || null);
             }
           }
-        });
-      }).observe(chipEl, { attributes: true });
-    }
+        }
+      });
+    }).observe(chipEl, { attributes: true });
+  }
 
-    // togglePanel — slides AI panel inside fullscreen player
-    if (window.aurumAI) {
+  /* ─── FIX #3: togglePanel defined after auth.js loads ────────── */
+  function _initAiPanel() {
+    if (window.aurumAI && !window.aurumAI._patched) {
+      window.aurumAI._patched = true;
+      var _orig = window.aurumAI.togglePanel;
       window.aurumAI.togglePanel = function() {
-        if (!window.validateFeature('ai')) return;
-        const panel = document.getElementById('aurum-ai-panel');
+        if (window.validateFeature && !window.validateFeature('ai')) return;
+        var panel = document.getElementById('aurum-ai-panel');
         if (!panel) return;
-        const isOpen = panel.classList.contains('open');
+        var isOpen = panel.classList.contains('open');
         if (isOpen) {
           panel.classList.remove('open');
         } else {
-          const body = document.getElementById('aurum-ai-panel-body');
+          var body = document.getElementById('aurum-ai-panel-body');
           if (body && !body._loaded) {
             body._loaded = true;
-            window.aurumAI.render(body, window.currentTrack || null);
+            if (window.aurumAI.render) {
+              window.aurumAI.render(body, window.currentTrack || null);
+            }
           }
           panel.classList.add('open');
         }
       };
+      /* Flush queued calls */
+      (window._aurumAIQueue || []).forEach(function(item) {
+        if (item === 'togglePanel') window.aurumAI.togglePanel();
+        else if (item && item.fn === 'render') window.aurumAI.render(item.el, item.track);
+      });
+      window._aurumAIQueue = [];
     }
-  });
+  }
+  /* Try immediately, then retry after scripts load */
+  _initAiPanel();
+  setTimeout(_initAiPanel, 500);
+  setTimeout(_initAiPanel, 1500);
+
+  /* ─── Banner logic ────────────────────────────────────────────── */
+  var banner = document.getElementById('aurum-app-banner');
+  if (banner) {
+    if (sessionStorage.getItem('aurumAppBanner') === 'dismissed') {
+      banner.style.cssText = 'display:none!important';
+    } else {
+      var isStandalone =
+        window.matchMedia('(display-mode: standalone)').matches ||
+        window.matchMedia('(display-mode: fullscreen)').matches ||
+        window.navigator.standalone === true;
+      if (isStandalone) {
+        banner.style.cssText = 'display:none!important';
+      } else {
+        /* Nudge mini-player up */
+        setTimeout(function() {
+          var mini = document.getElementById('mini-player');
+          if (mini && mini.classList.contains('show')) {
+            var BANNER_H = 72;
+            var cur = parseInt(getComputedStyle(mini).bottom) || 88;
+            mini.style.transition = 'bottom 0.4s cubic-bezier(0.33,1,0.68,1)';
+            mini.style.bottom = (cur + BANNER_H) + 'px';
+          }
+        }, 1900);
+      }
+    }
+  }
+
+  /* ─── PWA: hide download strip ───────────────────────────────── */
+  var isPWA = window.matchMedia('(display-mode: standalone)').matches
+           || window.matchMedia('(display-mode: fullscreen)').matches
+           || window.navigator.standalone === true;
+  if (isPWA) {
+    var dlStrip = document.getElementById('aurum-dl-strip');
+    if (dlStrip) dlStrip.style.display = 'none';
+  }
+});
 </script>
 
 <script>
   if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
+    window.addEventListener('load', function() {
       navigator.serviceWorker.register('./sw.js')
-        .then(r => console.log('Aurum SW:', r.scope))
-        .catch(e => console.warn('Aurum SW failed:', e));
+        .then(function(r) { console.log('Aurum SW:', r.scope); })
+        .catch(function(e) { console.warn('Aurum SW failed:', e); });
     });
   }
-</script>
-
-<!-- ═══════════════════════════════════════════════════════════════
-     AURUM — Open in App Banner
-     Shows only in browser. Auto-hides in PWA/installed app.
-     Dismissed state stored in sessionStorage.
-════════════════════════════════════════════════════════════════ -->
-<div id="aurum-app-banner" role="complementary" aria-label="Download Aurum App">
-  <!-- Aurum logo icon -->
-  <div class="banner-icon" aria-hidden="true">
-    <svg viewBox="0 0 28 28" fill="none" width="24" height="24">
-      <path d="M4 23L10 7L14 16L18 7L24 23" stroke="rgba(184,150,64,0.3)" stroke-width="1" stroke-linecap="round"/>
-      <path d="M6.5 23L12 8.5L14 13" stroke="#d4b85a" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-      <path d="M14 13L16 8.5L21.5 23" stroke="#b89640" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>
-  </div>
-  <!-- Text -->
-  <div class="banner-text">
-    <div class="banner-title">Get the Aurum App</div>
-    <div class="banner-sub">Better experience · Android</div>
-  </div>
-  <!-- CTA -->
-  <a class="banner-cta"
-     href="https://dub.sh/ullyuuE"
-     target="_blank"
-     rel="noopener noreferrer"
-     aria-label="Download Aurum App">
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 16l-4-4h3V4h2v8h3l-4 4zM4 20h16v2H4z"/>
-    </svg>
-    Open App
-  </a>
-  <!-- Close -->
-  <button class="banner-close"
-          onclick="(function(){document.getElementById('aurum-app-banner').style.cssText='display:none!important';sessionStorage.setItem('aurumAppBanner','dismissed');})()"
-          aria-label="Dismiss app banner">×</button>
-</div>
-
-<script>
-  /* Banner logic — runs immediately, no DOMContentLoaded needed
-     since the script is at the bottom after the element */
-  (function () {
-    var banner = document.getElementById('aurum-app-banner');
-    if (!banner) return;
-
-    // 1. Already dismissed this session?
-    if (sessionStorage.getItem('aurumAppBanner') === 'dismissed') {
-      banner.style.cssText = 'display:none!important';
-      return;
-    }
-
-    // 2. Running as installed PWA / standalone? Hide banner.
-    var isStandalone =
-      window.matchMedia('(display-mode: standalone)').matches ||
-      window.matchMedia('(display-mode: fullscreen)').matches ||
-      window.navigator.standalone === true;
-
-    if (isStandalone) {
-      banner.style.cssText = 'display:none!important';
-      return;
-    }
-
-    // 3. Nudge mini-player up so banner doesn't overlap it
-    //    mini-player has bottom:72px by default (above nav);
-    //    we add extra once banner animates in
-    var BANNER_H = 72; // approximate banner height px
-    setTimeout(function () {
-      var mini = document.getElementById('mini-player');
-      if (mini) {
-        var cur = parseInt(getComputedStyle(mini).bottom) || 72;
-        mini.style.transition = 'bottom 0.4s cubic-bezier(0.33,1,0.68,1)';
-        mini.style.bottom = (cur + BANNER_H) + 'px';
-      }
-    }, 1900); // after animation completes (1.8s delay + buffer)
-
-    // 4. Restore mini-player position when banner is dismissed
-    var closeBtn = banner.querySelector('.banner-close');
-    if (closeBtn) {
-      closeBtn.addEventListener('click', function () {
-        var mini = document.getElementById('mini-player');
-        if (mini) {
-          mini.style.bottom = '';
-        }
-      }, { once: true });
-    }
-  })();
-</script>
-
-<script>
-  // Hide permanent download strip in PWA/standalone mode
-  (function(){
-    var isPWA = window.matchMedia('(display-mode: standalone)').matches
-             || window.matchMedia('(display-mode: fullscreen)').matches
-             || window.navigator.standalone === true;
-    if(isPWA){
-      var el = document.getElementById('aurum-dl-strip');
-      if(el) el.style.display = 'none';
-    }
-  })();
 </script>
 
 </body>
