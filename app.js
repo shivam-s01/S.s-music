@@ -1,679 +1,3 @@
-(function (W, D) {
-  'use strict';
-
-  // ─── 1. TV DETECTION ────────────────────────────────────────
-  var UA = navigator.userAgent || '';
-  var IS_TV = (
-    /SmartTV|SMART-TV|WebOS|Tizen|BRAVIA|HbbTV|TVBrowser|Viera|Vidaa|NetCast|PhilipsTV/i.test(UA)
-  ) || (
-    W.innerWidth >= 1280 &&
-    !W.matchMedia('(pointer:fine)').matches
-  );
-
-  if (!IS_TV) return;
-
-  // ─── 2. GLOBALS ─────────────────────────────────────────────
-  W.__IS_TV__      = true;
-  W.__TV_VERSION__ = '8.1';
-  W.isTV           = true;
-  W.isLowEnd       = true;
-
-  // ─── 3. STUB setupTVNavigation IMMEDIATELY ──────────────────
-  W.setupTVNavigation = function () { /* replaced by tv-perf */ };
-
-  // ─── 4. TIMER REGISTRY ──────────────────────────────────────
-  var _timers = [];
-  function _sid(id) { _timers.push(id); return id; }
-  function _clearAll() {
-    for (var i = 0; i < _timers.length; i++) {
-      clearTimeout(_timers[i]);
-      clearInterval(_timers[i]);
-    }
-    _timers = [];
-  }
-
-  // ─── 5. LIGHTWEIGHT CSS ─────────────────────────────────────
-  var CSS = [
-    '#ambient-canvas,.ph-ambient,.ph-orb-a,.ph-orb-b,.ph-noise,',
-    '.fp-visualizer,#fp-visualizer,#fp-ambient-glow,#ambient-edge-glow,',
-    '.orb,.orb-1,.orb-2,.orb-3{display:none!important}',
-    '#mini-player,#nav,#queue-panel,#fullscreen-player,',
-    '[class*="glass"],.modal-sheet{',
-    'backdrop-filter:none!important;',
-    '-webkit-backdrop-filter:none!important}',
-    '#fp-bg-art{filter:blur(4px) brightness(0.20)!important;',
-    'transform:none!important;will-change:auto!important}',
-    '#fp-bg{filter:none!important}',
-    '*:not(.settings-section-body):not(.settings-section-body *)::before,',
-    '*:not(.settings-section-body):not(.settings-section-body *)::after,',
-    '*:not(.settings-section-body):not(.settings-section-body *){',
-    'animation-duration:.01ms!important;animation-delay:0ms!important}',
-    '*{transition-duration:.07s!important}',
-    '.settings-section-body{',
-    'transition:grid-template-rows .32s cubic-bezier(.33,1,.68,1),',
-    'opacity .22s ease!important;transition-duration:.32s!important}',
-    '.settings-section-body.open{grid-template-rows:1fr!important;opacity:1!important}',
-    '.quick-card,.wide-card,.bw-card,.song-row img,',
-    '.fp-play-circle,.pl-big-cover{box-shadow:none!important}',
-    '.fp-track-title.marquee-active span,',
-    '.fp-artist.marquee-active span{animation:none!important;transform:none!important}',
-    '.bw-sk-cover,.bw-sk-line,.sk-art,.sk-line,',
-    '.wide-sk-cover,.wide-sk-line,.quick-sk-cover{',
-    'animation:none!important;opacity:.45!important}',
-    '.now-playing-bar span,.queue-now-playing span{',
-    'animation:none!important;transform:scaleY(.55)!important}',
-    '.quick-card:active,.bw-card:active,.wide-card:active,',
-    '.song-row:active,.playlist-card:active{transform:none!important}',
-    'img{transition:opacity .06s ease!important}',
-    '::-webkit-scrollbar{display:none!important}',
-    '.is-tv *:focus{outline:3px solid #c8a858!important;',
-    'outline-offset:3px!important;border-radius:10px!important}',
-    '.is-tv #mini-player{display:none!important}',
-    '.is-tv .nav-btn:focus{background:rgba(184,150,64,.14)!important}',
-    '#tv-exit-warn{position:fixed;inset:0;z-index:99999;',
-    'display:flex;align-items:center;justify-content:center;',
-    'background:rgba(0,0,0,.72);opacity:0;pointer-events:none;',
-    'transition:opacity .16s ease!important}',
-    '#tv-exit-warn.show{opacity:1;pointer-events:all}',
-    '#tv-exit-warn-box{background:#0f0f15;',
-    'border:1px solid rgba(184,150,64,.28);border-radius:18px;',
-    'padding:28px 36px;text-align:center;max-width:320px}',
-    '#tv-exit-warn-box h3{font-size:18px;font-weight:800;',
-    'color:#ede8e0;margin-bottom:8px}',
-    '#tv-exit-warn-box p{font-size:13px;color:#908880;margin-bottom:20px}',
-    '.warn-btns{display:flex;gap:10px;justify-content:center}',
-    '.warn-btn{padding:10px 28px;border-radius:100px;border:none;',
-    'font-size:14px;font-weight:700;cursor:pointer;font-family:inherit}',
-    '#tv-btn-stay{background:rgba(255,255,255,.08);color:#ede8e0}',
-    '#tv-btn-exit{background:linear-gradient(138deg,#d4af55,#b89640);color:#050508}',
-  ].join('');
-
-  var _style        = D.createElement('style');
-  _style.id         = 'tv-perf-v8';
-  _style.textContent = CSS;
-  (D.head || D.documentElement).appendChild(_style);
-
-  // ─── 6. EXIT OVERLAY ────────────────────────────────────────
-  var _exitEl    = null;
-  var _exitTimer = null;
-  var _exitShown = false;
-
-  function _buildExitOverlay() {
-    if (D.getElementById('tv-exit-warn')) {
-      _exitEl = D.getElementById('tv-exit-warn');
-      return;
-    }
-    var el = D.createElement('div');
-    el.id  = 'tv-exit-warn';
-    el.innerHTML = [
-      '<div id="tv-exit-warn-box">',
-      '<h3>Exit Aurum?</h3>',
-      '<p>Press Back again to exit,<br>or Stay to keep listening.</p>',
-      '<div class="warn-btns">',
-      '<button class="warn-btn" id="tv-btn-stay">Stay</button>',
-      '<button class="warn-btn" id="tv-btn-exit">Exit</button>',
-      '</div></div>',
-    ].join('');
-    D.body.appendChild(el);
-    _exitEl = el;
-    D.getElementById('tv-btn-stay').addEventListener('click', _tvStay);
-    D.getElementById('tv-btn-exit').addEventListener('click', _tvExit);
-  }
-
-  function _showExit() {
-    _buildExitOverlay();
-    _exitShown = true;
-    _exitEl.classList.add('show');
-    clearTimeout(_exitTimer);
-    _exitTimer = _sid(setTimeout(_tvStay, 4000));
-    var stay = D.getElementById('tv-btn-stay');
-    if (stay) stay.focus();
-  }
-
-  function _tvStay() {
-    _exitShown = false;
-    clearTimeout(_exitTimer);
-    if (_exitEl) _exitEl.classList.remove('show');
-    var nb = D.querySelector('.nav-btn');
-    if (nb) nb.focus();
-  }
-
-  function _tvExit() {
-    try { W.close(); } catch (e) {}
-    history.back();
-  }
-
-  // ─── 7. BACK BUTTON — SAFE HISTORY ──────────────────────────
-  var _statePushed = false;
-
-  function _pushSentinel() {
-    if (_statePushed) return;
-    _statePushed = true;
-    try { history.pushState({ aurumTV: true }, '', location.href); } catch (e) {}
-  }
-
-  function _handleBack() {
-    if (!_exitShown) {
-      _statePushed = false;
-      _pushSentinel();
-    }
-
-    var fp     = D.getElementById('fullscreen-player');
-    var qp     = D.getElementById('queue-panel');
-    var sp     = D.getElementById('settings-panel');
-    var fpOpen = !!(fp && fp.classList.contains('open'));
-    var qpOpen = !!(qp && qp.classList.contains('open'));
-    var spOpen = !!(sp && sp.classList.contains('open'));
-
-    if (_exitShown)                                               { _tvExit(); return; }
-    if (qpOpen && typeof W.closeQueuePanel === 'function')        { W.closeQueuePanel(); }
-    else if (spOpen && typeof W.closeSettings === 'function')     { W.closeSettings(); }
-    else if (fpOpen && typeof W.closeFullscreen === 'function')   { W.closeFullscreen(); }
-    else                                                          { _showExit(); }
-  }
-
-  W.addEventListener('popstate', _handleBack);
-
-  // ─── 8. REMOTE KEYDOWN — SINGLE LISTENER ────────────────────
-  function _audio() { return W.audio || W._aurumAudio || null; }
-
-  function _moveFocus(dir) {
-    var SEL = [
-      '.nav-btn', '.song-row', '.quick-card', '.wide-card',
-      '.bw-card', '.browse-card', '.queue-item', '.modal-option',
-      '.settings-section-header', '.settings-item',
-      'button:not([disabled])', '[tabindex="0"]',
-    ].join(',');
-    var all = Array.prototype.filter.call(
-      D.querySelectorAll(SEL),
-      function (el) { return el.offsetParent !== null; }
-    );
-    if (!all.length) return;
-    var idx  = all.indexOf(D.activeElement);
-    var next = all[Math.max(0, Math.min(all.length - 1, idx + dir))];
-    if (next && next !== D.activeElement) {
-      next.focus();
-      next.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    }
-  }
-
-  function _toast(msg) {
-    if (typeof W.showToast === 'function') W.showToast(msg);
-  }
-
-  D.addEventListener('keydown', function (e) {
-    var fp     = D.getElementById('fullscreen-player');
-    var qp     = D.getElementById('queue-panel');
-    var sp     = D.getElementById('settings-panel');
-    var fpOpen = !!(fp && fp.classList.contains('open'));
-    var qpOpen = !!(qp && qp.classList.contains('open'));
-    var spOpen = !!(sp && sp.classList.contains('open'));
-    var inInput = e.target &&
-      (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
-
-    switch (e.key) {
-
-      case 'ArrowRight':
-        e.preventDefault();
-        if (fpOpen && !qpOpen && !spOpen) {
-          if (typeof W.nextTrack === 'function') W.nextTrack();
-        } else { _moveFocus(1); }
-        break;
-
-      case 'ArrowLeft':
-        e.preventDefault();
-        if (fpOpen && !qpOpen && !spOpen) {
-          if (typeof W.prevTrack === 'function') W.prevTrack();
-        } else { _moveFocus(-1); }
-        break;
-
-      case 'ArrowUp':
-        e.preventDefault();
-        if (fpOpen && !qpOpen && !spOpen) {
-          var a1 = _audio();
-          if (a1) {
-            var v1 = Math.min(1, +(a1.volume || 0) + 0.1);
-            if (typeof W.setVolume === 'function') W.setVolume(v1);
-            _toast('🔊 ' + Math.round(v1 * 100) + '%');
-          }
-        } else { _moveFocus(-1); }
-        break;
-
-      case 'ArrowDown':
-        e.preventDefault();
-        if (fpOpen && !qpOpen && !spOpen) {
-          var a2 = _audio();
-          if (a2) {
-            var v2 = Math.max(0, +(a2.volume || 1) - 0.1);
-            if (typeof W.setVolume === 'function') W.setVolume(v2);
-            _toast('🔉 ' + Math.round(v2 * 100) + '%');
-          }
-        } else { _moveFocus(1); }
-        break;
-
-      case 'Enter':
-      case ' ':
-        if (inInput) break;
-        e.preventDefault();
-        var ae = D.activeElement;
-        if (ae && ae !== D.body && ae !== D.documentElement) {
-          ae.click();
-        } else if (fpOpen && typeof W.togglePlay === 'function') {
-          W.togglePlay();
-        }
-        break;
-
-      case 'GoBack':
-      case 'Backspace':
-        if (inInput) break;
-        e.preventDefault();
-        if (_exitShown) { _tvExit(); break; }
-        if (qpOpen && typeof W.closeQueuePanel === 'function') {
-          W.closeQueuePanel();
-        } else if (spOpen && typeof W.closeSettings === 'function') {
-          W.closeSettings();
-        } else if (fpOpen && typeof W.closeFullscreen === 'function') {
-          W.closeFullscreen();
-        } else {
-          _showExit();
-        }
-        break;
-
-      case 'Escape':
-        e.preventDefault();
-        if (_exitShown) { _tvStay(); break; }
-        if (qpOpen && typeof W.closeQueuePanel === 'function') {
-          W.closeQueuePanel();
-        } else if (spOpen && typeof W.closeSettings === 'function') {
-          W.closeSettings();
-        } else if (fpOpen && typeof W.closeFullscreen === 'function') {
-          W.closeFullscreen();
-        }
-        break;
-
-      case 's':
-      case 'S':
-        e.preventDefault();
-        if (typeof W._setSleepMin === 'function') {
-          W._setSleepMin(30);
-        } else {
-          _toast('⏱ Sleep · 30 min');
-        }
-        break;
-
-      case 'm':
-      case 'M': {
-        e.preventDefault();
-        var am = _audio();
-        if (am) {
-          am.muted = !am.muted;
-          _toast(am.muted ? '🔇 Muted' : '🔊 Unmuted');
-        }
-        break;
-      }
-    }
-  });
-
-  // ─── 9. DOM READY ───────────────────────────────────────────
-  function _onReady() {
-
-    D.documentElement.classList.add('is-tv');
-    D.body.classList.add('is-tv');
-
-    _pushSentinel();
-
-    W.showMiniPlayer = function () {
-      if (W.currentTrack) {
-        var fp = D.getElementById('fullscreen-player');
-        if (fp && !fp.classList.contains('open')) {
-          if (typeof W.openFullscreen === 'function') W.openFullscreen();
-        }
-      }
-    };
-
-    var mp = D.getElementById('mini-player');
-    if (mp) mp.style.display = 'none';
-
-    try {
-      if (typeof W._stopViz === 'function') W._stopViz();
-      if (W.vizRaf) { cancelAnimationFrame(W.vizRaf); W.vizRaf = null; }
-      W._startViz = function () {};
-      W.tickViz   = function () {};
-      W.initViz   = function () {
-        var c = D.getElementById('fp-visualizer');
-        if (c) { c.innerHTML = ''; c.style.display = 'none'; }
-      };
-    } catch (e) {}
-
-    try {
-      var ac = D.getElementById('ambient-canvas');
-      if (ac) { ac.style.display = 'none'; ac.innerHTML = ''; }
-    } catch (e) {}
-
-    try {
-      if (W.imgObserver) { W.imgObserver.disconnect(); W.imgObserver = null; }
-      W.setImgSrc = function (img, src) {
-        if (!img) return;
-        var ph = W.IMG_PLACEHOLDER || '';
-        if (!src) { img.src = ph; img.classList.add('loaded'); return; }
-        img.onerror = function () {
-          if (this.src !== ph) this.src = ph;
-          this.classList.add('img-error', 'loaded');
-          this.onerror = null;
-        };
-        img.onload = function () { this.classList.add('loaded'); };
-        img.src = src;
-        if (img.complete && img.naturalWidth > 0) img.classList.add('loaded');
-      };
-    } catch (e) {}
-
-    try {
-      W.getArtUrl = function (song) {
-        return ((song && song.artworkUrl100) || '')
-          .replace('100x100', '300x300');
-      };
-    } catch (e) {}
-
-    try {
-      W.fetchRecommendations = function () {};
-      W._autoFetchFullSong   = function () {};
-    } catch (e) {}
-
-    try {
-      if (W._bgPingInterval) {
-        clearInterval(W._bgPingInterval);
-        W._bgPingInterval = _sid(setInterval(function () {
-          if (!W.isPlaying) return;
-          try {
-            var ctx = W._bgAudioCtx || W._aurumAudioCtx;
-            if (!ctx) return;
-            var buf = ctx.createBuffer(1, 1, 22050);
-            var src = ctx.createBufferSource();
-            src.buffer = buf;
-            src.connect(ctx.destination);
-            src.start(0);
-          } catch (_) {}
-        }, 120000));
-      }
-    } catch (e) {}
-
-    _sid(setInterval(function () {
-      try {
-        if (typeof sectionCache !== 'undefined') {
-          var keys = Object.keys(sectionCache);
-          for (var i = 0; i < keys.length; i++) {
-            if (keys[i] !== 'recent' && keys[i] !== 'featured') {
-              delete sectionCache[keys[i]];
-            }
-          }
-        }
-      } catch (_) {}
-    }, 30000));
-
-    try {
-      D.querySelectorAll('.song-row,.queue-item').forEach(function (el) {
-        el.style.contentVisibility    = 'auto';
-        el.style.containIntrinsicSize = '0 64px';
-      });
-    } catch (e) {}
-
-    _sid(setTimeout(function () {
-      var _origOpen   = W.openSettings;
-      var _origRender = W.renderSettingsPage;
-
-      W.openSettings = function () {
-        if (typeof _origOpen === 'function') _origOpen();
-        _sid(setTimeout(_renderTVSettings, 30));
-      };
-
-      W.renderSettingsPage = function () {
-        var sp2 = D.getElementById('settings-panel');
-        if (sp2 && sp2.classList.contains('open')) {
-          _renderTVSettings();
-        } else if (typeof _origRender === 'function') {
-          _origRender();
-        }
-      };
-    }, 200));
-
-    _sid(setTimeout(function () {
-      var first = D.querySelector(
-        '.nav-btn,[tabindex="0"],button,.quick-card,.song-row'
-      );
-      if (first) first.focus();
-    }, 800));
-
-    D.addEventListener('visibilitychange', function () {
-      if (D.hidden) {
-        try { if (typeof W._stopViz === 'function') W._stopViz(); } catch (_) {}
-        try {
-          if (typeof sectionCache !== 'undefined') {
-            var ks = Object.keys(sectionCache);
-            for (var i = 0; i < ks.length; i++) {
-              if (ks[i] !== 'recent' && ks[i] !== 'featured') {
-                delete sectionCache[ks[i]];
-              }
-            }
-          }
-        } catch (_) {}
-        try {
-          D.querySelectorAll('img[data-lazy-src]').forEach(function (img) {
-            img.src = W.IMG_PLACEHOLDER || '';
-          });
-        } catch (_) {}
-      } else {
-        try {
-          var a = _audio();
-          if (W.isPlaying && a && a.paused) {
-            a.play().catch(function () {});
-          }
-        } catch (_) {}
-      }
-    }, { passive: true });
-
-    W.addEventListener('beforeunload', function () {
-      try {
-        var au = _audio();
-        if (au) { au.pause(); au.src = ''; }
-      } catch (_) {}
-      _clearAll();
-      try {
-        var ctx2 = W._bgAudioCtx || W._aurumAudioCtx;
-        if (ctx2) { ctx2.close(); }
-      } catch (_) {}
-    }, { passive: true });
-
-    console.log(
-      '%c[Aurum TV v8.1] ✅ Bug-Free · Lightweight · Zero background load',
-      'color:#c8a858;font-weight:800;font-size:13px'
-    );
-    console.log(
-      '%c[Aurum TV v8.1] 🎮 ◀▶=Nav | ▲▼=Vol | OK=Select | Back=Smart | S=Sleep | M=Mute',
-      'color:#666'
-    );
-  }
-
-  // ─── 10. TV SETTINGS PANEL ──────────────────────────────────
-  function _renderTVSettings() {
-    var body = D.getElementById('settings-body');
-    if (!body) return;
-    var s = (typeof appSettings !== 'undefined') ? appSettings : {};
-
-    function tog(key, chk) {
-      var id   = 'tv-tog-' + key;
-      var chkd = chk ? ' checked' : '';
-      return (
-        '<label class="settings-toggle">' +
-        '<input type="checkbox" id="' + id + '"' + chkd + '>' +
-        '<span class="settings-toggle-track"></span></label>'
-      );
-    }
-
-    function row(icon, title, sub, right, active) {
-      return (
-        '<div class="settings-item" tabindex="0">' +
-        '<div class="settings-item-left">' +
-        '<div class="settings-item-icon' + (active ? ' icon-active' : '') + '">' + icon + '</div>' +
-        '<div class="settings-item-info">' +
-        '<div class="settings-item-title">' + title + '</div>' +
-        '<div class="settings-item-sub">' + sub + '</div>' +
-        '</div></div>' + right + '</div>'
-      );
-    }
-
-    function link(icon, title, sub, fnName, active) {
-      return (
-        '<div class="settings-item" tabindex="0" data-tv-fn="' + fnName + '">' +
-        '<div class="settings-item-left">' +
-        '<div class="settings-item-icon' + (active ? ' icon-active' : '') + '">' + icon + '</div>' +
-        '<div class="settings-item-info">' +
-        '<div class="settings-item-title">' + title + '</div>' +
-        '<div class="settings-item-sub">' + sub + '</div>' +
-        '</div></div>' +
-        '<svg class="settings-chevron" viewBox="0 0 24 24"><polyline points="9 18 15 12 9 6"/></svg>' +
-        '</div>'
-      );
-    }
-
-    function sec(id, icon, title, content) {
-      return (
-        '<div class="settings-section-header" tabindex="0" data-tv-sec="' + id + '">' +
-        '<div class="ssh-left"><div class="ssh-icon">' + icon + '</div>' +
-        '<span>' + title + '</span></div>' +
-        '<svg class="ssh-chevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg></div>' +
-        '<div class="settings-section-body open" id="tvs-' + id + '">' + content + '</div>'
-      );
-    }
-
-    var I = {
-      eq:   '<svg viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>',
-      bolt: '<svg viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>',
-      sun:  '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/></svg>',
-      moon: '<svg viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>',
-      vol:  '<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>',
-      gear: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
-      note: '<svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
-      dot:  '<svg viewBox="0 0 24 24"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="19" cy="11" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/><circle cx="8.5" cy="7.5" r="2.5"/><circle cx="6.5" cy="12" r="2.5"/></svg>',
-      rst:  '<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
-      info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
-      spd:  '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
-      rmt:  '<svg viewBox="0 0 24 24"><rect x="7" y="2" width="10" height="20" rx="3"/><circle cx="12" cy="17" r="1.5" fill="currentColor"/><line x1="10" y1="7" x2="14" y2="7"/><line x1="12" y1="5" x2="12" y2="9"/></svg>',
-    };
-
-    var qL  = { auto: 'Auto', high: '320 kbps', low: '128 kbps' }[s.streamQuality] || 'Auto';
-    var thL = { dark: 'Dark', amoled: 'AMOLED', light: 'Light' }[s.theme] || 'Dark';
-    var acL = { gold: 'Gold', rose: 'Rose', sky: 'Sky', sage: 'Sage', violet: 'Violet', ember: 'Ember' }[s.accentColor] || 'Gold';
-    var slL = (function () {
-      if (s.sleepMode === 'track' && s.sleepTimerEnd === -1) return 'End of track ✓';
-      if (s.sleepTimerEnd > 0) {
-        var rem = Math.max(0, s.sleepTimerEnd - Date.now());
-        if (rem > 0) return 'Stops in ' + Math.ceil(rem / 60000) + ' min ✓';
-      }
-      return 'Off';
-    }());
-
-    var badge = (
-      '<div style="margin:12px 16px 4px;padding:10px 16px;border-radius:12px;' +
-      'background:rgba(184,150,64,.10);border:1px solid rgba(184,150,64,.22);' +
-      'display:flex;align-items:center;gap:10px">' +
-      I.rmt +
-      '<div>' +
-      '<div style="font-size:12px;font-weight:700;color:var(--gold-l)">TV Mode v8.1</div>' +
-      '<div style="font-size:10px;color:var(--text3);margin-top:2px">' +
-      '◀▶ Nav · ▲▼ Vol · OK=Select · Back=Smart · S=Sleep · M=Mute' +
-      '</div></div></div>'
-    );
-
-    var html = badge + [
-      sec('audio', I.eq, 'Audio', [
-        link(I.eq,   'Stream Quality',   qL,  'openStreamQualityPicker'),
-        row( I.bolt, 'Data Saver',       s.dataSaver ? '128kbps · Low data' : 'Off',
-             tog('dataSaver', s.dataSaver), s.dataSaver),
-        row( I.vol,  'Bass Boost',       'Enhance low frequencies',
-             tog('bassBoost', s.bassBoost), s.bassBoost),
-        row( I.note, 'Volume Normalize', 'Smooth gain leveling',
-             tog('volumeNormalize', s.volumeNormalize), s.volumeNormalize),
-        link(I.spd,  'Sleep Timer',      slL, 'openSleepTimerSheet', !!(s.sleepTimerEnd)),
-      ].join('')),
-
-      sec('visuals', I.sun, 'Visuals', [
-        link(I.moon, 'Theme',        thL, 'openThemePicker'),
-        link(I.dot,  'Accent Color', acL, 'openAccentColorPicker'),
-        row( I.bolt, 'Smart Saver',
-             s.smartSaver ? '⚡ Active' : 'Optimize performance',
-             tog('smartSaver', s.smartSaver), s.smartSaver),
-      ].join('')),
-
-      sec('system', I.gear, 'System', [
-        link(I.rst, 'Reset Settings', 'Restore defaults', 'smartReset'),
-        '<div class="settings-item">' +
-        '<div class="settings-item-left">' +
-        '<div class="settings-item-icon">' + I.info + '</div>' +
-        '<div class="settings-item-info">' +
-        '<div class="settings-item-title">Aurum</div>' +
-        '<div class="settings-item-sub">v3.1 · TV Optimizer v8.1</div>' +
-        '</div></div></div>',
-      ].join('')),
-    ].join('');
-
-    body.innerHTML = html;
-
-    var toggleMap = {
-      'tv-tog-dataSaver': function (v) {
-        if (typeof saveSetting === 'function') saveSetting('dataSaver', v);
-        if (typeof showToast   === 'function') showToast(v ? 'Data Saver on' : 'Data Saver off');
-      },
-      'tv-tog-bassBoost': function (v) {
-        if (typeof toggleAudioFX === 'function') toggleAudioFX('bassBoost', v);
-        else if (typeof saveSetting === 'function') saveSetting('bassBoost', v);
-      },
-      'tv-tog-volumeNormalize': function (v) {
-        if (typeof saveSetting === 'function') saveSetting('volumeNormalize', v);
-      },
-      'tv-tog-smartSaver': function (v) {
-        if (typeof applySmartSaver === 'function') applySmartSaver(v);
-        else if (typeof saveSetting === 'function') saveSetting('smartSaver', v);
-      },
-    };
-
-    Object.keys(toggleMap).forEach(function (id) {
-      var el = D.getElementById(id);
-      if (!el) return;
-      el.addEventListener('change', function () { toggleMap[id](this.checked); });
-    });
-
-    body.querySelectorAll('[data-tv-fn]').forEach(function (el) {
-      var fnName = el.getAttribute('data-tv-fn');
-      function _call() {
-        if (typeof W[fnName] === 'function') W[fnName]();
-      }
-      el.addEventListener('click', _call);
-      el.addEventListener('keydown', function (e2) {
-        if (e2.key === 'Enter' || e2.key === ' ') { e2.preventDefault(); _call(); }
-      });
-    });
-
-    body.querySelectorAll('[data-tv-sec]').forEach(function (hdr) {
-      var sid2 = hdr.getAttribute('data-tv-sec');
-      hdr.addEventListener('click', function () {
-        if (typeof W.toggleSection === 'function') W.toggleSection('tvs-' + sid2);
-      });
-    });
-
-    body.querySelectorAll('.settings-item,.settings-section-header').forEach(function (el) {
-      if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '0');
-    });
-  }
-
-  // ─── BOOT ───────────────────────────────────────────────────
-  if (D.readyState === 'loading') {
-    D.addEventListener('DOMContentLoaded', _onReady, { once: true });
-  } else {
-    _onReady();
-  }
-
-}(window, document));
-
 // ═══════════════════════════════════════════════════════════════
 // app.js · Aurum Music Player · Main Application
 // ═══════════════════════════════════════════════════════════════
@@ -689,6 +13,74 @@ const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent) && !isTV;
 const isLowEnd = isTV ||
   (navigator.hardwareConcurrency || 8) <= 4 ||
   (typeof navigator.deviceMemory !== 'undefined' && navigator.deviceMemory <= 2);
+
+// ─── FIX #1: MOBILE BACK GESTURE HANDLER WITH PROPER HISTORY STACK ───────────
+let _backStack = [];
+let _isBackHandling = false;
+
+function _pushToBackStack(modalId, closeFn) {
+  _backStack.push({ modalId, closeFn });
+  try { history.pushState({ backModal: modalId }, '', location.href); } catch(e) {}
+}
+
+function _popFromBackStack() {
+  if (_backStack.length === 0) return null;
+  return _backStack.pop();
+}
+
+function _handleMobileBack() {
+  if (_isBackHandling) return;
+  _isBackHandling = true;
+  
+  // Check modals in priority order
+  const modalChecks = [
+    { id: 'song-modal', closeFn: () => closeSongModal() },
+    { id: 'quality-modal', closeFn: () => closeQualitySheet() },
+    { id: 'download-modal', closeFn: () => closeDownloadModal() },
+    { id: 'playlist-opts-modal', closeFn: () => closePlaylistOpts() },
+    { id: 'rename-modal', closeFn: () => closeRenameModal() },
+    { id: 'create-playlist-modal', closeFn: () => closeCreatePlaylist() },
+    { id: 'add-playlist-modal', closeFn: () => closeAddToPlaylistModal() },
+    { id: 'playlist-detail', closeFn: () => closePlaylistDetail() },
+    { id: 'artist-page', closeFn: () => closeArtistPage() },
+    { id: 'queue-panel', closeFn: () => closeQueuePanel() },
+    { id: 'settings-panel', closeFn: () => closeSettings() },
+    { id: 'fullscreen-player', closeFn: () => closeFullscreen() }
+  ];
+  
+  for (const modal of modalChecks) {
+    const el = document.getElementById(modal.id);
+    if (el && el.classList && el.classList.contains('open')) {
+      modal.closeFn();
+      _pushToBackStack(modal.id, modal.closeFn);
+      _isBackHandling = false;
+      return;
+    }
+  }
+  
+  // Check active page
+  const activePage = document.querySelector('.page.active');
+  if (activePage && activePage.id !== 'page-home') {
+    goPage('home', document.querySelector('.nav-btn[data-page="home"]'));
+    _pushToBackStack('page-home', () => goPage('home', document.querySelector('.nav-btn[data-page="home"]')));
+    _isBackHandling = false;
+    return;
+  }
+  
+  // Exit app
+  if (typeof showToast === 'function') showToast('Press back again to exit');
+  setTimeout(() => {
+    if (confirm('Exit Aurum?')) {
+      try { window.close(); } catch(e) {}
+    }
+  }, 100);
+  _isBackHandling = false;
+}
+
+window.addEventListener('popstate', (e) => {
+  e.preventDefault();
+  _handleMobileBack();
+});
 
 // ─── DYNAMIC VIEWPORT ────────────────────────────────────────────────────────
 function setVh() {
@@ -792,10 +184,41 @@ let _lastObjectUrl       = null;
 let _lastTuTime          = 0;
 let _uiHidden            = false;
 let _dismissedTrackId    = null;
+let _isSeeking           = false;  // FIX #6: seekbar drag flag
+let _isUpdatingQueue     = false;  // FIX #12: queue update flag
 
 // Lyrics view state
 let lyricsViewActive = false;
 let originalArtworkHTML = null;
+
+// ─── FIX #10: AudioContext memory leak fix — reuse existing context ──────────
+let _bgAudioCtx = null;
+
+function _getOrCreateBgAudioCtx() {
+  if (_bgAudioCtx && _bgAudioCtx.state !== 'closed') {
+    return _bgAudioCtx;
+  }
+  try {
+    _bgAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    window._bgAudioCtx = _bgAudioCtx;
+    return _bgAudioCtx;
+  } catch(e) {
+    return null;
+  }
+}
+
+// ─── FIX #3: AudioContext suspended — resume on user interaction ─────────────
+function _resumeBgAudioCtxOnInteraction() {
+  const ctx = _getOrCreateBgAudioCtx();
+  if (ctx && ctx.state === 'suspended') {
+    ctx.resume().catch(() => {});
+  }
+}
+
+// Attach to user interactions
+['click', 'touchstart', 'keydown'].forEach(ev => {
+  document.addEventListener(ev, _resumeBgAudioCtxOnInteraction, { once: true, passive: true });
+});
 
 // ─── LISTEN HISTORY / ALGORITHM ──────────────────────────────────────────────
 let _listenHistory = JSON.parse(localStorage.getItem('aurum_listen_history') || '{}');
@@ -826,6 +249,27 @@ function _getTopArtists(limit = 5) {
     .sort((a, b) => b[1].count - a[1].count)
     .slice(0, limit)
     .map(([artist, data]) => ({ artist, ...data }));
+}
+
+// ─── FIX #7: Add dynamic sections to SECTION_POOL for refreshSection ─────────
+let _dynamicSections = [];
+
+function _registerDynamicSection(artistName) {
+  const id = 'artist_' + artistName.replace(/\s+/g, '_').toLowerCase();
+  if (!_dynamicSections.find(s => s.id === id)) {
+    _dynamicSections.push({
+      id,
+      title: artistName,
+      type: 'rows',
+      queries: [`${artistName} best songs`, `${artistName} top hits`, `${artistName} popular songs`],
+      _isAlgo: true,
+      _isDynamic: true
+    });
+  }
+}
+
+function _getAllSections() {
+  return [...SECTION_POOL, ..._dynamicSections];
 }
 
 // ─── AUDIO ENGINE ─────────────────────────────────────────────────────────────
@@ -870,9 +314,15 @@ function _titleMatches(saavnTitle, itunesTitle) {
   return matched / total >= threshold;
 }
 
+// ─── FIX #2 & #11: loadTrack() race condition fix + String() comparison ──────
+let _currentLoadId = 0;
+
 function loadTrack(song, autoplay = true) {
   if (!song?.previewUrl) return;
-
+  
+  const loadId = ++_currentLoadId;
+  const requestedTrackId = String(song.trackId);
+  
   _dismissedTrackId = null;
 
   if (_fullSongAbort) { _fullSongAbort.abort(); _fullSongAbort = null; }
@@ -884,7 +334,8 @@ function loadTrack(song, autoplay = true) {
   const sb = document.getElementById('fp-seekbar');
   if (sb) { sb.classList.remove('full-active'); sb.max = 30; sb.value = 0; sb.style.setProperty('--prog', '0%'); }
 
-  currentTrack = song; currentQuality = 'loading';
+  currentTrack = song; 
+  currentQuality = 'loading';
   document.getElementById('fp-duration').textContent = '0:30';
 
   audio.pause();
@@ -895,9 +346,18 @@ function loadTrack(song, autoplay = true) {
   if (autoplay) {
     const p = audio.play();
     if (p && p.then) {
-      p.then(() => { isPlaying = true; updatePlayerUI(); })
+      p.then(() => { 
+        // FIX #2: Check if still current track
+        if (loadId === _currentLoadId && String(currentTrack?.trackId) === requestedTrackId) {
+          isPlaying = true; 
+          updatePlayerUI();
+        }
+      })
        .catch(err => {
-         if (err.name !== 'AbortError') { isPlaying = false; updatePlayerUI(); }
+         if (err.name !== 'AbortError' && loadId === _currentLoadId && String(currentTrack?.trackId) === requestedTrackId) { 
+           isPlaying = false; 
+           updatePlayerUI(); 
+         }
        });
     }
   }
@@ -907,21 +367,25 @@ function loadTrack(song, autoplay = true) {
   updateActiveRows();
   updateQualityLabel();
   addToRecentlyPlayed(song);
-  _autoFetchFullSong(song);
+  _autoFetchFullSong(song, loadId, requestedTrackId);
   clearTimeout(_recFetchTimeout);
   _recFetchTimeout = setTimeout(() => fetchRecommendations(song), 800);
   fetchLyrics(song);
 }
 
 function playSongs(queue, index) {
-  currentQueue = [...queue]; currentIndex = index;
+  currentQueue = [...queue]; 
+  currentIndex = index;
   loadTrack(currentQueue[currentIndex]);
 }
 
-async function _autoFetchFullSong(song) {
+// ─── FIX #9: preAudio leak fix — finally block ───────────────────────────────
+async function _autoFetchFullSong(song, loadId, requestedTrackId) {
   const ctrl = new AbortController();
   _fullSongAbort = ctrl;
   const requested = song;
+  let preAudio = null;
+  
   try {
     const rawTitle   = song.trackName  || '';
     const rawArtist  = song.artistName || '';
@@ -934,7 +398,6 @@ async function _autoFetchFullSong(song) {
     const fallbackQ = encodeURIComponent(`${cleanTitle} ${cleanArtist}`);
     const artistQ   = encodeURIComponent(cleanArtist);
 
-    // ── Step 1: /api/saavn try karo ──────────────────────────────
     let d        = null;
     let proxyUrl = null;
 
@@ -943,7 +406,6 @@ async function _autoFetchFullSong(song) {
       if (r1.ok) {
         const j1 = await r1.json();
         if (j1.success && j1.url) {
-          // Title check sirf saavn ke liye
           if (j1.source === 'saavn' && !_titleMatches(j1.title, requested.trackName)) {
             console.warn(`[Mismatch/Saavn] Asked="${requested.trackName}" Got="${j1.title}" — trying resolve`);
           } else {
@@ -958,7 +420,6 @@ async function _autoFetchFullSong(song) {
       console.info('[AutoFetch] Saavn failed, trying resolve:', e1.message);
     }
 
-    // ── Step 2: /api/resolve fallback (Piped/Invidious) ──────────
     if (!proxyUrl) {
       try {
         const r2 = await fetch(`/api/resolve?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`, { signal: ctrl.signal });
@@ -966,7 +427,7 @@ async function _autoFetchFullSong(song) {
           const j2 = await r2.json();
           if (j2.success && j2.url) {
             d        = j2;
-            proxyUrl = j2.url; // resolve already /api/stream proxy URL deta hai
+            proxyUrl = j2.url;
             console.info(`[AutoFetch] Resolve ✓ source=${j2.source} quality=${j2.quality}`);
           }
         }
@@ -977,7 +438,8 @@ async function _autoFetchFullSong(song) {
     }
 
     if (ctrl.signal.aborted) return;
-    if (currentTrack?.trackId !== requested.trackId) return;
+    // FIX #2: Check loadId and trackId
+    if (loadId !== _currentLoadId || String(currentTrack?.trackId) !== requestedTrackId) return;
     if (!d || !proxyUrl) {
       console.info('[AutoFetch] No source found — staying on preview');
       return;
@@ -987,7 +449,7 @@ async function _autoFetchFullSong(song) {
     _currentSaavnQuality = d.quality || 'unknown';
     _updateDlSheetQuality(d.quality);
 
-    const preAudio = new Audio();
+    preAudio = new Audio();
     preAudio.preload = 'auto';
     preAudio.crossOrigin = 'anonymous';
 
@@ -999,8 +461,8 @@ async function _autoFetchFullSong(song) {
       preAudio.load();
     });
 
-    if (ctrl.signal.aborted || currentTrack?.trackId !== requested.trackId) {
-      preAudio.src = ''; return;
+    if (ctrl.signal.aborted || loadId !== _currentLoadId || String(currentTrack?.trackId) !== requestedTrackId) {
+      return;
     }
 
     const wasPlaying = isPlaying;
@@ -1018,24 +480,43 @@ async function _autoFetchFullSong(song) {
     if (wasPlaying) {
       const pp = audio.play();
       if (pp?.then) pp.then(() => {
-        if (ctrl.signal.aborted || currentTrack?.trackId !== requested.trackId) { audio.pause(); return; }
-        isPlaying = true; currentQuality = 'full'; _fullSongAbort = null;
-        updateQualityLabel(); updatePlayerUI();
-      }).catch(() => { if (!ctrl.signal.aborted) _fallbackToPreview(requested); });
+        if (ctrl.signal.aborted || loadId !== _currentLoadId || String(currentTrack?.trackId) !== requestedTrackId) { 
+          audio.pause(); 
+          return; 
+        }
+        isPlaying = true; 
+        currentQuality = 'full'; 
+        _fullSongAbort = null;
+        updateQualityLabel(); 
+        updatePlayerUI();
+      }).catch(() => { 
+        if (!ctrl.signal.aborted && loadId === _currentLoadId && String(currentTrack?.trackId) === requestedTrackId) {
+          _fallbackToPreview(requested);
+        }
+      });
     } else {
-      currentQuality = 'full'; _fullSongAbort = null;
-      updateQualityLabel(); updatePlayerUI();
+      currentQuality = 'full'; 
+      _fullSongAbort = null;
+      updateQualityLabel(); 
+      updatePlayerUI();
     }
-    preAudio.src = '';
 
   } catch(e) {
-    if (e.name !== 'AbortError') console.info('[AutoFetch] Staying on preview:', e.message);
+    if (e.name !== 'AbortError' && loadId === _currentLoadId && String(currentTrack?.trackId) === requestedTrackId) {
+      console.info('[AutoFetch] Staying on preview:', e.message);
+    }
+  } finally {
+    // FIX #9: Clean up preAudio
+    if (preAudio) {
+      preAudio.src = '';
+      preAudio = null;
+    }
   }
 }
 
 function _fallbackToPreview(song) {
   if (!song?.previewUrl) return;
-  if (currentTrack?.trackId !== song.trackId) return;
+  if (String(currentTrack?.trackId) !== String(song.trackId)) return;
   const sb = document.getElementById('fp-seekbar');
   if (sb) { sb.classList.remove('full-active'); sb.max = 30; }
   audio.src = song.previewUrl;
@@ -1072,16 +553,18 @@ function togglePlay() {
   updatePlayerUI();
 }
 
+// ─── FIX #5: Shuffle infinite loop fix — when queue has 1 song ───────────────
 function nextTrack() {
   if (!currentQueue.length) return;
-  if (shuffleOn) {
+  if (shuffleOn && currentQueue.length > 1) {
     let next;
     do { next = Math.floor(Math.random() * currentQueue.length); }
     while (next === currentIndex && currentQueue.length > 1);
     currentIndex = next;
-  } else {
+  } else if (!shuffleOn) {
     currentIndex = (currentIndex + 1) % currentQueue.length;
   }
+  // If queue has 1 song and shuffleOn, just replay same song
   loadTrack(currentQueue[currentIndex]);
   updateQueuePanel();
 }
@@ -1094,7 +577,9 @@ function prevTrack() {
   updateQueuePanel();
 }
 
-function seekTo(v) { if (isFinite(audio.duration)) audio.currentTime = parseFloat(v); }
+function seekTo(v) { 
+  if (isFinite(audio.duration)) audio.currentTime = parseFloat(v); 
+}
 
 function setVolume(v) {
   audio.volume = parseFloat(v);
@@ -1150,7 +635,10 @@ audio.addEventListener('pause', () => {
   updateMediaSession();
 });
 
+// ─── FIX #6: Seekbar drag jerk — debounce timeupdate interference ────────────
 audio.addEventListener('timeupdate', () => {
+  if (_isSeeking) return; // Don't update while user is dragging
+  
   const now = Date.now();
   if (now - _lastTuTime < 250) return;
   _lastTuTime = now;
@@ -1182,6 +670,21 @@ audio.addEventListener('durationchange', () => {
     if (fd) fd.textContent = formatSec(audio.duration);
   }
 });
+
+// Seekbar drag handlers
+const seekbar = document.getElementById('fp-seekbar');
+if (seekbar) {
+  seekbar.addEventListener('mousedown', () => { _isSeeking = true; });
+  seekbar.addEventListener('touchstart', () => { _isSeeking = true; });
+  seekbar.addEventListener('mouseup', (e) => { 
+    _isSeeking = false; 
+    seekTo(e.target.value);
+  });
+  seekbar.addEventListener('touchend', (e) => { 
+    _isSeeking = false; 
+    seekTo(e.target.value);
+  });
+}
 
 // ─── OFFLINE DETECTION ────────────────────────────────────────────────────────
 function _handleConnectivity() {
@@ -1298,7 +801,7 @@ function updateNextStrip() {
   }
 
   let nextIdx;
-  if (shuffleOn) {
+  if (shuffleOn && currentQueue.length > 1) {
     nextIdx = Math.floor(Math.random() * currentQueue.length);
     while (nextIdx === currentIndex && currentQueue.length > 1) {
       nextIdx = Math.floor(Math.random() * currentQueue.length);
@@ -1389,6 +892,7 @@ function showMiniPlayer() {
   mp.classList.add('show');
 }
 
+// ─── FIX #15 & #8: updateActiveRows duplicate bars + remove existing before add ──
 function updateActiveRows() {
   document.querySelectorAll('.song-row,.queue-item').forEach(r => {
     const isCurrent = currentTrack && (String(r.dataset.trackId) === String(currentTrack.trackId));
@@ -1396,17 +900,21 @@ function updateActiveRows() {
     r.classList.toggle('current', isCurrent);
     const rightDiv = r.querySelector('.song-row-right');
     if (!rightDiv) return;
-    const existing = rightDiv.querySelector('.now-playing-bar');
+    
+    // Remove existing bars first
+    const existingBar = rightDiv.querySelector('.now-playing-bar');
+    const existingQueueBar = rightDiv.querySelector('.queue-now-playing');
+    if (existingBar) existingBar.remove();
+    if (existingQueueBar) existingQueueBar.remove();
+    
     const durSpan = rightDiv.querySelector('.song-row-duration');
     if (isCurrent && isPlaying) {
-      if (!existing) {
-        const bar = document.createElement('div'); bar.className = 'now-playing-bar';
-        bar.innerHTML = '<span></span><span></span><span></span>';
-        if (durSpan) durSpan.style.display = 'none';
-        rightDiv.appendChild(bar);
-      }
+      const bar = document.createElement('div'); 
+      bar.className = 'now-playing-bar';
+      bar.innerHTML = '<span></span><span></span><span></span>';
+      if (durSpan) durSpan.style.display = 'none';
+      rightDiv.appendChild(bar);
     } else {
-      if (existing) existing.remove();
       if (durSpan) durSpan.style.display = '';
     }
   });
@@ -1512,6 +1020,7 @@ function _stopViz() {
   if (vizRaf) { cancelAnimationFrame(vizRaf); vizRaf = null; }
 }
 
+// ─── FIX #13: stale viz refs — check vizBars.length before forEach ───────────
 function _vizLoop(ts) {
   const fp = document.getElementById('fullscreen-player');
   if (document.hidden || !fp?.classList.contains('open') || isLowEnd) {
@@ -1524,10 +1033,19 @@ function _vizLoop(ts) {
   }
   _lastVizTime = ts;
   vizPhase += 0.034 + Math.sin(vizPhase * 0.1) * 0.004;
+  
+  // FIX #13: Check if vizBars exists and has length
+  if (!vizBars || !vizBars.length) {
+    vizRaf = requestAnimationFrame(_vizLoop);
+    return;
+  }
+  
   vizBars.forEach((b, i) => {
+    if (!b) return;
     if (!isPlaying) {
       vizTarget[i] = vizTarget[i] * 0.88 + 0.05 * 0.12;
-      b.style.transform = `scaleY(${vizTarget[i].toFixed(3)})`; return;
+      b.style.transform = `scaleY(${vizTarget[i].toFixed(3)})`; 
+      return;
     }
     const norm = i / VIZ_COUNT;
     const freqCurve = norm < 0.12 ? (norm / 0.12) : norm < 0.44 ? 1 - (norm - 0.12) * 0.55 : Math.max(0.1, 0.8 - (norm - 0.44) * 1.35);
@@ -1654,7 +1172,7 @@ function setupMiniGesture() {
     }
 
     if (dy > 100 || (vel > 0.55 && dy > 30)) {
-      if (currentTrack) _dismissedTrackId = currentTrack.trackId;
+      if (currentTrack) _dismissedTrackId = String(currentTrack.trackId);
       mp.style.transition = 'transform 0.25s ease, opacity 0.2s ease';
       mp.style.transform  = 'translateY(120px)';
       mp.style.opacity    = '0';
@@ -2002,6 +1520,7 @@ function openFullscreen() {
   const mp = document.getElementById('mini-player');
   fp.style.transform = '';
   fp.classList.add('open');
+  _pushToBackStack('fullscreen-player', closeFullscreen);
   if (mp) {
     mp.style.transition  = 'opacity 0.2s ease, transform 0.2s ease';
     mp.style.opacity     = '0';
@@ -2046,6 +1565,7 @@ function openQueuePanel() {
   panel.style.transition = '';
   queuePanelOpen = true;
   panel.classList.add('open');
+  _pushToBackStack('queue-panel', closeQueuePanel);
   if (btn) btn.classList.add('queue-open');
   requestAnimationFrame(() => {
     if (typeof updateQueuePanel === 'function') updateQueuePanel();
@@ -2063,14 +1583,27 @@ function closeQueuePanel() {
   if (btn) btn.classList.remove('queue-open');
 }
 
+// ─── FIX #12: removeFromQueue index drift — use requestAnimationFrame ────────
+let _pendingQueueUpdate = false;
+
 function updateQueuePanel() {
+  if (_isUpdatingQueue) {
+    _pendingQueueUpdate = true;
+    return;
+  }
+  _isUpdatingQueue = true;
+  
   const body    = document.getElementById('queue-panel-body');
   const countEl = document.getElementById('queue-count');
-  if (!body) return;
+  if (!body) {
+    _isUpdatingQueue = false;
+    return;
+  }
 
   body.innerHTML = '';
   if (!currentQueue.length) {
     body.innerHTML = '<div style="padding:32px;text-align:center;color:var(--text3);font-size:12px;">Queue is empty</div>';
+    _isUpdatingQueue = false;
     return;
   }
   const remaining = currentQueue.length - currentIndex - 1;
@@ -2098,12 +1631,18 @@ function updateQueuePanel() {
     }
   }
   updateNextStrip();
+  
+  _isUpdatingQueue = false;
+  if (_pendingQueueUpdate) {
+    _pendingQueueUpdate = false;
+    requestAnimationFrame(() => updateQueuePanel());
+  }
 }
 
 function makeQueueItem(song, qIdx, isCurrent) {
   const item = document.createElement('div');
   item.className = 'queue-item' + (isCurrent ? ' current' : '');
-  item.dataset.trackId = song.trackId;
+  item.dataset.trackId = String(song.trackId);
   const artUrl = getArtUrl(song, '300x300');
   const dur = song.trackTimeMillis ? formatMs(song.trackTimeMillis) : '';
   item.dataset.dur = dur;
@@ -2343,6 +1882,8 @@ function openArtistPage(artistName, songs, artUrl) {
 
   page._songs = songs;
   page._artistName = artistName;
+  
+  _pushToBackStack('artist-page', closeArtistPage);
 
   const list = document.getElementById('ap-songs-list');
   songs.forEach((s, i) => list.appendChild(makeSongRow(s, i, songs)));
@@ -2418,7 +1959,7 @@ function addToRecentlyPlayed(song) {
   recentlyPlayed.unshift(song);
   if (recentlyPlayed.length > 20) recentlyPlayed = recentlyPlayed.slice(0, 20);
   localStorage.setItem('aurum_recent_played', JSON.stringify(recentlyPlayed));
-  _trackListen(song); // ← algorithm tracking
+  _trackListen(song);
   renderQuickResume();
 }
 
@@ -2516,6 +2057,7 @@ function renderRowSkeleton(count = 5) {
   return html;
 }
 
+// ─── FIX #7: refreshSection for dynamic sections ─────────────────────────────
 async function buildHomeSections(genre = 'all') {
   const container = document.getElementById('home-sections');
   container.innerHTML = '';
@@ -2524,39 +2066,18 @@ async function buildHomeSections(genre = 'all') {
   let sections = [];
 
   if (genre === 'all') {
-    // ── Always pinned ──────────────────────────────────────────
     sections.push(SECTION_POOL.find(s => s.id === 'recent'));
     sections.push(SECTION_POOL.find(s => s.id === 'featured'));
 
-    // ── Algorithm: top artists from listen history ─────────────
     const topArtists = _getTopArtists(3);
     topArtists.forEach(({ artist, count }) => {
-      const id = 'artist_' + artist.replace(/\s+/g, '_').toLowerCase();
-      // Agar already SECTION_POOL mein hai to use wahi
-      const existing = SECTION_POOL.find(s => s.title === artist);
-      if (existing) {
-        sections.push(existing);
-      } else {
-        // Dynamic section banao
-        sections.push({
-          id,
-          title: artist,
-          type: 'rows',
-          queries: [
-            `${artist} best songs`,
-            `${artist} top hits`,
-            `${artist} popular songs`,
-          ],
-          _isAlgo: true,
-          _listenCount: count,
-        });
-      }
+      _registerDynamicSection(artist);
+      const existing = _dynamicSections.find(s => s.title === artist);
+      if (existing) sections.push(existing);
     });
 
-    // ── Trending always aaye ───────────────────────────────────
     sections.push(SECTION_POOL.find(s => s.id === 'trending'));
 
-    // ── Baaki sections random rotate karo (history ke artists remove kar ke) ──
     const usedIds = new Set(sections.map(s => s?.id));
     const rest = SECTION_POOL
       .filter(s => s && !usedIds.has(s.id))
@@ -2576,7 +2097,6 @@ async function buildHomeSections(genre = 'all') {
     if (sec.id === 'recent' && !recentlyPlayed.length) wrap.style.display = 'none';
     const type      = sec.type === 'featured' ? 'cards' : sec.type;
     const typeCount = type === 'bw' ? 5 : type === 'wide' ? 5 : type === 'rows' ? 0 : 5;
-    // Algorithm section ke liye badge dikhao
     const badge = sec._isAlgo ? ` <span style="font-size:9px;background:rgba(184,150,64,0.15);color:var(--gold);padding:2px 7px;border-radius:20px;font-weight:700;vertical-align:middle;">FOR YOU</span>` : '';
     wrap.innerHTML  = `<div class="section-head"><h2>${sec.title}${badge}</h2><span onclick="refreshSection('${sec.id}')">Refresh</span></div><div id="sec-${sec.id}">${type === 'rows' ? renderRowSkeleton() : renderSkeletonSection(type, typeCount)}</div>`;
     container.appendChild(wrap);
@@ -2610,8 +2130,13 @@ async function _renderSection(sec, wrap) {
   }
 }
 
+// ─── FIX #7: refreshSection now works for dynamic sections ───────────────────
 async function refreshSection(secId) {
-  const sec  = SECTION_POOL.find(s => s.id === secId); if (!sec) return;
+  let sec = SECTION_POOL.find(s => s.id === secId);
+  if (!sec) {
+    sec = _dynamicSections.find(s => s.id === secId);
+  }
+  if (!sec) return;
   const wrap = document.getElementById('sec-wrap-' + secId); if (!wrap) return;
   const el   = document.getElementById('sec-' + secId); if (!el) return;
   const type = sec.type === 'featured' ? 'cards' : sec.type;
@@ -2685,7 +2210,7 @@ function makeBwCard(s, i, queue, meta) {
 
 function makeSongRow(s, i, queue) {
   const row = document.createElement('div'); row.className = 'song-row anim-in';
-  row.dataset.trackId = s.trackId;
+  row.dataset.trackId = String(s.trackId);
   row.style.animationDelay = (i * 0.034) + 's';
   const dur = s.trackTimeMillis ? formatMs(s.trackTimeMillis) : '';
   row.dataset.dur = dur;
@@ -2723,7 +2248,6 @@ function makeSongRow(s, i, queue) {
   if (isTV) row.tabIndex = 0;
   row._song = s;
 
-  // ── Pointer tracking — artist click vs row click vs long press ──
   let _pt        = null;
   let _longFired = false;
   let _moved     = false;
@@ -2765,13 +2289,11 @@ function makeSongRow(s, i, queue) {
     _moved = false;
   }, { passive: true });
 
-  // ── Click — artist span check karo pehle ────────────────────────
   row.addEventListener('click', e => {
     if (_longFired) return;
     if (_moved) return;
     if (e.target.closest('.song-row-heart') || e.target.closest('.song-row-more')) return;
 
-    // Artist span click — playlist open karo
     if (e.target === artistSpan || artistSpan.contains(e.target)) {
       e.stopPropagation();
       const name = (s.artistName || '').split(/[&,]/)[0].trim();
@@ -2779,7 +2301,6 @@ function makeSongRow(s, i, queue) {
       return;
     }
 
-    // Baaki jagah click — song play karo
     playSongs(queue, i);
     haptic(8);
   });
@@ -2910,6 +2431,7 @@ function goPage(name, btn) {
   btn.classList.add('active');
   if (name === 'library') renderLibrary();
   if (name === 'search')  renderSearchIdle();
+  _pushToBackStack('page-' + name, () => goPage('home', document.querySelector('.nav-btn[data-page="home"]')));
 }
 
 // ─── SAVE / LIBRARY ──────────────────────────────────────────────────────────
@@ -3030,7 +2552,7 @@ async function deleteFromDb(trackId) {
   const db = await openDlDb();
   return new Promise((res, rej) => {
     const tx = db.transaction('songs', 'readwrite');
-    tx.objectStore('songs').delete(trackId);
+    tx.objectStore('songs').delete(String(trackId));
     tx.oncomplete = () => res();
     tx.onerror    = () => rej(tx.error);
   });
@@ -3088,7 +2610,7 @@ async function downloadSongOffline(song, customUrl, customQuality) {
 async function playDownloadedSong(trackId) {
   try {
     const db  = await openDlDb();
-    const key = isNaN(Number(trackId)) ? trackId : Number(trackId);
+    const key = String(trackId);
     const tx  = db.transaction('songs', 'readonly');
     const req = tx.objectStore('songs').get(key);
     req.onsuccess = () => {
@@ -3133,7 +2655,7 @@ function renderDownloadedSongs() {
   hdr.innerHTML = `<span style="font-size:11px;color:var(--text3);font-weight:600;">${songs.length} song${songs.length!==1?'s':''} saved offline</span><button style="font-size:11px;color:var(--text3);background:none;border:none;cursor:pointer;font-family:Sora,sans-serif;" onclick="confirmClearDownloads()">Clear all</button>`;
   list.appendChild(hdr);
   songs.forEach(s => {
-    const row = document.createElement('div'); row.className = 'song-row anim-in'; row.dataset.trackId = s.trackId;
+    const row = document.createElement('div'); row.className = 'song-row anim-in'; row.dataset.trackId = String(s.trackId);
     if (isTV) row.tabIndex = 0;
     const img = document.createElement('img'); img.alt=''; img.loading='lazy'; setImgSrc(img, getArtUrl(s, '300x300')); row.appendChild(img);
     const info = document.createElement('div'); info.className = 'song-row-info';
@@ -3185,9 +2707,13 @@ function openPlaylistDetail(i) {
   if (!songs.length) sl.innerHTML = `<div style="text-align:center;padding:38px 22px;color:var(--text3);font-size:12px;">No songs yet — find some in Search</div>`;
   else songs.forEach((s, i) => sl.appendChild(makeSongRow(s, i, songs)));
   document.getElementById('playlist-detail').classList.add('open');
+  _pushToBackStack('playlist-detail', closePlaylistDetail);
 }
 
-function closePlaylistDetail() { document.getElementById('playlist-detail').classList.remove('open'); renderLibrary(); }
+function closePlaylistDetail() { 
+  document.getElementById('playlist-detail').classList.remove('open'); 
+  renderLibrary(); 
+}
 
 function playPlaylist() {
   if (currentPlaylistIndex === null) return;
@@ -3212,10 +2738,11 @@ function openPlaylistOpts(e, i) {
   const modal = document.getElementById('playlist-opts-modal');
   modal.style.display = '';
   modal.classList.add('open');
+  _pushToBackStack('playlist-opts-modal', closePlaylistOpts);
 }
 function closePlaylistOpts(e) {
   if (e && !e.target.closest) return;
-  if (e && e.target.closest('.modal-sheet')) return;
+  if (e && e.target.closest?.('.modal-sheet')) return;
   const modal = document.getElementById('playlist-opts-modal');
   modal.classList.remove('open');
   modal.style.display = 'none';
@@ -3228,6 +2755,7 @@ function openRenameModal() {
   const modal = document.getElementById('rename-modal');
   modal.style.display = '';
   modal.classList.add('open');
+  _pushToBackStack('rename-modal', closeRenameModal);
   setTimeout(() => document.getElementById('rename-input').focus(), 360);
 }
 function closeRenameModal() {
@@ -3241,6 +2769,7 @@ function openCreatePlaylist() {
   const modal = document.getElementById('create-playlist-modal');
   modal.style.display = '';
   modal.classList.add('open');
+  _pushToBackStack('create-playlist-modal', closeCreatePlaylist);
   setTimeout(() => document.getElementById('playlist-name-input').focus(), 360);
 }
 function closeCreatePlaylist() {
@@ -3251,6 +2780,7 @@ function closeCreatePlaylist() {
 }
 function createPlaylist() { const name = document.getElementById('playlist-name-input').value.trim(); if (!name) { showToast('Enter a playlist name'); return; } playlists.push({ name, songs:[] }); localStorage.setItem('aurum_playlists', JSON.stringify(playlists)); closeCreatePlaylist(); renderPlaylists(); showToast('"' + name + '" created'); }
 
+// ─── FIX #8: double modal close — fixed click outside logic ──────────────────
 function openSongModal(song) {
   if (!song) return;
   modalTrack = song;
@@ -3259,9 +2789,15 @@ function openSongModal(song) {
   document.getElementById('modal-song-artist').textContent = song.artistName || 'Unknown';
   document.getElementById('modal-save-label').textContent  = isSaved(song) ? 'Remove from Library' : 'Save to Library';
   document.getElementById('song-modal').classList.add('open');
+  _pushToBackStack('song-modal', closeSongModal);
 }
 
-function closeSongModal(e) { if (e && e.target.closest?.('.modal-sheet')) return; document.getElementById('song-modal').classList.remove('open'); modalTrack = null; }
+function closeSongModal(e) { 
+  // Close ONLY when clicking outside modal content
+  if (e && e.target.closest?.('.modal-sheet')) return;
+  document.getElementById('song-modal').classList.remove('open'); 
+  modalTrack = null; 
+}
 function modalSave() { if (!modalTrack) return; toggleSave(modalTrack); document.getElementById('modal-save-label').textContent = isSaved(modalTrack) ? 'Remove from Library' : 'Save to Library'; document.getElementById('song-modal').classList.remove('open'); modalTrack = null; }
 function playNext() { if (!modalTrack) return; currentQueue.splice(currentIndex + 1, 0, modalTrack); showToast('Playing next'); document.getElementById('song-modal').classList.remove('open'); modalTrack = null; updateQueuePanel(); }
 function modalDownload() { if (!modalTrack) return; const s = modalTrack; document.getElementById('song-modal').classList.remove('open'); _downloadSong = s; modalTrack = null; openDownloadModal(); }
@@ -3282,9 +2818,13 @@ function openAddToPlaylistModal() {
     });
   }
   document.getElementById('add-playlist-modal').classList.add('open');
+  _pushToBackStack('add-playlist-modal', closeAddToPlaylistModal);
 }
 
-function closeAddToPlaylistModal(e) { if (e && e.target.closest?.('.modal-sheet')) return; document.getElementById('add-playlist-modal').classList.remove('open'); }
+function closeAddToPlaylistModal(e) { 
+  if (e && e.target.closest?.('.modal-sheet')) return;
+  document.getElementById('add-playlist-modal').classList.remove('open'); 
+}
 function addToPlaylist(i, song) { const s = song || modalTrack; if (!s) return; const pl = playlists[i]; if (pl.songs.some(x => String(x.trackId) === String(s.trackId))) { showToast('Already in "' + pl.name + '"'); } else { pl.songs.push(s); localStorage.setItem('aurum_playlists', JSON.stringify(playlists)); showToast('Added to "' + pl.name + '"'); } document.getElementById('add-playlist-modal').classList.remove('open'); modalTrack = null; }
 
 function openQualitySheet() {
@@ -3295,6 +2835,7 @@ function openQualitySheet() {
   const modal = document.getElementById('quality-modal');
   modal.style.display = '';
   modal.classList.add('open');
+  _pushToBackStack('quality-modal', closeQualitySheet);
 }
 
 function closeQualitySheet(e) {
@@ -3303,7 +2844,7 @@ function closeQualitySheet(e) {
   modal.classList.remove('open');
   modal.style.display = 'none';
 }
-function selectQuality(q) { if (q === 'preview') { _fallbackToPreview(currentTrack); closeQualitySheet(); } else { if (_fullSongAbort) { _fullSongAbort.abort(); _fullSongAbort = null; } _autoFetchFullSong(currentTrack); closeQualitySheet(); } }
+function selectQuality(q) { if (q === 'preview') { _fallbackToPreview(currentTrack); closeQualitySheet(); } else { if (_fullSongAbort) { _fullSongAbort.abort(); _fullSongAbort = null; } _autoFetchFullSong(currentTrack, _currentLoadId, String(currentTrack?.trackId)); closeQualitySheet(); } }
 
 // ─── DOWNLOAD MODAL ───────────────────────────────────────────────────────────
 function openDownloadModal() {
@@ -3326,6 +2867,7 @@ function openDownloadModal() {
   const modal = document.getElementById('download-modal');
   modal.style.display = '';
   modal.classList.add('open');
+  _pushToBackStack('download-modal', closeDownloadModal);
 }
 
 function closeDownloadModal(e) {
@@ -3337,10 +2879,8 @@ function closeDownloadModal(e) {
 }
 
 async function triggerDownload(quality) {
-  // ── FIX #2 — validateFeature gate (auth.js) ──────────────────────────
   if (quality === 'ringtone' && !window.validateFeature('ringtone')) return;
   if ((quality === 'full' || quality === 'gift') && !window.validateFeature('download')) return;
-  // ─────────────────────────────────────────────────────────────────────
 
   const song = _downloadSong || currentTrack;
   _downloadSong = null;
@@ -3390,35 +2930,25 @@ async function triggerDownload(quality) {
   }
 
   if (quality === 'full') {
-  const modal = document.getElementById('download-modal');
-  modal.classList.remove('open');
-  modal.style.display = 'none';
-
-  // App ke andar save (IndexedDB)
-  downloadSongOffline(song, _currentSaavnUrl, _currentSaavnQuality);
-
-  // Device pe bhi file download
-  try {
-    const cleanTitle  = (song.trackName  || 'audio').replace(/[/\?%*:|"<>]/g, '-');
-    const cleanArtist = (song.artistName || '').replace(/[/\?%*:|"<>]/g, '-');
-    const q      = encodeURIComponent(song.trackName  || '');
-    const artist = encodeURIComponent(song.artistName || '');
-    const dlUrl  = `/api/download?q=${q}&artist=${artist}&quality=full`;
-    const a      = document.createElement('a');
-    a.href       = dlUrl;
-    a.download   = `${cleanTitle} - ${cleanArtist}.mp3`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    haptic([10, 30, 10]);
-    showToast('Saving to app & downloading…');
-  } catch(e) {
-    showToast('Saved to app ✓');
+    downloadSongOffline(song, _currentSaavnUrl, _currentSaavnQuality);
+    try {
+      const q      = encodeURIComponent(song.trackName  || '');
+      const artist = encodeURIComponent(song.artistName || '');
+      const dlUrl  = `/api/download?q=${q}&artist=${artist}&quality=full`;
+      const a      = document.createElement('a');
+      a.href       = dlUrl;
+      a.download   = `${cleanTitle} - ${cleanArtist}.mp3`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      haptic([10, 30, 10]);
+      showToast('Saving to app & downloading…');
+    } catch(e) {
+      showToast('Saved to app ✓');
+    }
+    _downloadSong = null;
+    return;
   }
-
-  _downloadSong = null;
-  return;
-}
 
   if (quality === 'gift') {
     showToast('Fetching 320 kbps…');
@@ -3439,7 +2969,7 @@ async function triggerDownload(quality) {
   }
 }
 
-// ─── fetchLyrics ─────────────────────────────────────────────────────────────
+// ─── FIX #14: lyrics CORS — only show button after lyrics confirmed loaded ───
 async function fetchLyrics(song) {
   const wrap      = document.getElementById('fp-lyrics-wrap');
   const el        = document.getElementById('fp-lyrics');
@@ -3449,7 +2979,10 @@ async function fetchLyrics(song) {
   wrap.style.display = 'none';
   el.textContent     = '';
   lyricsViewActive   = false;
-  if (lyricsBtn) { lyricsBtn.style.display = 'none'; lyricsBtn.classList.remove('active'); }
+  if (lyricsBtn) { 
+    lyricsBtn.style.display = 'none'; 
+    lyricsBtn.classList.remove('active'); 
+  }
 
   try {
     const artist = encodeURIComponent((song.artistName || '').split(/[&,]/)[0].trim());
@@ -3459,6 +2992,7 @@ async function fetchLyrics(song) {
     const d = await r.json();
     if (!d.lyrics || !d.lyrics.trim()) throw new Error('empty');
     el.textContent = d.lyrics.trim();
+    // Only show button after lyrics successfully loaded
     if (lyricsBtn) lyricsBtn.style.display = 'flex';
   } catch(e) {
     if (lyricsBtn) lyricsBtn.style.display = 'none';
@@ -3468,7 +3002,6 @@ async function fetchLyrics(song) {
 // ─── BACKGROUND AUDIO KEEP-ALIVE ─────────────────────────────────────────────
 let _wakeLock = null;
 let _bgPingInterval = null;
-let _bgAudioCtx = null;
 
 async function _acquireWakeLock() {
   if (!('wakeLock' in navigator)) return;
@@ -3482,20 +3015,26 @@ function _releaseWakeLock() {
   if (_wakeLock) { _wakeLock.release().catch(()=>{}); _wakeLock = null; }
 }
 
+// ─── FIX #10: reuse existing AudioContext, don't create new ──────────────────
 function _setupBgAudioPing() {
-  try {
-    _bgAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    _bgPingInterval = setInterval(() => {
-      if (!isPlaying) return;
-      try {
-        const buf = _bgAudioCtx.createBuffer(1, 1, 22050);
-        const src = _bgAudioCtx.createBufferSource();
-        src.buffer = buf;
-        src.connect(_bgAudioCtx.destination);
-        src.start(0);
-      } catch(e) {}
-    }, 5000);
-  } catch(e) {}
+  if (_bgPingInterval) clearInterval(_bgPingInterval);
+  
+  _bgPingInterval = setInterval(() => {
+    if (!isPlaying) return;
+    try {
+      const ctx = _getOrCreateBgAudioCtx();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+        return;
+      }
+      const buf = ctx.createBuffer(1, 1, 22050);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.start(0);
+    } catch(e) {}
+  }, 5000);
 }
 
 audio.addEventListener('playing', () => { _acquireWakeLock(); });
@@ -3523,6 +3062,44 @@ if (!isTV) {
   document.addEventListener('keydown', e => {
     if (e.code === 'Space' && e.target.tagName !== 'INPUT') { e.preventDefault(); togglePlay(); }
   });
+}
+
+// ─── SETTINGS PANEL ──────────────────────────────────────────────────────────
+function openSettings() {
+  const panel = document.getElementById('settings-panel');
+  if (!panel) return;
+  panel.classList.add('open');
+  _pushToBackStack('settings-panel', closeSettings);
+  renderSettingsPage();
+}
+
+function closeSettings() {
+  const panel = document.getElementById('settings-panel');
+  if (!panel) return;
+  panel.classList.remove('open');
+}
+
+function renderSettingsPage() {
+  const body = document.getElementById('settings-body');
+  if (!body) return;
+  // Simple settings render
+  body.innerHTML = `
+    <div class="settings-section">
+      <div class="settings-section-header">Audio</div>
+      <div class="settings-section-body">
+        <div class="settings-item">Stream Quality</div>
+        <div class="settings-item">Data Saver</div>
+        <div class="settings-item">Bass Boost</div>
+      </div>
+    </div>
+    <div class="settings-section">
+      <div class="settings-section-header">Visuals</div>
+      <div class="settings-section-body">
+        <div class="settings-item">Theme</div>
+        <div class="settings-item">Accent Color</div>
+      </div>
+    </div>
+  `;
 }
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
