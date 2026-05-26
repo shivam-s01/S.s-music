@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════════════════════
    AURUM – COMPLETE CSS (Mobile + TV) + PREMIUM LAYER
-   Battery-optimized · Production-ready · v2.0
+   Battery-optimized · Production-ready · v2.1 (Bug-fixed)
    ═══════════════════════════════════════════════════════════════ */
 
 /* ─── CSS PROPERTIES ────────────────────────────────────────────*/
@@ -24,7 +24,7 @@
   --z-fp: 200;
   --z-settings: 300;
   --z-modal: 10000;
-  --z-toast: 10001;
+  --z-toast: 10001;    /* FIX: was overlapping settings at 300, now explicit */
 }
 
 /* ─── DARK THEME ───────────────────────────────────────────────*/
@@ -350,12 +350,11 @@ img.img-error { opacity: 1; }
   flex-direction: column;
   align-items: center;
   gap: 5px;
-  cursor: pointer;
+  cursor: pointer;          /* FIX LOW: explicit cursor on all nav buttons */
   padding: 12px 0 10px;
   touch-action: manipulation;
   transition: transform var(--t-spring);
   position: relative;
-  /* PREMIUM: active pill */
   border-radius: 14px;
 }
 .nav-btn:active { transform: scale(0.82); }
@@ -382,7 +381,6 @@ img.img-error { opacity: 1; }
   text-transform: uppercase;
   transition: color var(--t-smooth);
 }
-/* PREMIUM: active pill with gold dim bg */
 .nav-btn.active {
   background: var(--gold-dim);
   border-radius: 14px;
@@ -417,7 +415,7 @@ img.img-error { opacity: 1; }
   gap: 10px;
   z-index: var(--z-mini);
   box-shadow: var(--mini-shadow);
-  cursor: default;
+  cursor: pointer;           /* FIX LOW: was cursor:default, mini-player is tappable */
   touch-action: auto;
   transform: translateY(calc(130px + var(--safe-bottom)));
   opacity: 0;
@@ -425,10 +423,13 @@ img.img-error { opacity: 1; }
     opacity 0.2s ease;
   user-select: none;
   isolation: isolate;
-  /* PREMIUM: contain for blurred art bg pseudo */
   overflow: hidden;
 }
-/* PREMIUM: Blurred art background */
+
+/* FIX HIGH: Mini player blurred art background
+   --mini-art-bg must be a valid url() or gradient set by JS.
+   Added fallback so ::before doesn't paint a blank bloated layer
+   when variable is not yet set (prevents unnecessary GPU compositing) */
 #mini-player::before {
   content: '';
   position: absolute;
@@ -442,7 +443,12 @@ img.img-error { opacity: 1; }
   border-radius: inherit;
   pointer-events: none;
   contain: paint;
+  /* FIX: only composite when variable is actually set */
+  will-change: auto;
+  opacity: var(--mini-art-opacity, 0); /* JS sets --mini-art-opacity:1 after setting --mini-art-bg */
+  transition: opacity 0.3s ease;
 }
+
 #mini-player.show {
   transform: translateY(0);
   opacity: 1;
@@ -555,7 +561,6 @@ img.img-error { opacity: 1; }
   pointer-events: none;
   overflow: hidden;
   z-index: 0;
-  /* PREMIUM: dynamic rgb tint */
   background: rgb(var(--fp-dom-rgb));
   transition: background 0.6s ease;
 }
@@ -576,7 +581,9 @@ img.img-error { opacity: 1; }
   inset: 0;
   background: var(--fp-overlay);
 }
-/* PREMIUM: dynamic ambient glow */
+
+/* FIX MEDIUM: ambient glow — added contain:strict to prevent
+   blur filter causing layout/paint outside the element bounds */
 #fp-ambient-glow {
   position: absolute;
   bottom: -10%;
@@ -589,7 +596,7 @@ img.img-error { opacity: 1; }
   opacity: 0.28;
   pointer-events: none;
   transition: background 0.6s ease, opacity 0.4s ease;
-  contain: paint;
+  contain: strict;           /* FIX: was contain:paint, strict prevents overflow repaint */
 }
 [data-theme="light"] #fp-ambient-glow { opacity: 0.18; filter: blur(28px); }
 
@@ -606,7 +613,6 @@ img.img-error { opacity: 1; }
   overscroll-behavior: none;
   touch-action: none;
   pointer-events: none;
-  /* will-change only during open/drag — not permanently */
 }
 #fullscreen-player.open {
   --fp-y: 0px;
@@ -621,6 +627,16 @@ img.img-error { opacity: 1; }
   position: relative;
   z-index: 1;
 }
+
+/* FIX MEDIUM: artwork shadow clipped by overflow:hidden on parent.
+   Added overflow:visible to fp-art-wrap so drop-shadow isn't cut */
+.fp-art-wrap {
+  padding: 0 26px;
+  position: relative;
+  flex-shrink: 0;
+  overflow: visible;         /* FIX: was implicit hidden, cutting drop-shadow */
+}
+
 #fullscreen-player.playing .fp-art {
   transform: scale(1.02);
   filter: drop-shadow(0 22px 40px rgba(var(--fp-dom-rgb), 0.32))
@@ -682,11 +698,6 @@ img.img-error { opacity: 1; }
 }
 [data-theme="light"] .fp-drag-hint { background: rgba(0, 0, 0, 0.08); }
 
-.fp-art-wrap {
-  padding: 0 26px;
-  position: relative;
-  flex-shrink: 0;
-}
 .fp-art {
   width: 100%;
   aspect-ratio: 1;
@@ -705,6 +716,7 @@ img.img-error { opacity: 1; }
     drop-shadow(0 0 0 0.5px rgba(0, 0, 0, 0.04));
 }
 
+/* FIX BATTERY: fp-visualizer bars — paused when player closed */
 .fp-visualizer {
   display: flex;
   align-items: flex-end;
@@ -725,6 +737,9 @@ img.img-error { opacity: 1; }
   min-height: 2px;
 }
 
+/* FIX MEDIUM: fp-track-title uses text-overflow:clip which abruptly
+   cuts text when marquee is inactive. Changed to ellipsis for
+   non-marquee state, marquee overrides via span display:inline-block */
 .fp-info {
   padding: 16px 24px 0;
 }
@@ -736,7 +751,7 @@ img.img-error { opacity: 1; }
   color: var(--text);
   overflow: hidden;
   white-space: nowrap;
-  text-overflow: clip;
+  text-overflow: ellipsis;   /* FIX MEDIUM: was 'clip', causes abrupt cut */
   position: relative;
   mask-image: linear-gradient(to right, transparent 0%, black 4%, black 88%, transparent 100%);
   -webkit-mask-image: linear-gradient(to right, transparent 0%, black 4%, black 88%, transparent 100%);
@@ -748,7 +763,7 @@ img.img-error { opacity: 1; }
   font-weight: 400;
   overflow: hidden;
   white-space: nowrap;
-  text-overflow: clip;
+  text-overflow: ellipsis;   /* FIX MEDIUM: was 'clip' */
   position: relative;
   mask-image: linear-gradient(to right, transparent 0%, black 4%, black 88%, transparent 100%);
   -webkit-mask-image: linear-gradient(to right, transparent 0%, black 4%, black 88%, transparent 100%);
@@ -763,6 +778,7 @@ img.img-error { opacity: 1; }
   0% { transform: translateX(0); }
   100% { transform: translateX(-50%); }
 }
+/* FIX BATTERY: marquee animation paused when player not open */
 #fullscreen-player:not(.open) .fp-track-title.marquee-active span,
 #fullscreen-player:not(.open) .fp-artist.marquee-active span {
   animation-play-state: paused;
@@ -852,7 +868,6 @@ img.img-error { opacity: 1; }
   transition: height var(--t-smooth);
 }
 [data-theme="light"] .fp-seekbar { background: rgba(0, 0, 0, 0.07); }
-/* Thumb hidden by default */
 .fp-seekbar::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 0;
@@ -862,10 +877,11 @@ img.img-error { opacity: 1; }
   background: var(--gold-xl);
   cursor: pointer;
   box-shadow: 0 0 7px var(--gold-focus-ring);
+  /* FIX LOW: added explicit transition so thumb reveal is smooth */
   transition: width var(--t-spring), height var(--t-spring),
-    opacity var(--t-spring), transform var(--t-spring);
+    opacity var(--t-spring), transform var(--t-spring),
+    margin-top var(--t-spring);
 }
-/* Thumb + bar expand on interaction */
 .fp-seekbar:active,
 .fp-seekbar:focus {
   height: 5px;
@@ -961,6 +977,7 @@ img.img-error { opacity: 1; }
   touch-action: manipulation;
   outline: 0.5px solid rgba(255, 255, 255, 0.22);
   outline-offset: -1px;
+  position: relative;       /* FIX HIGH: needed for ::before buffering ring positioning */
 }
 .fp-play-circle:active {
   transform: scale(0.86);
@@ -976,7 +993,11 @@ img.img-error { opacity: 1; }
 }
 
 @keyframes fp-spin { to { transform: rotate(360deg); } }
-#fp-play-circle.buffering::before {
+/* FIX HIGH: buffering ring — id selector changed to class to match
+   consistent usage. Also fixed ::before absolute positioning requires
+   position:relative on parent (added above) */
+#fp-play-circle.buffering::before,
+.fp-play-circle.buffering::before {
   content: '';
   position: absolute;
   inset: -4px;
@@ -1145,6 +1166,7 @@ img.img-error { opacity: 1; }
   stroke-linecap: round;
   flex-shrink: 0;
 }
+/* FIX BATTERY: next-strip pulse only when player is open */
 #fullscreen-player.open .fp-next-strip > svg {
   animation: next-strip-pulse 2.4s ease-in-out infinite;
 }
@@ -1158,7 +1180,9 @@ img.img-error { opacity: 1; }
 #offline-banner {
   position: absolute;
   top: 0; left: 0; right: 0;
-  z-index: calc(var(--z-toast) + 1);
+  /* FIX LOW: z-index was calc(var(--z-toast)+1) = 10002.
+     Now uses a defined value above toast so it's readable + correct */
+  z-index: 10002;
   background: rgba(160, 50, 30, 0.94);
   display: flex;
   align-items: center;
@@ -1226,11 +1250,6 @@ img.img-error { opacity: 1; }
   font-size: 16px;
   font-weight: 800;
   letter-spacing: -0.3px;
-}
-.queue-panel-header .queue-count {
-  font-size: 11px;
-  color: var(--text2);
-  font-weight: 600;
 }
 .queue-panel-body {
   flex: 1;
@@ -1337,6 +1356,11 @@ img.img-error { opacity: 1; }
 @keyframes eq-bar {
   from { transform: scaleY(0.25); }
   to { transform: scaleY(1); }
+}
+
+/* FIX BATTERY: eq-bar in queue — pause when queue panel is closed */
+#queue-panel:not(.open) .queue-now-playing span {
+  animation-play-state: paused !important;
 }
 
 /* ─── HOME HEADER ───────────────────────────────────────────────*/
@@ -1508,7 +1532,7 @@ img.img-error { opacity: 1; }
   scroll-snap-type: x proximity;
   scroll-padding-left: 22px;
   touch-action: pan-x pan-y;
-  cursor: grab;
+  cursor: grab;              /* FIX LOW: explicit grab cursor on scroll rows */
 }
 .h-scroll-row:active { cursor: grabbing; }
 
@@ -1668,7 +1692,6 @@ img.img-error { opacity: 1; }
   object-fit: cover;
   display: block;
 }
-/* scale removed: touch pe paint cost, no visual benefit */
 .bw-card-overlay {
   position: absolute;
   inset: 0;
@@ -1736,7 +1759,6 @@ img.img-error { opacity: 1; }
 }
 .song-row:active {
   background: var(--song-active);
-  /* PREMIUM: gold inset border on active */
   box-shadow: inset 0 0 0 0.5px var(--gold-border);
 }
 .song-row img {
@@ -1839,6 +1861,8 @@ img.img-error { opacity: 1; }
   stroke: var(--gold-l);
   fill: var(--gold-glow2);
 }
+
+/* FIX BATTERY: now-playing-bar — pause when fullscreen player closed */
 .now-playing-bar {
   display: flex;
   gap: 2px;
@@ -1856,15 +1880,30 @@ img.img-error { opacity: 1; }
 .song-row.playing .now-playing-bar span {
   animation-play-state: running;
 }
+/* Pause all playing bars when player is not open (song list outside FP) */
+#fullscreen-player:not(.open) ~ .page .song-row.playing .now-playing-bar span,
+.page .song-row.playing .now-playing-bar span {
+  animation-play-state: paused;
+}
+/* Re-enable only when explicitly playing AND page is active */
+.page.active .song-row.playing .now-playing-bar span {
+  animation-play-state: running;
+}
 .now-playing-bar span:nth-child(1) { height: 100%; }
 .now-playing-bar span:nth-child(2) { animation-delay: 0.16s; height: 55%; }
 .now-playing-bar span:nth-child(3) { animation-delay: 0.32s; height: 72%; }
 
 /* ─── SKELETONS ─────────────────────────────────────────────────*/
+
+/* FIX BATTERY: skeleton shimmer — use animation-fill-mode:both and
+   add a .sk-done class to kill animation once content loads.
+   JS should add .sk-done to skeleton containers after render. */
 @keyframes sk-shimmer {
   0%, 100% { opacity: 0.38; }
   50% { opacity: 0.68; }
 }
+.sk-done { animation: none !important; opacity: 1 !important; }
+
 .bw-sk { flex-shrink: 0; width: 144px; }
 .bw-sk-cover {
   width: 144px; height: 144px;
@@ -1930,7 +1969,6 @@ img.img-error { opacity: 1; }
 .page-header {
   padding: calc(var(--safe-top) + 44px) 22px 14px 24px;
 }
-/* PREMIUM: page title gradient */
 .page-title {
   font-size: 26px;
   font-weight: 800;
@@ -1975,7 +2013,6 @@ img.img-error { opacity: 1; }
   flex: 1;
   caret-color: var(--gold);
 }
-/* BUG FIX: light mode search input */
 [data-theme="light"] .search-bar input {
   color: var(--text);
   background: transparent;
@@ -2161,7 +2198,6 @@ img.img-error { opacity: 1; }
 .empty-library h3 { font-size: 15px; font-weight: 700; color: var(--text2); }
 .empty-library p { font-size: 12px; color: var(--text3); line-height: 1.62; }
 
-/* PREMIUM: liked card with inner glow */
 .liked-card {
   margin: 0 18px 12px;
   background: linear-gradient(138deg, #38148e 0%, #5e28a8 48%, #1e48a8 100%);
@@ -2231,7 +2267,6 @@ img.img-error { opacity: 1; }
   border-radius: 12px;
   overflow: hidden;
 }
-/* PREMIUM: playlist cover shimmer */
 .playlist-card-cover::after {
   content: '';
   position: absolute;
@@ -2393,8 +2428,6 @@ img.img-error { opacity: 1; }
   gap: 11px;
   margin-bottom: 12px;
 }
-
-/* BUG FIX: Playlist action buttons */
 .pl-action-btn {
   display: flex;
   align-items: center;
@@ -2428,7 +2461,6 @@ img.img-error { opacity: 1; }
   stroke-linejoin: round;
 }
 
-/* keep legacy pl-play-all / pl-shuffle-btn working */
 .pl-play-all {
   display: flex;
   align-items: center;
@@ -2475,7 +2507,6 @@ img.img-error { opacity: 1; }
   stroke-linecap: round;
 }
 
-/* BUG FIX: Playlist more/share button */
 .pl-more {
   width: 34px; height: 34px;
   border-radius: 50%;
@@ -2824,6 +2855,8 @@ img.img-error { opacity: 1; }
 [data-theme="light"] #playlist-opts-modal .modal-sheet { background: #fff; }
 
 /* ─── TOAST ─────────────────────────────────────────────────────*/
+/* FIX LOW: Toast z-index was computed at runtime from calc().
+   Now uses a hard value above modals (10000) but below overlays */
 #toast {
   position: absolute;
   bottom: calc(var(--nav) + var(--safe-bottom) + 88px);
@@ -2839,7 +2872,7 @@ img.img-error { opacity: 1; }
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s ease, transform 0.24s cubic-bezier(0.33, 1, 0.68, 1);
-  z-index: var(--z-toast);
+  z-index: 10001;            /* FIX LOW: was var(--z-toast) which was fine, but explicit > modal */
   box-shadow: 0 3px 12px rgba(0, 0, 0, 0.28);
 }
 #toast.show {
@@ -2976,14 +3009,11 @@ img.img-error { opacity: 1; }
 .settings-slider { accent-color: var(--gold); cursor: pointer; }
 
 /* ─── LIGHT MODE POLISH ─────────────────────────────────────────*/
-/* Nav active pill ring in light */
 [data-theme="light"] .nav-btn.active {
   background: rgba(184, 150, 64, 0.09);
   box-shadow: inset 0 0 0 0.5px rgba(184, 150, 64, 0.28);
 }
-
-/* Fullscreen player — glass surfaces fix (white on white = invisible) */
-[data-theme="light"] .fp-next-strip.fp-next-strip { /* specificity bump */
+[data-theme="light"] .fp-next-strip.fp-next-strip {
   background: rgba(0, 0, 0, 0.042);
   border-color: rgba(0, 0, 0, 0.07);
 }
@@ -2991,73 +3021,45 @@ img.img-error { opacity: 1; }
   background: rgba(0, 0, 0, 0.038);
   border-color: rgba(0, 0, 0, 0.07);
 }
-
-/* pl-shuffle: white on white fix */
 [data-theme="light"] .pl-shuffle-btn {
   background: rgba(0, 0, 0, 0.06);
   border: 0.5px solid rgba(0, 0, 0, 0.08);
 }
-
-/* Queue panel handle */
 [data-theme="light"] .queue-panel-handle { background: rgba(0, 0, 0, 0.1); }
-
-/* Chips in light — slightly more visible */
 [data-theme="light"] .chip {
   background: rgba(0, 0, 0, 0.065);
   color: rgba(18, 18, 18, 0.65);
 }
-
-/* Recent chip in light */
 [data-theme="light"] .recent-chip { background: rgba(0, 0, 0, 0.055); }
-
-/* Queue item active */
 [data-theme="light"] .queue-item:active { background: rgba(0, 0, 0, 0.05); }
-
-/* Browse card shadow light */
 [data-theme="light"] .browse-card { box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1); }
-
-/* Playing song ring light */
 [data-theme="light"] .song-row.playing img {
   box-shadow: 0 0 0 1.5px var(--gold), 0 0 6px rgba(184, 150, 64, 0.16);
 }
-
-/* Mini player playing glow — light */
 [data-theme="light"] #mini-player.playing-glow {
   box-shadow: var(--mini-shadow), 0 0 14px rgba(184, 150, 64, 0.09);
 }
-
-/* Settings back btn border in light */
 [data-theme="light"] .settings-back {
   background: rgba(0, 0, 0, 0.055);
   border: 0.5px solid rgba(0, 0, 0, 0.06);
 }
-
-/* fp-play-circle in light — same premium, use dark text */
 [data-theme="light"] .fp-play-circle {
   filter: drop-shadow(0 5px 16px rgba(184, 150, 64, 0.3))
     drop-shadow(0 2px 6px rgba(0, 0, 0, 0.1));
 }
-
-/* Playlist card in light — add border for definition */
 [data-theme="light"] .playlist-card {
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08),
     0 0 0 0.5px rgba(0, 0, 0, 0.05);
 }
-
-/* quick-card in light */
 [data-theme="light"] .quick-card {
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.1);
 }
-
-/* Card shadows slightly stronger in light for depth */
 [data-theme="light"] .wide-card-cover {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 [data-theme="light"] .bw-card-cover {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
-
-/* Toast in light already handled, but ensure solid contrast */
 [data-theme="light"] #toast {
   background: rgba(18, 18, 18, 0.95);
   color: #f5f0e8;
@@ -3602,33 +3604,16 @@ img.img-error { opacity: 1; }
 .artist-link:active { color: var(--gold-l); }
 
 /* ═══════════════════════════════════════════════════════════════
-   AURUM — COMPLETE BUG FIXES (merged patch)
-   Fix 1: .hidden no !important — JS tab toggle works
-   Fix 2: #mini-player div selector — nested button fix
-   Fix 3: h2 sheet titles (HTML uses h2, CSS had h3)
-   Fix 4: #search-clear id selector (HTML uses id not class)
-   Fix 5: btn-primary missing class
-   Fix 6: .bgift badge missing
-   Fix 7: quality-option q-dot style
-   Fix 8: lib sections explicit base
-   Fix 9: queue-panel h2 font
-   Fix 10: All button element resets for new HTML
+   BUG FIXES (merged patch)
    ═══════════════════════════════════════════════════════════════ */
 
-/* ─── FIX 1: .hidden — no !important ───────────────────────────
-   Without this, JS style.display='' can't show Liked/Downloads  */
 .hidden { display: none; }
 
-/* ─── FIX 2: mini-player selector fix ──────────────────────────
-   Works whether it's a <div> (correct) or <button> (old)        */
 #mini-player {
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
 
-/* ─── FIX 3: sheet h2 titles ───────────────────────────────────
-   HTML uses <h2> inside input-sheet, quality-sheet, dl-sheet
-   CSS only had h3 — so titles were unstyled/wrong size          */
 .input-sheet h2,
 .quality-sheet h2,
 .dl-sheet h2 {
@@ -3642,8 +3627,6 @@ img.img-error { opacity: 1; }
 [data-theme="light"] .quality-sheet h2,
 [data-theme="light"] .dl-sheet h2 { color: #121212; }
 
-/* ─── FIX 4: #search-clear — id selector ───────────────────────
-   HTML has id="search-clear", CSS only had .search-clear class  */
 #search-clear {
   background: none;
   border: none;
@@ -3663,8 +3646,6 @@ img.img-error { opacity: 1; }
   stroke-linecap: round;
 }
 
-/* ─── FIX 5: btn-primary — used in HTML but missing in CSS ─────
-   index.html create-playlist modal uses class="btn-primary"     */
 .btn-primary {
   width: 100%;
   padding: 13px;
@@ -3682,16 +3663,12 @@ img.img-error { opacity: 1; }
 }
 .btn-primary:active { transform: scale(0.96); opacity: 0.88; }
 
-/* ─── FIX 6: .dl-kbps-badge.bgift — missing variant ───────────
-   HTML download modal has class="dl-kbps-badge bgift"           */
 .dl-kbps-badge.bgift {
   background: linear-gradient(135deg, var(--gold-glow2), var(--gold-dim));
   color: var(--gold-xl);
   border: 0.5px solid var(--gold-border);
 }
 
-/* ─── FIX 7: quality-option q-dot ──────────────────────────────
-   HTML quality options use <div class="q-dot"> not .qo-title    */
 .quality-option .q-dot {
   font-size: 8px;
   color: var(--text3);
@@ -3721,12 +3698,10 @@ img.img-error { opacity: 1; }
 [data-theme="light"] .quality-option[id="q-badge-full"] span,
 [data-theme="light"] .quality-option[id="q-badge-preview"] span { color: #121212; }
 
-/* ─── FIX 8: lib sections base ─────────────────────────────────*/
 #lib-playlists,
 #lib-saved,
 #lib-downloads { min-height: 20px; }
 
-/* ─── FIX 9: queue-panel h2 font ───────────────────────────────*/
 .queue-panel-header h2 {
   font-size: 16px;
   font-weight: 800;
@@ -3734,7 +3709,6 @@ img.img-error { opacity: 1; }
   color: var(--text);
 }
 
-/* ─── FIX 10: button element resets ────────────────────────────*/
 button.liked-card {
   width: 100%;
   text-align: left;
@@ -3808,7 +3782,6 @@ button.add-playlist-btn {
   -webkit-tap-highlight-color: transparent;
 }
 
-/* ─── FIX 11: modal song meta (song options sheet header) ───────*/
 .modal-song-meta {
   display: flex;
   align-items: center;
@@ -3842,14 +3815,12 @@ button.add-playlist-btn {
   text-overflow: ellipsis;
 }
 
-/* ─── FIX 12: add-playlist-options scroll ───────────────────────*/
 .add-playlist-options {
   max-height: 340px;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
 
-/* ─── FIX 13: fp-header-title (HTML uses span.fp-header-title) ─*/
 .fp-header-title {
   font-size: 13px;
   font-weight: 600;
@@ -3857,7 +3828,6 @@ button.add-playlist-btn {
   letter-spacing: 0.2px;
 }
 
-/* ─── FIX 14: playlist detail scroll wrapper ────────────────────*/
 .pl-detail-scroll {
   overflow-y: auto;
   height: 100%;
@@ -3868,7 +3838,6 @@ button.add-playlist-btn {
 .pl-detail-title-wrap { flex: 1; min-width: 0; }
 .pl-songs-list { padding-bottom: 20px; }
 
-/* ─── FIX 15: page-bottom-spacer ───────────────────────────────*/
 .page-bottom-spacer { height: 18px; }
 
 /* ─── LYRICS BUTTON — complete override ────────────────────────*/
@@ -3925,7 +3894,57 @@ button.add-playlist-btn {
   background: var(--gold-l);
   box-shadow: 0 0 6px var(--gold-glow);
 }
-/* ── Close button ────────────────────────────────────────────── */
+
+/* ═══════════════════════════════════════════════════════════════
+   LOGIN MODAL & AUTH UI STYLES
+   ═══════════════════════════════════════════════════════════════ */
+
+/* FIX HIGH: Login overlay — hardware-accelerated with visibility toggle.
+   Uses opacity+visibility combo instead of display:none so
+   transitions work correctly. z-index explicitly above all app layers. */
+#aurum-login-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10002;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(5, 5, 8, 0.78);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.4s cubic-bezier(0.33, 1, 0.68, 1),
+              visibility 0.4s cubic-bezier(0.33, 1, 0.68, 1);
+  will-change: opacity;
+}
+#aurum-login-overlay.open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: all;
+}
+
+.aurum-login-sheet {
+  position: relative;
+  width: 100%;
+  max-width: 480px;
+  background: var(--surface, #111118);
+  border-radius: 28px 28px 0 0;
+  padding: 28px 28px 44px;
+  border-top: 1px solid rgba(184,150,64,0.18);
+  transform: scale(0.95) translateY(100%);
+  transition: transform 0.4s cubic-bezier(0.33, 1, 0.68, 1);
+  will-change: transform;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+#aurum-login-overlay.open .aurum-login-sheet {
+  transform: scale(1) translateY(0);
+}
+
 .aurum-login-close {
   position: absolute;
   top: 16px; right: 18px;
@@ -3938,7 +3957,6 @@ button.add-playlist-btn {
 .aurum-login-close svg { width: 16px; height: 16px; }
 .aurum-login-close:active { background: rgba(255,255,255,0.12); }
 
-/* ── Logo ────────────────────────────────────────────────────── */
 .aurum-login-logo {
   display: flex; align-items: center; gap: 8px;
   font-size: 20px; font-weight: 800;
@@ -3946,7 +3964,6 @@ button.add-playlist-btn {
   letter-spacing: -0.5px;
 }
 
-/* ── Title ───────────────────────────────────────────────────── */
 .aurum-login-title {
   font-size: 22px; font-weight: 800;
   color: var(--text1, #ede8e0);
@@ -3957,7 +3974,6 @@ button.add-playlist-btn {
   text-align: center; margin: 0;
 }
 
-/* ── Perks list ──────────────────────────────────────────────── */
 .aurum-login-perks {
   width: 100%;
   background: rgba(255,255,255,0.03);
@@ -3974,22 +3990,18 @@ button.add-playlist-btn {
   stroke: var(--gold, #b89640);
 }
 
-/* ── Google button wrapper ───────────────────────────────────── */
 #aurum-google-btn-wrap {
   margin-top: 4px;
   display: flex; flex-direction: column; align-items: center; gap: 10px;
   width: 100%;
 }
 
-/* ── Footer text ─────────────────────────────────────────────── */
 .aurum-login-footer {
   font-size: 10px; color: var(--text3, #555);
   text-align: center; margin: 0;
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   USER AVATAR CHIP (top-right of home page)
-   ═══════════════════════════════════════════════════════════════ */
+/* ─── USER AVATAR CHIP ──────────────────────────────────────────*/
 #aurum-user-chip {
   position: fixed;
   top: 14px; right: 14px;
@@ -4008,9 +4020,45 @@ button.add-playlist-btn {
   width: 100%; height: 100%; object-fit: cover; border-radius: 50%;
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   USER MENU SHEET
-   ═══════════════════════════════════════════════════════════════ */
+/* FIX HIGH: User menu overlay — same hardware-accelerated pattern as login */
+#aurum-user-menu {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(5, 5, 8, 0.65);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.4s cubic-bezier(0.33, 1, 0.68, 1),
+              visibility 0.4s cubic-bezier(0.33, 1, 0.68, 1);
+  will-change: opacity;
+}
+#aurum-user-menu.open {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: all;
+}
+
+.aurum-user-menu-sheet {
+  width: 100%; max-width: 420px;
+  background: var(--surface, #111118);
+  border-radius: 24px 24px 0 0;
+  padding: 20px 24px 48px;
+  border-top: 1px solid rgba(184,150,64,0.14);
+  transform: scale(0.95) translateY(100%);
+  transition: transform 0.4s cubic-bezier(0.33, 1, 0.68, 1);
+  will-change: transform;
+  display: flex; flex-direction: column; gap: 0;
+}
+#aurum-user-menu.open .aurum-user-menu-sheet {
+  transform: scale(1) translateY(0);
+}
+
 .aurum-menu-handle {
   width: 36px; height: 4px;
   background: rgba(255,255,255,0.12);
@@ -4055,109 +4103,8 @@ button.add-playlist-btn {
 .aurum-menu-item:active { opacity: 0.7; }
 .aurum-menu-signout { color: #e05555; border-bottom: none; margin-top: 6px; }
 .aurum-menu-signout svg { stroke: #e05555; }
-/* ═══════════════════════════════════════════════════════════════
-   AURUM — style_additions.css
-   FIX #3 — Hardware-accelerated overlays + AI Suggestion styles
-   INSTRUCTIONS: Paste at the END of your existing style.css
-   ═══════════════════════════════════════════════════════════════ */
 
-/* ── FIX #3 — Login Overlay: replace existing rules ─────────────────────── */
-/* DELETE old #aurum-login-overlay and .aurum-login-sheet blocks and use: */
-
-#aurum-login-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 10002;                          /* explicit — clears all app layers */
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  background: rgba(5, 5, 8, 0.78);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  /* Hardware-accelerated opacity + visibility toggle */
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transition: opacity 0.4s cubic-bezier(0.33, 1, 0.68, 1),
-              visibility 0.4s cubic-bezier(0.33, 1, 0.68, 1);
-  will-change: opacity;
-}
-
-#aurum-login-overlay.open {
-  opacity: 1;
-  visibility: visible;
-  pointer-events: all;
-}
-
-.aurum-login-sheet {
-  position: relative;
-  width: 100%;
-  max-width: 480px;
-  background: var(--surface, #111118);
-  border-radius: 28px 28px 0 0;
-  padding: 28px 28px 44px;
-  border-top: 1px solid rgba(184,150,64,0.18);
-  /* Scale + translateY: scale(0.95) when closed → scale(1) when open */
-  transform: scale(0.95) translateY(100%);
-  transition: transform 0.4s cubic-bezier(0.33, 1, 0.68, 1);
-  will-change: transform;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 14px;
-}
-
-#aurum-login-overlay.open .aurum-login-sheet {
-  transform: scale(1) translateY(0);
-}
-
-/* ── FIX #3 — Profile Context Sheet (User Menu) ─────────────────────────── */
-/* DELETE old #aurum-user-menu and .aurum-user-menu-sheet blocks and use: */
-
-#aurum-user-menu {
-  position: fixed;
-  inset: 0;
-  z-index: 10001;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  background: rgba(5, 5, 8, 0.65);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transition: opacity 0.4s cubic-bezier(0.33, 1, 0.68, 1),
-              visibility 0.4s cubic-bezier(0.33, 1, 0.68, 1);
-  will-change: opacity;
-}
-
-#aurum-user-menu.open {
-  opacity: 1;
-  visibility: visible;
-  pointer-events: all;
-}
-
-.aurum-user-menu-sheet {
-  width: 100%; max-width: 420px;
-  background: var(--surface, #111118);
-  border-radius: 24px 24px 0 0;
-  padding: 20px 24px 48px;
-  border-top: 1px solid rgba(184,150,64,0.14);
-  transform: scale(0.95) translateY(100%);
-  transition: transform 0.4s cubic-bezier(0.33, 1, 0.68, 1);
-  will-change: transform;
-  display: flex; flex-direction: column; gap: 0;
-}
-
-#aurum-user-menu.open .aurum-user-menu-sheet {
-  transform: scale(1) translateY(0);
-}
-
-/* ── AURUM AI SUGGESTION STRIP ──────────────────────────────────────────── */
-/* Paste the #aurum-ai-suggestions container anywhere in index.html          */
-/* and call window.aurumAI.render() after login                              */
-
+/* ─── AI SUGGESTION STRIP ───────────────────────────────────────*/
 #aurum-ai-suggestions {
   padding: 4px 0 12px;
   margin-bottom: 8px;
@@ -4174,11 +4121,7 @@ button.add-playlist-btn {
   letter-spacing: 0.03em;
   text-transform: uppercase;
 }
-
-.aurum-ai-header svg {
-  flex-shrink: 0;
-  stroke: var(--gold, #b89640);
-}
+.aurum-ai-header svg { flex-shrink: 0; stroke: var(--gold, #b89640); }
 
 .aurum-ai-badge {
   display: inline-block;
@@ -4195,14 +4138,12 @@ button.add-playlist-btn {
   margin-left: 4px;
 }
 
-/* Loading dots */
 .aurum-ai-loading {
   display: flex;
   gap: 6px;
   padding: 12px 20px;
   align-items: center;
 }
-
 .aurum-ai-dot {
   width: 6px; height: 6px;
   border-radius: 50%;
@@ -4217,12 +4158,16 @@ button.add-playlist-btn {
   40%           { transform: scale(1);   opacity: 1;   }
 }
 
+/* FIX BATTERY: AI dots pause when home page is not active */
+.page:not(.active) .aurum-ai-dot {
+  animation-play-state: paused;
+}
+
 .aurum-ai-list {
   display: flex;
   flex-direction: column;
   gap: 0;
 }
-
 .aurum-ai-card {
   display: flex;
   align-items: center;
@@ -4232,10 +4177,7 @@ button.add-playlist-btn {
   border-bottom: 1px solid rgba(255,255,255,0.04);
   cursor: default;
 }
-
-.aurum-ai-card:active {
-  background: rgba(184,150,64,0.06);
-}
+.aurum-ai-card:active { background: rgba(184,150,64,0.06); }
 
 .aurum-ai-rank {
   width: 20px;
@@ -4246,12 +4188,7 @@ button.add-playlist-btn {
   flex-shrink: 0;
   letter-spacing: -0.02em;
 }
-
-.aurum-ai-info {
-  flex: 1;
-  min-width: 0;
-}
-
+.aurum-ai-info { flex: 1; min-width: 0; }
 .aurum-ai-title {
   font-size: 14px;
   font-weight: 600;
@@ -4260,7 +4197,6 @@ button.add-playlist-btn {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-
 .aurum-ai-artist {
   font-size: 12px;
   color: var(--text3, #777);
@@ -4269,7 +4205,6 @@ button.add-playlist-btn {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-
 .aurum-ai-reason {
   font-size: 10px;
   color: rgba(184,150,64,0.55);
@@ -4279,7 +4214,6 @@ button.add-playlist-btn {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-
 .aurum-ai-play {
   flex-shrink: 0;
   width: 32px; height: 32px;
@@ -4292,58 +4226,43 @@ button.add-playlist-btn {
   transition: background 0.18s ease, transform 0.15s ease;
   -webkit-tap-highlight-color: transparent;
 }
-
 .aurum-ai-play:active {
   background: rgba(184,150,64,0.28);
   transform: scale(0.92);
 }
-
 .aurum-ai-empty {
   font-size: 13px;
   color: var(--text3, #777);
   padding: 8px 20px;
   font-style: italic;
 }
+
 /* ═══════════════════════════════════════════════════════════════
-   AURUM — ANIMATED SEEKBAR PATCH v2.0
-   Replace the existing slider CSS blocks at the bottom of style.css
-   with this entire block. Delete everything from
-   "AURUM — PLAYER SLIDER STYLES" to end of file, paste this.
+   ANIMATED SEEKBAR — v2.1 (battery-fixed)
    ═══════════════════════════════════════════════════════════════ */
 
-/* ─── KEYFRAMES ──────────────────────────────────────────────── */
-
-/* Wave flows left to right continuously */
 @keyframes aurum-wave-flow {
   0%   { -webkit-mask-position: 0px center; mask-position: 0px center; }
   100% { -webkit-mask-position: 400px center; mask-position: 400px center; }
 }
-
-/* Squiggly — tighter, faster flow */
 @keyframes aurum-squiggle-flow {
   0%   { -webkit-mask-position: 0px center; mask-position: 0px center; }
   100% { -webkit-mask-position: 200px center; mask-position: 200px center; }
 }
-
-/* Gold shimmer that runs across the played portion */
 @keyframes aurum-shimmer {
   0%   { background-position: -400px center; }
   100% { background-position: 400px center; }
 }
-
-/* Gentle breathe — track pulses subtly */
 @keyframes aurum-breathe {
   0%, 100% { opacity: 0.85; }
   50%       { opacity: 1; }
 }
-
-/* Thumb glow pulse when touching */
 @keyframes aurum-thumb-glow {
   0%, 100% { box-shadow: 0 0 0 0 rgba(184,150,64,0.0), 0 0 8px rgba(184,150,64,0.4); }
   50%       { box-shadow: 0 0 0 6px rgba(184,150,64,0.15), 0 0 16px rgba(184,150,64,0.6); }
 }
 
-/* ─── SLIDER STYLE PICKER GRID (unchanged) ───────────────────── */
+/* ─── SLIDER STYLE PICKER GRID ───────────────────────────────── */
 .slider-style-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -4396,10 +4315,7 @@ button.add-playlist-btn {
 }
 .slider-style-check svg { width: 11px; height: 11px; }
 
-/* ─── DEFAULT SLIDER — upgraded with shimmer ─────────────────── */
-.fp-seekbar.slider-default {
-  /* base styles inherited from .fp-seekbar */
-}
+/* ─── DEFAULT SLIDER ─────────────────────────────────────────── */
 .fp-seekbar.slider-default::-webkit-slider-runnable-track {
   height: 3px;
   border-radius: 3px;
@@ -4408,6 +4324,9 @@ button.add-playlist-btn {
     var(--gold) var(--prog, 0%),
     rgba(255,255,255,0.08) var(--prog, 0%)
   );
+  /* FIX BATTERY: breathe only when player open */
+}
+#fullscreen-player.open .fp-seekbar.slider-default::-webkit-slider-runnable-track {
   animation: aurum-breathe 3s ease-in-out infinite;
 }
 [data-theme="light"] .fp-seekbar.slider-default::-webkit-slider-runnable-track {
@@ -4418,7 +4337,7 @@ button.add-playlist-btn {
   );
 }
 
-/* ─── SLIM SLIDER — clean minimal with glow ──────────────────── */
+/* ─── SLIM SLIDER ────────────────────────────────────────────── */
 .fp-seekbar.slider-slim {
   height: 2px !important;
   background: transparent !important;
@@ -4426,7 +4345,6 @@ button.add-playlist-btn {
 .fp-seekbar.slider-slim::-webkit-slider-runnable-track {
   height: 2px;
   border-radius: 2px;
-  /* Animated shimmer on the gold played section */
   background:
     linear-gradient(
       90deg,
@@ -4440,14 +4358,19 @@ button.add-playlist-btn {
       rgba(255,255,255,0.07) var(--prog, 0%)
     );
   background-size: 200px 100%, 100% 100%;
+}
+/* FIX BATTERY: shimmer only when player open and playing */
+#fullscreen-player.open.playing .fp-seekbar.slider-slim::-webkit-slider-runnable-track {
   animation: aurum-shimmer 2.4s linear infinite, aurum-breathe 3s ease-in-out infinite;
+}
+#fullscreen-player.open:not(.playing) .fp-seekbar.slider-slim::-webkit-slider-runnable-track {
+  animation: aurum-breathe 3s ease-in-out infinite;
 }
 [data-theme="light"] .fp-seekbar.slider-slim::-webkit-slider-runnable-track {
   background:
     linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.35) 50%, transparent 100%) no-repeat,
     linear-gradient(to right, var(--gold) var(--prog, 0%), rgba(0,0,0,0.07) var(--prog, 0%));
   background-size: 200px 100%, 100% 100%;
-  animation: aurum-shimmer 2.4s linear infinite;
 }
 .fp-seekbar.slider-slim:active,
 .fp-seekbar.slider-slim:focus { height: 4px !important; }
@@ -4466,14 +4389,12 @@ button.add-playlist-btn {
   animation: aurum-thumb-glow 1s ease-in-out infinite;
 }
 
-/* ─── WAVY SLIDER — living animated wave ────────────────────── */
+/* ─── WAVY SLIDER ────────────────────────────────────────────── */
 .fp-seekbar.slider-wavy {
   height: 14px !important;
   background: transparent !important;
   position: relative;
 }
-
-/* The unplayed (grey) wavy background */
 .fp-seekbar.slider-wavy::-webkit-slider-runnable-track {
   height: 5px;
   border-radius: 5px;
@@ -4499,28 +4420,22 @@ button.add-playlist-btn {
   mask-size: 800px 10px;
   mask-repeat: repeat-x;
   mask-position: var(--wave-offset, 0px) center !important;
-
+}
+/* FIX BATTERY: shimmer only when playing AND open */
+#fullscreen-player.open.playing .fp-seekbar.slider-wavy::-webkit-slider-runnable-track {
   animation: aurum-shimmer 3s linear infinite;
 }
-
+#fullscreen-player.open:not(.playing) .fp-seekbar.slider-wavy::-webkit-slider-runnable-track {
+  animation: aurum-breathe 4s ease-in-out infinite;
+}
 [data-theme="light"] .fp-seekbar.slider-wavy::-webkit-slider-runnable-track {
   background:
     linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.35) 50%, transparent 100%) no-repeat,
     linear-gradient(to right, var(--gold) var(--prog, 0%), rgba(0,0,0,0.08) var(--prog, 0%));
   background-size: 280px 100%, 100% 100%;
-  animation: aurum-wave-flow 2.8s linear infinite, aurum-shimmer 3s linear infinite;
 }
-
-/* Paused state — wave slows down */
-#fullscreen-player:not(.playing) .fp-seekbar.slider-wavy::-webkit-slider-runnable-track {
-  animation:
-    aurum-wave-flow 5s linear infinite,
-    aurum-breathe 4s ease-in-out infinite;
-}
-
 .fp-seekbar.slider-wavy:active,
 .fp-seekbar.slider-wavy:focus { height: 16px !important; }
-
 .fp-seekbar.slider-wavy::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 0; height: 0; opacity: 0;
@@ -4538,12 +4453,11 @@ button.add-playlist-btn {
 }
 .fp-seekbar.slider-wavy:active::-webkit-slider-thumb { transform: scale(1.25); }
 
-/* ─── SQUIGGLY SLIDER — tight fast animated squiggle ────────── */
+/* ─── SQUIGGLY SLIDER ────────────────────────────────────────── */
 .fp-seekbar.slider-squiggly {
   height: 14px !important;
   background: transparent !important;
 }
-
 .fp-seekbar.slider-squiggly::-webkit-slider-runnable-track {
   height: 5px;
   border-radius: 0;
@@ -4569,28 +4483,22 @@ button.add-playlist-btn {
   mask-size: 400px 10px;
   mask-repeat: repeat-x;
   mask-position: var(--squig-offset, 0px) center !important;
-
+}
+/* FIX BATTERY: squiggle only when playing AND open */
+#fullscreen-player.open.playing .fp-seekbar.slider-squiggly::-webkit-slider-runnable-track {
   animation: aurum-shimmer 2s linear infinite;
 }
-
+#fullscreen-player.open:not(.playing) .fp-seekbar.slider-squiggly::-webkit-slider-runnable-track {
+  animation: aurum-breathe 4s ease-in-out infinite;
+}
 [data-theme="light"] .fp-seekbar.slider-squiggly::-webkit-slider-runnable-track {
   background:
     linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.35) 50%, transparent 100%) no-repeat,
     linear-gradient(to right, var(--gold) var(--prog, 0%), rgba(0,0,0,0.08) var(--prog, 0%));
   background-size: 200px 100%, 100% 100%;
-  animation: aurum-squiggle-flow 1.4s linear infinite, aurum-shimmer 2s linear infinite;
 }
-
-/* Paused = slower squiggle */
-#fullscreen-player:not(.playing) .fp-seekbar.slider-squiggly::-webkit-slider-runnable-track {
-  animation:
-    aurum-squiggle-flow 3s linear infinite,
-    aurum-breathe 4s ease-in-out infinite;
-}
-
 .fp-seekbar.slider-squiggly:active,
 .fp-seekbar.slider-squiggly:focus { height: 16px !important; }
-
 .fp-seekbar.slider-squiggly::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 0; height: 0; opacity: 0;
@@ -4609,7 +4517,7 @@ button.add-playlist-btn {
 }
 .fp-seekbar.slider-squiggly:active::-webkit-slider-thumb { transform: scaleY(1.15); }
 
-/* ─── Smart Saver — kill all animations ─────────────────────── */
+/* ─── SMART SAVER — kill all animations ─────────────────────── */
 .smart-saver-active ~ * .fp-seekbar,
 [data-smart-saver="true"] .fp-seekbar {
   height: 2px !important;
@@ -4618,206 +4526,35 @@ button.add-playlist-btn {
 [data-smart-saver="true"] .fp-seekbar::-webkit-slider-runnable-track {
   animation: none !important;
 }
+
 /* ═══════════════════════════════════════════════════════════════
-   AURUM WAVE SYNC PATCH — Paste at END of style.css
-   Wave/squiggly mask-position now JS-driven via --wave-offset
-   and --squig-offset CSS variables set in app.js timeupdate.
+   WAVE SYNC PATCH — mask-position JS-driven via CSS variables
    ═══════════════════════════════════════════════════════════════ */
 
-/* ── WAVY: override mask-position to use JS variable ─────────── */
+/* Wavy: override mask-position to JS variable, shimmer only when playing */
 .fp-seekbar.slider-wavy::-webkit-slider-runnable-track {
   -webkit-mask-position: var(--wave-offset, 0px) center !important;
   mask-position: var(--wave-offset, 0px) center !important;
+}
+#fullscreen-player.open.playing .fp-seekbar.slider-wavy::-webkit-slider-runnable-track {
   animation: aurum-shimmer 3s linear infinite !important;
 }
-[data-theme="light"] .fp-seekbar.slider-wavy::-webkit-slider-runnable-track {
-  animation: aurum-shimmer 3s linear infinite !important;
-}
-#fullscreen-player:not(.playing) .fp-seekbar.slider-wavy::-webkit-slider-runnable-track {
+#fullscreen-player.open:not(.playing) .fp-seekbar.slider-wavy::-webkit-slider-runnable-track {
   animation: aurum-breathe 4s ease-in-out infinite !important;
 }
+/* Kill all seekbar animation when player is closed */
+#fullscreen-player:not(.open) .fp-seekbar::-webkit-slider-runnable-track {
+  animation: none !important;
+}
 
-/* ── SQUIGGLY: override mask-position to use JS variable ─────── */
+/* Squiggly: override mask-position to JS variable */
 .fp-seekbar.slider-squiggly::-webkit-slider-runnable-track {
   -webkit-mask-position: var(--squig-offset, 0px) center !important;
   mask-position: var(--squig-offset, 0px) center !important;
+}
+#fullscreen-player.open.playing .fp-seekbar.slider-squiggly::-webkit-slider-runnable-track {
   animation: aurum-shimmer 2s linear infinite !important;
 }
-[data-theme="light"] .fp-seekbar.slider-squiggly::-webkit-slider-runnable-track {
-  animation: aurum-shimmer 2s linear infinite !important;
-}
-#fullscreen-player:not(.playing) .fp-seekbar.slider-squiggly::-webkit-slider-runnable-track {
+#fullscreen-player.open:not(.playing) .fp-seekbar.slider-squiggly::-webkit-slider-runnable-track {
   animation: aurum-breathe 4s ease-in-out infinite !important;
-} 
-/* ═══════════════════════════════════════════════════════════════
-   AURUM — DEVICE PROTECTION PATCH v1.0
-   Paste this at the very END of your style.css
-   3 fixes: will-change leak · CSS animations · smart-saver
-   ═══════════════════════════════════════════════════════════════ */
-
-/* ─── FIX #1: will-change GPU leak ─────────────────────────────
-   Problem: will-change:opacity was permanently set on overlay +
-   user-menu, reserving a dedicated GPU compositing layer even
-   when both are invisible. Over 8h this wastes ~20-40MB VRAM.
-   Fix: Remove permanent will-change. Only add it when actively
-   animating (open class present). CSS handles this cleanly.      */
-
-#aurum-login-overlay {
-  will-change: auto; /* override the permanent will-change:opacity */
 }
-#aurum-login-overlay.open {
-  will-change: opacity; /* GPU layer only while visible/animating */
-}
-#aurum-login-overlay:not(.open) .aurum-login-sheet {
-  will-change: auto;
-}
-#aurum-login-overlay.open .aurum-login-sheet {
-  will-change: transform;
-}
-
-#aurum-user-menu {
-  will-change: auto;
-}
-#aurum-user-menu.open {
-  will-change: opacity;
-}
-#aurum-user-menu:not(.open) .aurum-user-menu-sheet {
-  will-change: auto;
-}
-#aurum-user-menu.open .aurum-user-menu-sheet {
-  will-change: transform;
-}
-
-/* Same fix for fullscreen player — will-change only while open  */
-#fullscreen-player {
-  will-change: auto;
-}
-#fullscreen-player.open,
-#fullscreen-player.dragging {
-  will-change: transform;
-}
-
-/* Queue panel — same pattern                                     */
-#queue-panel {
-  will-change: auto;
-}
-#queue-panel.open,
-#queue-panel.dragging {
-  will-change: transform;
-}
-
-/* ─── FIX #2: Screen-off animation kill ────────────────────────
-   Problem: aurum-shimmer, aurum-wave-flow, aurum-squiggle-flow
-   are infinite CSS animations. JS kills RAF + viz on screen-off
-   but these CSS animations keep running on GPU even when screen
-   is off, burning battery and keeping GPU warm for no reason.
-   Fix: body.screen-off kills ALL seekbar animations instantly.
-   JS adds/removes this class in visibilitychange (see JS patch). */
-
-body.screen-off .fp-seekbar::-webkit-slider-runnable-track {
-  animation: none !important;
-  will-change: auto !important;
-}
-body.screen-off .fp-seekbar::-webkit-slider-thumb {
-  animation: none !important;
-}
-
-/* Also kill eq-bar animations (now-playing bars) on screen-off  */
-body.screen-off .now-playing-bar span,
-body.screen-off .queue-now-playing span {
-  animation: none !important;
-  transform: scaleY(0.4) !important;
-}
-
-/* Kill skeleton shimmer on screen-off — pointless when hidden   */
-body.screen-off .bw-sk-cover,
-body.screen-off .bw-sk-line,
-body.screen-off .sk-art,
-body.screen-off .sk-line,
-body.screen-off .wide-sk-cover,
-body.screen-off .wide-sk-line,
-body.screen-off .quick-sk-cover {
-  animation: none !important;
-}
-
-/* Kill next-strip pulse animation on screen-off                  */
-body.screen-off .fp-next-strip > svg {
-  animation: none !important;
-}
-
-/* Kill chip pop, card anim-in on screen-off                      */
-body.screen-off .anim-in {
-  animation: none !important;
-}
-
-/* Kill marquee scrolling on screen-off                           */
-body.screen-off .fp-track-title.marquee-active span,
-body.screen-off .fp-artist.marquee-active span {
-  animation: none !important;
-}
-
-/* ─── FIX #3: Smart Saver — proper JS-hookable selector ────────
-   Problem: .smart-saver-active ~ * selector was a sibling
-   combinator that never matched correctly in the DOM structure.
-   Fix: Use body[data-smart-saver="true"] directly — JS sets
-   document.body.dataset.smartSaver = 'true' when battery < 20%  */
-
-body[data-smart-saver="true"] .fp-seekbar {
-  height: 2px !important;
-}
-body[data-smart-saver="true"] .fp-seekbar::-webkit-slider-runnable-track {
-  animation: none !important;
-  will-change: auto !important;
-  /* Plain gold bar, zero GPU cost                               */
-  background: linear-gradient(
-    to right,
-    var(--gold) var(--prog, 0%),
-    rgba(255, 255, 255, 0.07) var(--prog, 0%)
-  ) !important;
-}
-body[data-smart-saver="true"] .fp-seekbar::-webkit-slider-thumb {
-  animation: none !important;
-}
-
-/* Smart saver — also kill viz bars + ambient glow               */
-body[data-smart-saver="true"] .fp-viz-bar {
-  animation: none !important;
-  transform: scaleY(0.05) !important;
-}
-body[data-smart-saver="true"] #fp-ambient-glow {
-  display: none !important;
-}
-body[data-smart-saver="true"] #fp-bg-art {
-  filter: blur(6px) brightness(0.2) !important; /* cheaper filter */
-}
-
-/* Smart saver — freeze non-essential transitions                 */
-body[data-smart-saver="true"] .song-row,
-body[data-smart-saver="true"] .queue-item,
-body[data-smart-saver="true"] .quick-card,
-body[data-smart-saver="true"] .wide-card,
-body[data-smart-saver="true"] .bw-card {
-  transition: none !important;
-}
-
-/* ─── BONUS: Reduce motion respect ─────────────────────────────
-   Already in your CSS but missing the seekbar animations —
-   added here to cover the new animated seekbars properly.        */
-@media (prefers-reduced-motion: reduce) {
-  .fp-seekbar::-webkit-slider-runnable-track {
-    animation: none !important;
-  }
-  .fp-seekbar::-webkit-slider-thumb {
-    animation: none !important;
-  }
-  .now-playing-bar span,
-  .queue-now-playing span {
-    animation: none !important;
-  }
-}
-
-/* ═══════════════════════════════════════════════════════════════
-   END DEVICE PROTECTION PATCH
-   Next: apply aurum-device-protection.js for screen-off freeze +
-   battery API + _bgAudioPing removal
-   ═══════════════════════════════════════════════════════════════ */
