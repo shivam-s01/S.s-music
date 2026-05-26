@@ -83,10 +83,12 @@ window.handleGoogleCredential = function(response) {
     _sendTokenToBackend(response.credential);
     setTimeout(_fetchAndApplyCloudState, 800);
 
-    // ── Welcome screen (first login only) ────────────────────
-    if (window.aurumWelcome) {
-      window.aurumWelcome.show(payload, function() {});
-    }
+    // ── Welcome screen (every login) ─────────────────────────
+    setTimeout(function() {
+      if (window.aurumWelcome) {
+        window.aurumWelcome.show(payload, function() {});
+      }
+    }, 100);
     // ── Smart features activate ───────────────────────────────
     document.dispatchEvent(new Event('aurumUserLogin'));
 
