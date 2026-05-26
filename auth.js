@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════
-// AURUM — auth.js  (Production-Hardened v2)
+// AURUM — auth.js  (Production-Hardened v3)
 // Google OAuth + Premium Feature Guards + Sync + AI Suggestions
 // ═══════════════════════════════════════════════════════════════
 
@@ -15,7 +15,8 @@ window.userAuth = {
 const FREE_QUEUE_LIMIT = 5;
 
 // ─── 2. BOOT — restore session from localStorage ─────────────────────────────
-// SESSION EXPIRE GUARD: parse JWT iat, flush if > 7 days stale
+// Raw JWT stored in sessionStorage (cleared on tab close), user profile in localStorage.
+// SESSION EXPIRE GUARD: parse JWT iat, flush if > 7 days stale.
 (function _restoreSession() {
   try {
     const saved = localStorage.getItem('aurum_user');
@@ -24,7 +25,9 @@ const FREE_QUEUE_LIMIT = 5;
     if (!u?.email) return;
 
     // ── JWT expiry check ──────────────────────────────────────
-    const rawToken = localStorage.getItem('aurum_raw_token');
+    // FIX: raw token moved to sessionStorage (sensitive data should
+    // not persist indefinitely in localStorage).
+    const rawToken = sessionStorage.getItem('aurum_raw_token');
     if (rawToken) {
       try {
         const parts   = rawToken.split('.');
@@ -33,13 +36,14 @@ const FREE_QUEUE_LIMIT = 5;
         const issuedAt = payload.iat; // seconds epoch
         if (issuedAt) {
           const ageMs = Date.now() - issuedAt * 1000;
-          // ✅ FIX: 24h → 7 days (was causing 1-second logout on page load)
           if (ageMs > 7 * 24 * 60 * 60 * 1000) {
             window.signOutUser();
             return;
           }
         }
-      } catch (_) { /* malformed token — continue */ }
+        // Token present and valid — restore it into memory
+        window.userAuth.token = rawToken;
+      } catch (_) { /* malformed token — continue without it */ }
     }
 
     window.userAuth.isLoggedIn = true;
@@ -68,7 +72,8 @@ window.handleGoogleCredential = function(response) {
     window.userAuth.token      = response.credential;
 
     localStorage.setItem('aurum_user', JSON.stringify(user));
-    localStorage.setItem('aurum_raw_token', response.credential);
+    // FIX: raw JWT in sessionStorage, not localStorage
+    sessionStorage.setItem('aurum_raw_token', response.credential);
 
     _applyLoggedInUI(user);
     closeLoginModal();
@@ -77,6 +82,13 @@ window.handleGoogleCredential = function(response) {
 
     _sendTokenToBackend(response.credential);
     setTimeout(_fetchAndApplyCloudState, 800);
+
+    // ── Welcome screen (first login only) ────────────────────
+    if (window.aurumWelcome) {
+      window.aurumWelcome.show(payload, function() {});
+    }
+    // ── Smart features activate ───────────────────────────────
+    document.dispatchEvent(new Event('aurumUserLogin'));
 
   } catch(e) {
     showToast('Sign-in failed — try again');
@@ -105,7 +117,8 @@ window.signOutUser = function() {
   window.userAuth.user       = null;
   window.userAuth.token      = null;
   localStorage.removeItem('aurum_user');
-  localStorage.removeItem('aurum_raw_token');
+  // FIX: clear from sessionStorage (new location)
+  sessionStorage.removeItem('aurum_raw_token');
 
   const chip = document.getElementById('aurum-user-chip');
   if (chip) chip.style.display = 'none';
@@ -211,26 +224,28 @@ document.addEventListener('click', function(e) {
 });
 
 // ─── 9. HARD QUEUE INTERCEPT ─────────────────────────────────────────────────
-(function _installSetQueueInterceptor() {
-  let _originalSetQueue = window.setQueue || null;
+// FIX: The original Object.defineProperty approach had a race condition —
+// if window.setQueue was assigned AFTER this block ran, the getter closure
+// captured a stale null reference. We now use a simple wrapper installed
+// after DOMContentLoaded, at which point all player scripts are loaded.
+window.addEventListener('DOMContentLoaded', function() {
+  setTimeout(_installSetQueueInterceptor, 100);
+});
 
-  Object.defineProperty(window, 'setQueue', {
-    configurable: true,
-    get: function() {
-      return function(newQueue) {
-        if (!window.userAuth.isLoggedIn && Array.isArray(newQueue) && newQueue.length > FREE_QUEUE_LIMIT) {
-          newQueue = newQueue.slice(0, FREE_QUEUE_LIMIT);
-          showToast('Free tier: Queue limited to 5 songs');
-        }
-        if (_originalSetQueue) return _originalSetQueue(newQueue);
-        if (typeof window.currentQueue !== 'undefined') window.currentQueue = newQueue;
-      };
-    },
-    set: function(fn) {
-      _originalSetQueue = fn;
-    },
-  });
-})();
+function _installSetQueueInterceptor() {
+  const _originalSetQueue = window.setQueue;
+
+  // Only wrap if the original function actually exists
+  if (typeof _originalSetQueue !== 'function') return;
+
+  window.setQueue = function(newQueue) {
+    if (!window.userAuth.isLoggedIn && Array.isArray(newQueue) && newQueue.length > FREE_QUEUE_LIMIT) {
+      newQueue = newQueue.slice(0, FREE_QUEUE_LIMIT);
+      showToast('Free tier: Queue limited to 5 songs');
+    }
+    return _originalSetQueue(newQueue);
+  };
+}
 
 // ─── 10. QUEUE GUARD ─────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', function() {
@@ -238,28 +253,33 @@ window.addEventListener('DOMContentLoaded', function() {
 });
 
 function _installQueueGuard() {
+  // FIX: guard against null originals — only wrap if function exists
   const _origFetchRec = window.fetchRecommendations;
-  window.fetchRecommendations = async function(song) {
-    if (window.userAuth.isLoggedIn) {
-      return _origFetchRec ? _origFetchRec(song) : undefined;
-    }
-    const before = window.currentQueue ? window.currentQueue.length : 0;
-    if (before >= FREE_QUEUE_LIMIT) return;
-    if (_origFetchRec) await _origFetchRec(song);
-    _trimQueueToLimit();
-  };
+  if (typeof _origFetchRec === 'function') {
+    window.fetchRecommendations = async function(song) {
+      if (window.userAuth.isLoggedIn) {
+        return _origFetchRec(song);
+      }
+      const before = window.currentQueue ? window.currentQueue.length : 0;
+      if (before >= FREE_QUEUE_LIMIT) return;
+      await _origFetchRec(song);
+      _trimQueueToLimit();
+    };
+  }
 
   const _origPlayNext = window.playNext;
-  window.playNext = function() {
-    if (!window.userAuth.isLoggedIn) {
-      const qLen = window.currentQueue ? window.currentQueue.length : 0;
-      if (qLen >= FREE_QUEUE_LIMIT) {
-        window.validateFeature('queue');
-        return;
+  if (typeof _origPlayNext === 'function') {
+    window.playNext = function() {
+      if (!window.userAuth.isLoggedIn) {
+        const qLen = window.currentQueue ? window.currentQueue.length : 0;
+        if (qLen >= FREE_QUEUE_LIMIT) {
+          window.validateFeature('queue');
+          return;
+        }
       }
-    }
-    if (_origPlayNext) _origPlayNext();
-  };
+      _origPlayNext();
+    };
+  }
 }
 
 function _trimQueueToLimit() {
@@ -277,21 +297,23 @@ window.addEventListener('DOMContentLoaded', function() {
 
 function _installDownloadGuard() {
   const _origTrigger = window.triggerDownload;
+  if (typeof _origTrigger !== 'function') return;
+
   window.triggerDownload = async function(quality) {
     if (quality === 'ringtone') {
       if (!window.validateFeature('ringtone')) return;
     }
-    if ((quality === 'full' || quality === 'gift')) {
+    if (quality === 'full' || quality === 'gift') {
       if (!window.validateFeature('download')) return;
     }
-    if (_origTrigger) return _origTrigger(quality);
+    return _origTrigger(quality);
   };
 }
 
 // ─── 12. CLOUD SYNC WITH EXPONENTIAL RETRY ───────────────────────────────────
-const _SYNC_BUFFER_KEY    = 'aurum_sync_buffer';
-const _SYNC_MAX_RETRIES   = 3;
-const _SYNC_RETRY_DELAYS  = [2000, 4000, 8000];
+const _SYNC_BUFFER_KEY   = 'aurum_sync_buffer';
+const _SYNC_MAX_RETRIES  = 3;
+const _SYNC_RETRY_DELAYS = [2000, 4000, 8000];
 
 window.syncStateToCloud = async function() {
   if (!window.userAuth.isLoggedIn || !window.userAuth.user) return;
@@ -307,20 +329,41 @@ window.syncStateToCloud = async function() {
     device    : window.__IS_TV__ ? 'tv' : 'mobile',
   };
 
+  const _authHeader = () => ({
+    'Content-Type'  : 'application/json',
+    'Authorization' : 'Bearer ' + (window.userAuth.token || ''),
+  });
+
+  // ── Flush buffered payload first ──────────────────────────
+  // FIX: if flush fails, leave buffer intact (don't silently drop it).
+  const buffered = localStorage.getItem(_SYNC_BUFFER_KEY);
+  if (buffered) {
+    try {
+      const res = await fetch('/api/sync/state', {
+        method  : 'POST',
+        headers : _authHeader(),
+        body    : buffered,
+      });
+      if (res.ok) {
+        localStorage.removeItem(_SYNC_BUFFER_KEY);
+      }
+      // If not ok, leave buffer — will retry next cycle
+    } catch(_) {
+      // Network error — leave buffer intact
+    }
+  }
+
+  // ── Send current state with retry ─────────────────────────
   let attempt = 0;
 
   const _attempt = async () => {
     try {
       const res = await fetch('/api/sync/state', {
         method  : 'POST',
-        headers : {
-          'Content-Type'  : 'application/json',
-          'Authorization' : 'Bearer ' + (window.userAuth.token || ''),
-        },
-        body: JSON.stringify(state),
+        headers : _authHeader(),
+        body    : JSON.stringify(state),
       });
       if (!res.ok) throw new Error('HTTP ' + res.status);
-      localStorage.removeItem(_SYNC_BUFFER_KEY);
     } catch(e) {
       attempt++;
       if (attempt < _SYNC_MAX_RETRIES) {
@@ -335,31 +378,19 @@ window.syncStateToCloud = async function() {
     }
   };
 
-  // Flush buffered payload first
-  const buffered = localStorage.getItem(_SYNC_BUFFER_KEY);
-  if (buffered) {
-    try {
-      await fetch('/api/sync/state', {
-        method  : 'POST',
-        headers : {
-          'Content-Type'  : 'application/json',
-          'Authorization' : 'Bearer ' + (window.userAuth.token || ''),
-        },
-        body: buffered,
-      });
-      localStorage.removeItem(_SYNC_BUFFER_KEY);
-    } catch(_) {}
-  }
-
   await _attempt();
 };
 
 // ─── 13. CLOUD SYNC — fetch state on TV / new device ─────────────────────────
 async function _fetchAndApplyCloudState() {
-  if (!window.userAuth.isLoggedIn) return;
+  if (!window.userAuth.isLoggedIn || !window.userAuth.token) return;
   try {
+    // FIX: sub is extracted from the verified Bearer token on the server.
+    // No longer passing sub as a query param (was an IDOR vulnerability).
     const r = await fetch('/api/sync/state', {
-      headers: { 'Authorization': 'Bearer ' + (window.userAuth.token || '') },
+      headers: {
+        'Authorization': 'Bearer ' + window.userAuth.token,
+      },
     });
     if (!r.ok) return;
     const data = await r.json();
@@ -375,7 +406,13 @@ async function _fetchAndApplyCloudState() {
   }
 }
 
+// ─── FIX: Cloud resume now asks the user explicitly before seeking ────────────
 function _resumeFromCloudState(data) {
+  const fromDevice = data.device === 'tv' ? 'TV' : 'Mobile';
+  const mins       = Math.floor((data.progress || 0) / 60);
+  const secs       = String((data.progress || 0) % 60).padStart(2, '0');
+
+  // Store pending state so loadTrack can pick it up IF user accepts
   const song = {
     trackId      : data.songId,
     trackName    : data.songTitle  || 'Unknown',
@@ -384,26 +421,86 @@ function _resumeFromCloudState(data) {
     previewUrl   : null,
     _syncedAt    : data.progress   || 0,
   };
-  const fromDevice = data.device === 'tv' ? 'TV' : 'Mobile';
-  const mins  = Math.floor((data.progress || 0) / 60);
-  const secs  = String((data.progress || 0) % 60).padStart(2, '0');
-  showToast('▶ Continue from ' + fromDevice + ' at ' + mins + ':' + secs + '?');
-  window._pendingCloudResume = { song, progress: data.progress || 0 };
 
-  const _origLoad = window.loadTrack;
-  window.loadTrack = function(s, autoplay) {
-    if (_origLoad) _origLoad(s, autoplay);
-    if (window._pendingCloudResume && String(s?.trackId) === String(data.songId)) {
-      const target = window._pendingCloudResume.progress;
-      setTimeout(() => {
-        if (window.audio && isFinite(window.audio.duration) && target > 0) {
-          window.audio.currentTime = target;
+  // Show a confirm toast/dialog; only resume if user taps "Continue"
+  _showResumePrompt(
+    `Continue from ${fromDevice} at ${mins}:${secs}?`,
+    function onAccept() {
+      window._pendingCloudResume = { song, progress: data.progress || 0 };
+
+      // Wrap loadTrack once: if the synced song loads, seek to saved position
+      const _origLoad = window.loadTrack;
+      window.loadTrack = function(s, autoplay) {
+        if (typeof _origLoad === 'function') _origLoad(s, autoplay);
+        if (window._pendingCloudResume && String(s?.trackId) === String(data.songId)) {
+          const target = window._pendingCloudResume.progress;
+          setTimeout(() => {
+            if (window.audio && isFinite(window.audio.duration) && target > 0) {
+              window.audio.currentTime = target;
+            }
+          }, 1200);
+          window._pendingCloudResume = null;
+          window.loadTrack = _origLoad; // restore original
         }
-      }, 1200);
-      window._pendingCloudResume = null;
-      window.loadTrack = _origLoad;
+      };
+
+      // Load the synced track
+      if (typeof window.loadTrack === 'function') {
+        window.loadTrack(song, false);
+      }
     }
-  };
+  );
+}
+
+/**
+ * _showResumePrompt — lightweight confirm banner.
+ * Falls back to a toast with tap-to-confirm if no custom UI exists.
+ * Replace the body of this function with your own UI component if desired.
+ */
+function _showResumePrompt(message, onAccept) {
+  // If the app exposes a confirm dialog, use it
+  if (typeof window.showConfirmDialog === 'function') {
+    window.showConfirmDialog(message, onAccept);
+    return;
+  }
+
+  // Fallback: inject a minimal confirm banner
+  const existing = document.getElementById('aurum-resume-banner');
+  if (existing) existing.remove();
+
+  const banner = document.createElement('div');
+  banner.id = 'aurum-resume-banner';
+  banner.style.cssText = [
+    'position:fixed', 'bottom:80px', 'left:50%', 'transform:translateX(-50%)',
+    'background:rgba(30,30,30,0.95)', 'color:#fff', 'padding:12px 20px',
+    'border-radius:12px', 'z-index:9999', 'display:flex', 'align-items:center',
+    'gap:12px', 'font-size:14px', 'box-shadow:0 4px 24px rgba(0,0,0,0.4)',
+    'backdrop-filter:blur(8px)', 'max-width:90vw',
+  ].join(';');
+
+  const text = document.createElement('span');
+  text.textContent = message;
+
+  const btn = document.createElement('button');
+  btn.textContent = 'Continue';
+  btn.style.cssText = 'background:#fff;color:#111;border:none;border-radius:8px;padding:6px 14px;font-weight:600;cursor:pointer;white-space:nowrap;';
+  btn.addEventListener('click', function() {
+    banner.remove();
+    onAccept();
+  });
+
+  const dismiss = document.createElement('button');
+  dismiss.textContent = '✕';
+  dismiss.style.cssText = 'background:transparent;color:#aaa;border:none;cursor:pointer;font-size:16px;line-height:1;padding:0 4px;';
+  dismiss.addEventListener('click', function() { banner.remove(); });
+
+  banner.appendChild(text);
+  banner.appendChild(btn);
+  banner.appendChild(dismiss);
+  document.body.appendChild(banner);
+
+  // Auto-dismiss after 12s if user ignores it
+  setTimeout(() => { if (banner.isConnected) banner.remove(); }, 12000);
 }
 
 // ─── 14. AUTO-SYNC EVERY 30s while playing ───────────────────────────────────
