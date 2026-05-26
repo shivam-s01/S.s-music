@@ -16,8 +16,21 @@ from urllib.parse import urlparse, quote
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH  = os.path.join(BASE_DIR, 'aurum_cloud.db')
+# Google JWT verification
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
+
+BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
+DB_PATH   = os.path.join(BASE_DIR, 'aurum_cloud.db')
+
+# ── Read once at startup; crash early if missing ──────────────────────────────
+GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
+ADMIN_KEY        = os.environ.get('ADMIN_KEY', '')
+
+if not GOOGLE_CLIENT_ID:
+    raise RuntimeError('GOOGLE_CLIENT_ID env var is required')
+if not ADMIN_KEY:
+    raise RuntimeError('ADMIN_KEY env var is required — do not use a default')
 
 # ═══════════════════════════════════════════════════════════════
 # APP INIT
@@ -35,8 +48,50 @@ def get_real_ip():
         request.remote_addr or '127.0.0.1'
     )
 
-limiter = Limiter(get_real_ip, app=app, default_limits=[], storage_uri="memory://")
-_executor = ThreadPoolExecutor(max_workers=8)
+limiter    = Limiter(get_real_ip, app=app, default_limits=[], storage_uri="memory://")
+_executor  = ThreadPoolExecutor(max_workers=8)
+_google_req = google_requests.Request()
+
+# ═══════════════════════════════════════════════════════════════
+# JWT HELPERS
+# ═══════════════════════════════════════════════════════════════
+def _verify_google_jwt(credential: str) -> dict | None:
+    """
+    Verify Google ID token using google-auth library.
+    Returns decoded payload dict on success, None on failure.
+    """
+    try:
+        payload = id_token.verify_oauth2_token(
+            credential,
+            _google_req,
+            GOOGLE_CLIENT_ID,
+            clock_skew_in_seconds=10,
+        )
+        # Must be issued by Google
+        if payload.get('iss') not in ('accounts.google.com', 'https://accounts.google.com'):
+            log.warning('[Auth] JWT iss mismatch')
+            return None
+        return payload
+    except Exception as e:
+        log.warning(f'[Auth] JWT verify failed: {e}')
+        return None
+
+
+def _extract_bearer_sub(auth_header: str) -> str | None:
+    """
+    Extract and verify the Google JWT from an Authorization: Bearer <token> header.
+    Returns google_sub string on success, None on failure.
+    """
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return None
+    token = auth_header[7:].strip()
+    if not token:
+        return None
+    payload = _verify_google_jwt(token)
+    if not payload:
+        return None
+    return payload.get('sub', '') or None
+
 
 # ═══════════════════════════════════════════════════════════════
 # DATABASE — Users + Playback State + TV Pairing
@@ -50,12 +105,12 @@ def init_db():
     with get_db() as conn:
         conn.execute('''
             CREATE TABLE IF NOT EXISTS users (
-                google_sub    TEXT PRIMARY KEY,
-                name          TEXT,
-                email         TEXT,
-                picture       TEXT,
+                google_sub     TEXT PRIMARY KEY,
+                name           TEXT,
+                email          TEXT,
+                picture        TEXT,
                 ghost_pin_hash TEXT,
-                created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         conn.execute('''
@@ -199,9 +254,9 @@ def clean_query(text):
     return re.sub(r'\s+', ' ', text).strip()
 
 def build_query_variants(title, artist='', fallback=''):
-    title_c  = clean_query(title)
-    artist_c = clean_query(artist) if artist else ''
-    fb_c     = clean_query(fallback) if fallback else ''
+    title_c      = clean_query(title)
+    artist_c     = clean_query(artist) if artist else ''
+    fb_c         = clean_query(fallback) if fallback else ''
     artist_first = artist_c.split()[0] if artist_c else ''
     seen, variants = set(), []
     def add(v):
@@ -255,10 +310,10 @@ def title_score(query, song_title, song_artist=''):
 
 def dynamic_min_score(query):
     length = len(normalize(query).replace(' ', ''))
-    if length <= 2:   return 0.20
-    elif length <= 5: return 0.35
+    if length <= 2:    return 0.20
+    elif length <= 5:  return 0.35
     elif length <= 10: return 0.50
-    else: return 0.55
+    else:              return 0.55
 
 def has_word_match(query, song_title):
     q_words = normalize(query).split()
@@ -478,8 +533,8 @@ def fetch_from_invidious(query, title='', artist=''):
 @app.route('/api/songs')
 @limiter.limit("60 per minute")
 def get_songs():
-    q   = request.args.get('q', 'top songs').strip()
-    era = request.args.get('era', '').strip()
+    q           = request.args.get('q', 'top songs').strip()
+    era         = request.args.get('era', '').strip()
     is_90s      = (era == '90s') or any(t in q.lower() for t in NINETIES_TRIGGERS)
     search_term = random.choice(NINETIES_SEEDS) if is_90s else q
     try:
@@ -625,7 +680,6 @@ def download_song():
     if not q: return jsonify({'error': 'Missing query'}), 400
     stream_url = None; content_type = 'audio/mpeg'
     filename_base = f"{q} - {artist}".strip(' -') if artist else q
-    # JioSaavn
     for query in build_query_variants(q, artist, ''):
         result = fetch_saavn_parallel(query)
         if result and result.get('url'):
@@ -638,12 +692,10 @@ def download_song():
             log.info(f"[Download] JioSaavn → '{result['title']}' quality={result.get('quality')}")
             filename_base = f"{result['title']} - {result['artist']}".strip(' -')
             break
-    # Piped fallback
     if not stream_url:
         piped = fetch_from_piped(q, title=q, artist=artist)
         if piped and piped.get('url'):
             stream_url = piped['url']; filename_base = f"{piped['title']} - {piped['artist']}".strip(' -'); content_type = 'audio/webm'
-    # Invidious fallback
     if not stream_url:
         inv = fetch_from_invidious(q, title=q, artist=artist)
         if inv and inv.get('url'):
@@ -651,12 +703,12 @@ def download_song():
     if not stream_url: return jsonify({'error': 'Song not found on any source'}), 404
     try:
         clean_name = re.sub(r'[/\\?%*:|"<>]', '-', filename_base)
-        headers = {'User-Agent': 'Mozilla/5.0', 'Accept': 'audio/*,*/*;q=0.8', 'Accept-Encoding': 'identity'}
-        upstream = requests.get(stream_url, headers=headers, stream=True, timeout=60, allow_redirects=True)
+        headers    = {'User-Agent': 'Mozilla/5.0', 'Accept': 'audio/*,*/*;q=0.8', 'Accept-Encoding': 'identity'}
+        upstream   = requests.get(stream_url, headers=headers, stream=True, timeout=60, allow_redirects=True)
         if not upstream.ok: return jsonify({'error': f'Upstream error {upstream.status_code}'}), 502
-        actual_ct = upstream.headers.get('Content-Type', content_type)
-        ext = 'webm' if 'webm' in actual_ct else ('m4a' if ('mp4' in actual_ct or 'm4a' in actual_ct) else 'mp3')
-        filename = f"{clean_name}.{ext}"
+        actual_ct  = upstream.headers.get('Content-Type', content_type)
+        ext        = 'webm' if 'webm' in actual_ct else ('m4a' if ('mp4' in actual_ct or 'm4a' in actual_ct) else 'mp3')
+        filename   = f"{clean_name}.{ext}"
         resp_headers = {'Content-Disposition': f'attachment; filename="{filename}"', 'Content-Type': actual_ct, 'Accept-Ranges': 'bytes', 'Access-Control-Allow-Origin': '*'}
         if 'Content-Length' in upstream.headers: resp_headers['Content-Length'] = upstream.headers['Content-Length']
         def generate():
@@ -670,30 +722,28 @@ def download_song():
         return jsonify({'error': str(e)}), 500
 
 # ═══════════════════════════════════════════════════════════════
-# ══ GOOGLE AUTH + PREMIUM SYNC ENDPOINTS ══════════════════════
+# GOOGLE AUTH + PREMIUM SYNC ENDPOINTS
 # ═══════════════════════════════════════════════════════════════
 
 @app.route('/api/auth/google', methods=['POST'])
+@limiter.limit("20 per minute")
 def handle_google_auth():
     """
     Called from auth.js after Google login.
-    Saves/updates user profile in DB.
+    Verifies the Google JWT using google-auth library, then upserts user in DB.
     """
-    data         = request.get_json() or {}
-    credential   = data.get('credential', '')  # Google JWT token
+    data       = request.get_json() or {}
+    credential = data.get('credential', '').strip()
 
-    # Decode JWT payload without verification (frontend already verified via GSI)
-    # For production: use google-auth library to verify properly
-    try:
-        import base64, json as _json
-        payload_b64 = credential.split('.')[1]
-        # Fix base64 padding
-        payload_b64 += '=' * (-len(payload_b64) % 4)
-        profile = _json.loads(base64.b64decode(payload_b64).decode('utf-8'))
-    except Exception:
-        return jsonify({'error': 'Invalid credential'}), 400
+    if not credential:
+        return jsonify({'error': 'Missing credential'}), 400
 
-    sub     = profile.get('sub', '')
+    # ── Proper cryptographic JWT verification ─────────────────
+    profile = _verify_google_jwt(credential)
+    if not profile:
+        return jsonify({'error': 'Invalid or expired credential'}), 401
+
+    sub     = profile.get('sub', '').strip()
     name    = profile.get('name', '')
     email   = profile.get('email', '')
     picture = profile.get('picture', '')
@@ -706,9 +756,9 @@ def handle_google_auth():
             INSERT INTO users (google_sub, name, email, picture)
             VALUES (?, ?, ?, ?)
             ON CONFLICT(google_sub) DO UPDATE SET
-                name=excluded.name,
-                email=excluded.email,
-                picture=excluded.picture
+                name    = excluded.name,
+                email   = excluded.email,
+                picture = excluded.picture
         ''', (sub, name, email, picture))
         conn.commit()
 
@@ -721,21 +771,32 @@ def handle_google_auth():
 @limiter.limit("60 per minute")
 def save_playback_state():
     """
-    Frontend calls this every 30s while playing (from auth.js syncStateToCloud).
-    Body: { sub, songId, songTitle, artist, artUrl, progress, device }
+    Frontend calls this every 30s while playing.
+    Auth: Bearer <Google JWT> in Authorization header.
+    Body: { userId, songId, songTitle, artist, artUrl, progress, device }
     """
-    data = request.get_json() or {}
+    # ── Verify Bearer token; extract sub from it ───────────────
+    sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
+    if not sub:
+        return jsonify({'error': 'Unauthorized'}), 401
 
-    sub        = data.get('userId', '').strip()   # maps to userAuth.user.sub
-    song_id    = data.get('songId', '').strip()
+    data       = request.get_json() or {}
+    song_id    = (data.get('songId') or '').strip()
     song_title = data.get('songTitle', '')
     artist     = data.get('artist', '')
     art_url    = data.get('artUrl', '')
-    progress   = float(data.get('progress', 0))
-    device     = data.get('device', 'mobile')     # 'mobile' or 'tv'
+    device     = data.get('device', 'mobile')
 
-    if not sub:
-        return jsonify({'error': 'Unauthorized — missing sub'}), 401
+    # ── Clamp progress to a sane range (0 – 3600s) ────────────
+    try:
+        progress = max(0.0, min(float(data.get('progress', 0)), 3600.0))
+    except (ValueError, TypeError):
+        progress = 0.0
+
+    # ── Whitelist device values ────────────────────────────────
+    if device not in ('mobile', 'tv'):
+        device = 'mobile'
+
     if not song_id:
         return jsonify({'status': 'ignored — no song'}), 200
 
@@ -758,16 +819,19 @@ def save_playback_state():
     log.info(f"[Sync] State saved — sub={sub[:8]}… song='{song_title}' @{progress:.0f}s device={device}")
     return jsonify({'success': True})
 
+
 @app.route('/api/sync/state', methods=['GET'])
 @limiter.limit("60 per minute")
 def get_playback_state():
     """
-    TV or new device calls this on boot to resume from where user left off.
-    Query param: sub (Google user ID)
+    TV or new device calls this on boot to resume.
+    Auth: Bearer <Google JWT> in Authorization header.
+    sub is extracted from the verified token — NOT from query params.
     """
-    sub = request.args.get('sub', '').strip()
+    # ── Verify Bearer token; extract sub from it ───────────────
+    sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
     if not sub:
-        return jsonify({'error': 'Missing sub'}), 400
+        return jsonify({'error': 'Unauthorized'}), 401
 
     with get_db() as conn:
         row = conn.execute(
@@ -787,9 +851,10 @@ def get_playback_state():
         })
     return jsonify({'success': False})
 
-# ─── TV Pairing (Mobile scans code to authorize TV) ──────────────────────────
+# ─── TV Pairing ──────────────────────────────────────────────────────────────
 
 @app.route('/api/auth/tv-generate-code', methods=['POST'])
+@limiter.limit("10 per minute")
 def generate_tv_code():
     """TV calls this to get a 6-digit pairing code."""
     data       = request.get_json() or {}
@@ -803,6 +868,7 @@ def generate_tv_code():
     return jsonify({'code': code, 'sessionId': session_id, 'expiresIn': 300})
 
 @app.route('/api/auth/tv-poll')
+@limiter.limit("60 per minute")
 def poll_tv_pairing():
     """TV polls every 3s to check if Mobile has approved the code."""
     code    = request.args.get('code', '').strip().upper()
@@ -820,13 +886,24 @@ def poll_tv_pairing():
     return jsonify({'status': 'pending'})
 
 @app.route('/api/auth/tv-verify-mobile', methods=['POST'])
+@limiter.limit("20 per minute")
 def mobile_verify_tv():
-    """Mobile calls this after user enters the TV code to authorize it."""
+    """
+    Mobile calls this after user enters the TV code.
+    Auth: Bearer <Google JWT> — sub extracted from token, not body.
+    """
+    # ── Verify caller is an authenticated user ─────────────────
+    sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
+    if not sub:
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
     data    = request.get_json() or {}
     code    = data.get('code', '').strip().upper()
-    sub     = data.get('sub', '').strip()
     now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-    if not code or not sub: return jsonify({'success': False, 'error': 'Missing params'}), 400
+
+    if not code:
+        return jsonify({'success': False, 'error': 'Missing code'}), 400
+
     with get_db() as conn:
         row = conn.execute('SELECT * FROM tv_pairing WHERE pairing_code = ? AND expires_at > ?', (code, now_str)).fetchone()
         if not row: return jsonify({'success': False, 'error': 'Invalid or expired code'}), 404
@@ -834,23 +911,36 @@ def mobile_verify_tv():
         conn.commit()
     return jsonify({'success': True})
 
-# ─── Ghost PIN (optional — for private mode) ─────────────────────────────────
+# ─── Ghost PIN ───────────────────────────────────────────────────────────────
 
 @app.route('/api/auth/verify-ghost-pin', methods=['POST'])
+@limiter.limit("10 per minute")
 def verify_ghost_pin():
+    """
+    Auth: Bearer <Google JWT> — sub extracted from token, not body.
+    """
+    sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
+    if not sub:
+        return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+
     data = request.get_json() or {}
-    sub  = data.get('sub', '').strip()
     pin  = data.get('pin', '').strip()
-    if not sub or not pin: return jsonify({'success': False}), 400
+
+    if not pin:
+        return jsonify({'success': False}), 400
+
     h_input = hashlib.sha256(pin.encode('utf-8')).hexdigest()
+
     with get_db() as conn:
         user = conn.execute('SELECT ghost_pin_hash FROM users WHERE google_sub = ?', (sub,)).fetchone()
-        if not user: return jsonify({'success': False}), 404
+        if not user:
+            return jsonify({'success': False}), 404
         if not user['ghost_pin_hash']:
             conn.execute('UPDATE users SET ghost_pin_hash = ? WHERE google_sub = ?', (h_input, sub))
             conn.commit()
             return jsonify({'success': True})
-        if hmac.compare_digest(user['ghost_pin_hash'], h_input): return jsonify({'success': True})
+        if hmac.compare_digest(user['ghost_pin_hash'], h_input):
+            return jsonify({'success': True})
     return jsonify({'success': False})
 
 # ═══════════════════════════════════════════════════════════════
@@ -858,9 +948,15 @@ def verify_ghost_pin():
 # ═══════════════════════════════════════════════════════════════
 
 @app.route('/api/admin/users')
+@limiter.limit("10 per minute")
 def admin_users():
+    """
+    Protected by ADMIN_KEY env var.
+    Key is never a hardcoded default — server refuses to start without it.
+    Uses hmac.compare_digest to prevent timing attacks.
+    """
     secret = request.args.get('key', '')
-    if secret != os.environ.get('ADMIN_KEY', 'changeme'):
+    if not hmac.compare_digest(secret, ADMIN_KEY):
         return jsonify({'error': 'Unauthorized'}), 401
     with get_db() as conn:
         rows = conn.execute(
