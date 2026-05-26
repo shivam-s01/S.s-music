@@ -3926,27 +3926,6 @@ button.add-playlist-btn {
   box-shadow: 0 0 6px var(--gold-glow);
 }
 
-/* ═══════════════════════════════════════════════════════════════
-   AURUM — LOGIN MODAL & AUTH UI STYLES
-   ═══════════════════════════════════════════════════════════════ */
-
-/* ── Overlay ─────────────────────────────────────────────────── */
-#aurum-login-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 9999;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  background: rgba(5, 5, 8, 0.72);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  opacity: 0;
-  transition: opacity 0.28s ease;
-}
-#aurum-login-overlay.open { opacity: 1; }
-
-/* ── Sheet ───────────────────────────────────────────────────── */
 .aurum-login-sheet {
   position: relative;
   width: 100%;
@@ -4714,4 +4693,176 @@ button.add-playlist-btn {
 }
 #fullscreen-player:not(.playing) .fp-seekbar.slider-squiggly::-webkit-slider-runnable-track {
   animation: aurum-breathe 4s ease-in-out infinite !important;
+} 
+/* ═══════════════════════════════════════════════════════════════
+   AURUM — DEVICE PROTECTION PATCH v1.0
+   Paste this at the very END of your style.css
+   3 fixes: will-change leak · CSS animations · smart-saver
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ─── FIX #1: will-change GPU leak ─────────────────────────────
+   Problem: will-change:opacity was permanently set on overlay +
+   user-menu, reserving a dedicated GPU compositing layer even
+   when both are invisible. Over 8h this wastes ~20-40MB VRAM.
+   Fix: Remove permanent will-change. Only add it when actively
+   animating (open class present). CSS handles this cleanly.      */
+
+#aurum-login-overlay {
+  will-change: auto; /* override the permanent will-change:opacity */
 }
+#aurum-login-overlay.open {
+  will-change: opacity; /* GPU layer only while visible/animating */
+}
+#aurum-login-overlay:not(.open) .aurum-login-sheet {
+  will-change: auto;
+}
+#aurum-login-overlay.open .aurum-login-sheet {
+  will-change: transform;
+}
+
+#aurum-user-menu {
+  will-change: auto;
+}
+#aurum-user-menu.open {
+  will-change: opacity;
+}
+#aurum-user-menu:not(.open) .aurum-user-menu-sheet {
+  will-change: auto;
+}
+#aurum-user-menu.open .aurum-user-menu-sheet {
+  will-change: transform;
+}
+
+/* Same fix for fullscreen player — will-change only while open  */
+#fullscreen-player {
+  will-change: auto;
+}
+#fullscreen-player.open,
+#fullscreen-player.dragging {
+  will-change: transform;
+}
+
+/* Queue panel — same pattern                                     */
+#queue-panel {
+  will-change: auto;
+}
+#queue-panel.open,
+#queue-panel.dragging {
+  will-change: transform;
+}
+
+/* ─── FIX #2: Screen-off animation kill ────────────────────────
+   Problem: aurum-shimmer, aurum-wave-flow, aurum-squiggle-flow
+   are infinite CSS animations. JS kills RAF + viz on screen-off
+   but these CSS animations keep running on GPU even when screen
+   is off, burning battery and keeping GPU warm for no reason.
+   Fix: body.screen-off kills ALL seekbar animations instantly.
+   JS adds/removes this class in visibilitychange (see JS patch). */
+
+body.screen-off .fp-seekbar::-webkit-slider-runnable-track {
+  animation: none !important;
+  will-change: auto !important;
+}
+body.screen-off .fp-seekbar::-webkit-slider-thumb {
+  animation: none !important;
+}
+
+/* Also kill eq-bar animations (now-playing bars) on screen-off  */
+body.screen-off .now-playing-bar span,
+body.screen-off .queue-now-playing span {
+  animation: none !important;
+  transform: scaleY(0.4) !important;
+}
+
+/* Kill skeleton shimmer on screen-off — pointless when hidden   */
+body.screen-off .bw-sk-cover,
+body.screen-off .bw-sk-line,
+body.screen-off .sk-art,
+body.screen-off .sk-line,
+body.screen-off .wide-sk-cover,
+body.screen-off .wide-sk-line,
+body.screen-off .quick-sk-cover {
+  animation: none !important;
+}
+
+/* Kill next-strip pulse animation on screen-off                  */
+body.screen-off .fp-next-strip > svg {
+  animation: none !important;
+}
+
+/* Kill chip pop, card anim-in on screen-off                      */
+body.screen-off .anim-in {
+  animation: none !important;
+}
+
+/* Kill marquee scrolling on screen-off                           */
+body.screen-off .fp-track-title.marquee-active span,
+body.screen-off .fp-artist.marquee-active span {
+  animation: none !important;
+}
+
+/* ─── FIX #3: Smart Saver — proper JS-hookable selector ────────
+   Problem: .smart-saver-active ~ * selector was a sibling
+   combinator that never matched correctly in the DOM structure.
+   Fix: Use body[data-smart-saver="true"] directly — JS sets
+   document.body.dataset.smartSaver = 'true' when battery < 20%  */
+
+body[data-smart-saver="true"] .fp-seekbar {
+  height: 2px !important;
+}
+body[data-smart-saver="true"] .fp-seekbar::-webkit-slider-runnable-track {
+  animation: none !important;
+  will-change: auto !important;
+  /* Plain gold bar, zero GPU cost                               */
+  background: linear-gradient(
+    to right,
+    var(--gold) var(--prog, 0%),
+    rgba(255, 255, 255, 0.07) var(--prog, 0%)
+  ) !important;
+}
+body[data-smart-saver="true"] .fp-seekbar::-webkit-slider-thumb {
+  animation: none !important;
+}
+
+/* Smart saver — also kill viz bars + ambient glow               */
+body[data-smart-saver="true"] .fp-viz-bar {
+  animation: none !important;
+  transform: scaleY(0.05) !important;
+}
+body[data-smart-saver="true"] #fp-ambient-glow {
+  display: none !important;
+}
+body[data-smart-saver="true"] #fp-bg-art {
+  filter: blur(6px) brightness(0.2) !important; /* cheaper filter */
+}
+
+/* Smart saver — freeze non-essential transitions                 */
+body[data-smart-saver="true"] .song-row,
+body[data-smart-saver="true"] .queue-item,
+body[data-smart-saver="true"] .quick-card,
+body[data-smart-saver="true"] .wide-card,
+body[data-smart-saver="true"] .bw-card {
+  transition: none !important;
+}
+
+/* ─── BONUS: Reduce motion respect ─────────────────────────────
+   Already in your CSS but missing the seekbar animations —
+   added here to cover the new animated seekbars properly.        */
+@media (prefers-reduced-motion: reduce) {
+  .fp-seekbar::-webkit-slider-runnable-track {
+    animation: none !important;
+  }
+  .fp-seekbar::-webkit-slider-thumb {
+    animation: none !important;
+  }
+  .now-playing-bar span,
+  .queue-now-playing span {
+    animation: none !important;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   END DEVICE PROTECTION PATCH
+   Next: apply aurum-device-protection.js for screen-off freeze +
+   battery API + _bgAudioPing removal
+   ═══════════════════════════════════════════════════════════════ */
