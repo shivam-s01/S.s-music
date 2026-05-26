@@ -1,18 +1,16 @@
 // ════════════════════════════════════════════════════════════════════════════
-// AURUM WELCOME SCREEN v1.0
-// Cinematic one-time welcome after Google login — no dependencies
+// AURUM WELCOME SCREEN v1.1
+// Cinematic welcome shown on every Google login — no dependencies
 // Triggered by: handleGoogleCredential() in auth.js
 // ════════════════════════════════════════════════════════════════════════════
 
 (function() {
   'use strict';
 
-  const WELCOME_KEY = 'aurum_welcome_shown';
-
   // ── Public API ────────────────────────────────────────────────────────────
   window.aurumWelcome = {
     show: showWelcome,
-    reset: function() { try { localStorage.removeItem(WELCOME_KEY); } catch(e) {} }
+    reset: function() {} // no-op kept for compatibility
   };
 
   // ── Inject CSS once ───────────────────────────────────────────────────────
@@ -487,15 +485,7 @@
 
   // ── Main entry point ──────────────────────────────────────────────────────
   function showWelcome(user, onDone) {
-    // Only show once per browser session (first login)
-    try {
-      if (localStorage.getItem(WELCOME_KEY) === '1') {
-        if (typeof onDone === 'function') onDone();
-        return;
-      }
-      localStorage.setItem(WELCOME_KEY, '1');
-    } catch(e) {}
-
+    // Show on every login — no localStorage check
     _injectStyles();
 
     const firstName = _getFirstName(user);
@@ -515,5 +505,5 @@
 
 })();
 // ════════════════════════════════════════════════════════════════════════════
-// END AURUM WELCOME v1.0
+// END AURUM WELCOME v1.1
 // ════════════════════════════════════════════════════════════════════════════
