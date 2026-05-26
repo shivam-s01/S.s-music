@@ -646,6 +646,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     _uiHidden = true;
     _stopViz();
+    document.body.classList.add('screen-off');
     const ac = document.getElementById('ambient-canvas');
     if (ac) ac.classList.remove('orbs-active');
     const fp = document.getElementById('fullscreen-player');
@@ -655,6 +656,7 @@ document.addEventListener('visibilitychange', () => {
     for (const k of Object.keys(sectionCache)) { if (!keep.has(k)) delete sectionCache[k]; }
   } else {
     _uiHidden = false;
+    document.body.classList.remove('screen-off');
     const fp = document.getElementById('fullscreen-player');
     const ac = document.getElementById('ambient-canvas');
     if (fp) fp.style.removeProperty('visibility');
@@ -2615,8 +2617,8 @@ function closeDownloadModal(e) {
 // FIX #6: triggerDownload wrapped in async IIFE and top-level catch added
 async function triggerDownload(quality) {
   try {
-    if (quality === 'ringtone' && !window.validateFeature('ringtone')) return;
-    if ((quality === 'full' || quality === 'gift') && !window.validateFeature('download')) return;
+    if (quality === 'ringtone' && !window.validateFeature?.('ringtone')) return;
+    if ((quality === 'full' || quality === 'gift') && !window.validateFeature?.('download')) return;
 
     const song = _downloadSong || currentTrack;
     _downloadSong = null;
@@ -2745,7 +2747,7 @@ function _setupBgAudioPing() {
         const src = _bgAudioCtx.createBufferSource();
         src.buffer = buf; src.connect(_bgAudioCtx.destination); src.start(0);
       } catch(e) {}
-    }, 5000);
+    }, 30000);
     window._bgPingInterval = _bgPingInterval;
   } catch(e) {}
 }
@@ -2857,6 +2859,14 @@ window.addEventListener('DOMContentLoaded', () => {
   requestPersistentStorage();
   _pushNavSentinel();
 });
+if (navigator.getBattery) {
+  navigator.getBattery().then(b => {
+    document.body.dataset.smartSaver = b.level < 0.2 ? 'true' : 'false';
+    b.onlevelchange = () => {
+      document.body.dataset.smartSaver = b.level < 0.2 ? 'true' : 'false';
+    };
+  }).catch(() => {});
+}
 
 // ─── 39. GLOBAL EXPORTS ───────────────────────────────────────────────────────
 window.playSongs = playSongs;
