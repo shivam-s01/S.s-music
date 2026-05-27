@@ -8,6 +8,13 @@
     gtag('js', new Date());
     gtag('config', 'G-3XXS95H0QR');
   </script>
+  <script type="text/javascript">
+    (function(c,l,a,r,i,t,y){
+        c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+        t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+        y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+    })(window, document, "clarity", "script", "wxmjz3i8h2");
+  </script>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
   <meta name="mobile-web-app-capable" content="yes">
@@ -151,7 +158,7 @@
       z-index: 20;
       max-height: 55vh;
       overflow-y: auto;
-      overflow-x: hidden; /* FIX #11: prevent horizontal clip */
+      overflow-x: hidden;
       -webkit-overflow-scrolling: touch;
     }
     #aurum-ai-panel.open { transform: translateY(0); }
@@ -205,7 +212,6 @@
       0%,100% { box-shadow: 0 -1px 30px rgba(184,150,64,0.08), 0 -8px 40px rgba(0,0,0,0.7); }
       50%     { box-shadow: 0 -1px 40px rgba(184,150,64,0.16), 0 -8px 40px rgba(0,0,0,0.7); }
     }
-    /* FIX #8: Banner inside app container, not fixed to viewport */
     #aurum-app-banner {
       position: absolute;
       bottom: 0; left: 0; right: 0;
@@ -294,10 +300,9 @@
       color: rgba(255,255,255,0.6);
     }
 
-    /* FIX #1 & #2: Login overlay and user menu — visibility toggle fix */
     #aurum-login-overlay,
     #aurum-user-menu {
-      display: flex !important; /* always flex, visibility controls show/hide */
+      display: flex !important;
       opacity: 0;
       visibility: hidden;
       pointer-events: none;
@@ -309,15 +314,11 @@
       pointer-events: all;
     }
 
-    /* FIX #5: fp-next-strip — remove hidden class effect when JS shows it */
     #fp-next-strip.hidden { display: none; }
     #fp-next-strip:not(.hidden) { display: flex; }
 
-    /* FIX #6: search-clear — hidden class support */
     #search-clear.hidden { display: none !important; }
     #search-clear:not(.hidden) { display: flex !important; }
-
-    /* FIX #14: aria-current page — visual cue handled via nav-btn.active in CSS */
   </style>
 </head>
 <body>
@@ -371,7 +372,6 @@
           <button class="ph-icon-btn ph-settings-btn" onclick="openSettings()" aria-label="Open settings">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4 1.65 1.65 0 0 0 7.18 19l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0 .33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.5a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </button>
-          <!-- FIX #7: AI chip onclick moved to separate JS function to avoid inline quote nesting -->
           <button id="aurum-ai-chip"
                   onclick="handleAiChipClick()"
                   aria-label="Aurum AI Suggestions">
@@ -420,7 +420,6 @@
         <input type="text" id="search-input" placeholder="Search songs, artists..."
                inputmode="search" autocomplete="off" autocorrect="off"
                spellcheck="false" aria-label="Search songs and artists">
-        <!-- FIX #6: removed 'hidden' class, JS controls display via classList -->
         <button id="search-clear" style="display:none" onclick="clearSearch()" aria-label="Clear search">
           <svg viewBox="0 0 24 24" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
@@ -468,7 +467,6 @@
   </div>
 
   <nav id="nav" aria-label="Main navigation">
-    <!-- FIX #14: aria-current updated via JS goPage() — handled in script below -->
     <button class="nav-btn active" onclick="goPage('home',this)" id="nav-home" aria-label="Home" aria-current="page">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
       <span>Home</span>
@@ -507,7 +505,6 @@
 
   <div id="fullscreen-player" role="region" aria-label="Now playing">
     <div id="fp-bg" aria-hidden="true">
-      <!-- FIX #15: crossorigin removed — iTunes artwork does not support CORS -->
       <img id="fp-bg-art" src="" alt="" role="presentation">
       <div id="fp-bg-overlay"></div>
       <div id="fp-ambient-glow"></div>
@@ -575,7 +572,6 @@
       </button>
     </div>
 
-    <!-- FIX #5: removed 'hidden' class — JS controls display directly -->
     <button class="fp-next-strip" id="fp-next-strip" style="display:none" onclick="openQueuePanel()" aria-label="Open queue">
       <div class="fp-next-tag" aria-hidden="true">UP<br>NEXT</div>
       <img class="fp-next-art" id="fp-next-art" src="" alt="Next song art">
@@ -665,13 +661,11 @@
         <div class="pl-detail-title-wrap">
           <h1 id="pl-detail-name">Playlist</h1>
         </div>
-        <!-- FIX #4: optsPlaylistIndex set before modal opens — handled via JS patch below -->
         <button class="pl-more" onclick="openPlaylistOptsFromDetail()" aria-label="Playlist options">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/></svg>
         </button>
       </div>
       <div class="pl-cover-wrap">
-        <!-- FIX #9: placeholder div with min dimensions to prevent layout shift -->
         <div id="pl-big-cover" aria-hidden="true" style="width:100%;max-width:248px;aspect-ratio:1;border-radius:20px;background:var(--surface2);margin:0 auto;"></div>
         <div class="pl-detail-meta">
           <h2 id="pl-detail-title">Playlist</h2>
@@ -840,7 +834,6 @@
 
   <div id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
-  <!-- FIX #1: display:none removed — CSS visibility controls open/close state -->
   <div id="aurum-login-overlay"
        role="dialog" aria-modal="true" aria-label="Sign in to Aurum">
     <div class="aurum-login-sheet">
@@ -895,7 +888,6 @@
     </div>
   </div>
 
-  <!-- FIX #2: display:none removed — CSS visibility controls open/close state -->
   <div id="aurum-user-menu" role="dialog" aria-modal="true">
     <div class="aurum-user-menu-sheet">
       <div class="aurum-menu-handle"></div>
@@ -937,7 +929,6 @@
     <div id="settings-body"></div>
   </div>
 
-  <!-- FIX #8: Banner moved inside #app so it respects max-width:430px -->
   <div id="aurum-app-banner" role="complementary" aria-label="Download Aurum App">
     <div class="banner-icon" aria-hidden="true">
       <svg viewBox="0 0 28 28" fill="none" width="24" height="24">
@@ -975,7 +966,6 @@
 <script src="aurum-smart.js?v=20250526" defer></script>
 
 <script>
-/* ─── FIX #3: aurumAI race condition — safe init wrapper ─────── */
 window._aurumAIQueue = [];
 if (!window.aurumAI) {
   window.aurumAI = {
@@ -984,7 +974,6 @@ if (!window.aurumAI) {
   };
 }
 
-/* ─── FIX #7: AI chip click handler (replaces long inline onclick) */
 function handleAiChipClick() {
   var chip = document.getElementById('aurum-user-chip');
   var isLoggedIn = chip && chip.style.display !== 'none';
@@ -1002,7 +991,6 @@ function handleAiChipClick() {
   }
 }
 
-/* ─── FIX #4: openPlaylistOptsFromDetail — keeps optsPlaylistIndex safe */
 function openPlaylistOptsFromDetail() {
   if (typeof currentPlaylistIndex !== 'undefined' && currentPlaylistIndex !== null) {
     if (typeof openPlaylistOpts === 'function') {
@@ -1011,7 +999,6 @@ function openPlaylistOptsFromDetail() {
   }
 }
 
-/* ─── FIX #8: Banner dismiss helper ─────────────────────────────*/
 function dismissBanner() {
   var banner = document.getElementById('aurum-app-banner');
   if (banner) banner.style.cssText = 'display:none!important';
@@ -1020,8 +1007,6 @@ function dismissBanner() {
   if (mini) { mini.style.transition = ''; mini.style.bottom = ''; }
 }
 
-/* ─── FIX #14: aria-current page update ─────────────────────────
-   Monkey-patch goPage once app.js loads to also update aria-current */
 document.addEventListener('DOMContentLoaded', function() {
   var _originalGoPage = window.goPage;
   if (typeof _originalGoPage === 'function') {
@@ -1035,7 +1020,6 @@ document.addEventListener('DOMContentLoaded', function() {
     };
   }
 
-  /* ─── FIX #3: DOMContentLoaded — aurumAI togglePanel safe init */
   var chipEl = document.getElementById('aurum-user-chip');
   if (chipEl) {
     new MutationObserver(function(muts) {
@@ -1056,11 +1040,9 @@ document.addEventListener('DOMContentLoaded', function() {
     }).observe(chipEl, { attributes: true });
   }
 
-  /* ─── FIX #3: togglePanel defined after auth.js loads ────────── */
   function _initAiPanel() {
     if (window.aurumAI && !window.aurumAI._patched) {
       window.aurumAI._patched = true;
-      var _orig = window.aurumAI.togglePanel;
       window.aurumAI.togglePanel = function() {
         if (window.validateFeature && !window.validateFeature('ai')) return;
         var panel = document.getElementById('aurum-ai-panel');
@@ -1079,7 +1061,6 @@ document.addEventListener('DOMContentLoaded', function() {
           panel.classList.add('open');
         }
       };
-      /* Flush queued calls */
       (window._aurumAIQueue || []).forEach(function(item) {
         if (item === 'togglePanel') window.aurumAI.togglePanel();
         else if (item && item.fn === 'render') window.aurumAI.render(item.el, item.track);
@@ -1087,12 +1068,10 @@ document.addEventListener('DOMContentLoaded', function() {
       window._aurumAIQueue = [];
     }
   }
-  /* Try immediately, then retry after scripts load */
   _initAiPanel();
   setTimeout(_initAiPanel, 500);
   setTimeout(_initAiPanel, 1500);
 
-  /* ─── Banner logic ────────────────────────────────────────────── */
   var banner = document.getElementById('aurum-app-banner');
   if (banner) {
     if (sessionStorage.getItem('aurumAppBanner') === 'dismissed') {
@@ -1105,7 +1084,6 @@ document.addEventListener('DOMContentLoaded', function() {
       if (isStandalone) {
         banner.style.cssText = 'display:none!important';
       } else {
-        /* Nudge mini-player up */
         setTimeout(function() {
           var mini = document.getElementById('mini-player');
           if (mini && mini.classList.contains('show')) {
@@ -1119,7 +1097,6 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   }
 
-  /* ─── PWA: hide download strip ───────────────────────────────── */
   var isPWA = window.matchMedia('(display-mode: standalone)').matches
            || window.matchMedia('(display-mode: fullscreen)').matches
            || window.navigator.standalone === true;
