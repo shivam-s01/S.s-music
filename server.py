@@ -347,6 +347,32 @@ def has_word_match(query, song_title):
             if fuzzy_word_match(qw, tw) >= 0.55: return True
     return False
 
+def strict_title_match(query, song_title, song_artist=''):
+    """Strict check — ALL main query words must appear in title or artist.
+    Prevents completely wrong songs from playing."""
+    q = normalize(query)
+    t = normalize(song_title)
+    a = normalize(song_artist)
+    if not q or not t: return False
+    if q == t: return True
+    # Remove very common filler words
+    STOP = {'ki', 'ka', 'ke', 'hai', 'se', 'mein', 'ko', 'the', 'a', 'an',
+            'of', 'in', 'is', 'and', 'or', 'by', 'ft', 'feat'}
+    q_words = [w for w in q.split() if len(w) >= 3 and w not in STOP]
+    all_target = (t + ' ' + a).split()
+    if not q_words: return True
+    matched = 0
+    for qw in q_words:
+        for tw in all_target:
+            if fuzzy_word_match(qw, tw) >= 0.72:
+                matched += 1
+                break
+    ratio = matched / len(q_words)
+    # Short query (1-2 words): need full match
+    # Longer query: need 65%
+    threshold = 1.0 if len(q_words) <= 2 else 0.65
+    return ratio >= threshold
+
 def pick_best_quality(urls):
     if not urls: return None, None
     def rank(item):
@@ -511,41 +537,67 @@ def fetch_from_ytdlp(title, artist=''):
         log.info(f"[yt-dlp] Cache hit → '{title}'")
         return cached
 
-    query = f"{title} {artist} full song audio".strip()
+    # Build smart query — artist first gives better YT results
+    if artist:
+        clean_artist = artist.split(',')[0].split('&')[0].strip()
+        query = f"{clean_artist} {title} full song"
+    else:
+        query = f"{title} full song audio"
+
     ydl_opts = {
-        'format': 'bestaudio[ext=m4a]/bestaudio/best',
+        'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
         'quiet': True,
         'no_warnings': True,
         'socket_timeout': 12,
         'extract_flat': False,
         'noplaylist': True,
-        'age_limit': None,
-        # Avoid throttling
+        # Filter out short videos (< 2 min) = previews/clips
+        'match_filter': yt_dlp.utils.match_filter_func('duration > 90'),
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         },
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+            # Search top 3, pick best match
+            info = ydl.extract_info(f"ytsearch3:{query}", download=False)
             if not info or not info.get('entries'):
                 return None
-            entry = info['entries'][0]
-            formats = entry.get('formats', [])
 
-            # Prefer audio-only formats
+            # Pick entry with best title match and duration > 90s
+            entries = [e for e in info['entries'] if e and e.get('duration', 0) > 90]
+            if not entries:
+                entries = info['entries']  # fallback: take any
+
+            best_entry = None
+            best_score = -1
+            for entry in entries:
+                if not entry: continue
+                yt_title  = entry.get('title', '')
+                yt_artist = entry.get('uploader', '')
+                score = title_score(title, yt_title, yt_artist)
+                if score > best_score:
+                    best_score = score
+                    best_entry = entry
+
+            if not best_entry:
+                return None
+
+            # Must be a reasonable title match
+            if not strict_title_match(title, best_entry.get('title', ''), best_entry.get('uploader', '')):
+                log.info(f"[yt-dlp] Title mismatch: asked='{title}' got='{best_entry.get('title')}'")
+                return None
+
+            formats = best_entry.get('formats', [])
+            # Audio-only formats preferred
             audio_formats = [
                 f for f in formats
                 if f.get('acodec') != 'none'
                 and f.get('vcodec') in ('none', None, '')
                 and f.get('url')
             ]
-            # Fallback: any format with audio
             if not audio_formats:
-                audio_formats = [
-                    f for f in formats
-                    if f.get('acodec') != 'none' and f.get('url')
-                ]
+                audio_formats = [f for f in formats if f.get('acodec') != 'none' and f.get('url')]
             if not audio_formats:
                 return None
 
@@ -553,22 +605,22 @@ def fetch_from_ytdlp(title, artist=''):
             abr     = best.get('abr') or best.get('tbr') or 0
             quality = f"{int(abr)}kbps" if abr else 'unknown'
 
-            thumb = entry.get('thumbnail', '')
+            thumb = best_entry.get('thumbnail', '')
             if not thumb:
-                vid_id = entry.get('id', '')
+                vid_id = best_entry.get('id', '')
                 if vid_id:
                     thumb = f"https://img.youtube.com/vi/{vid_id}/mqdefault.jpg"
 
             result = {
                 'url':     best['url'],
                 'quality': quality,
-                'title':   entry.get('title', title),
-                'artist':  entry.get('uploader', artist),
+                'title':   best_entry.get('title', title),
+                'artist':  best_entry.get('uploader', artist),
                 'image':   thumb,
                 'source':  'youtube',
             }
             _cache_set(cache_key, result, _ytdlp_cache)
-            log.info(f"[yt-dlp] ✓ '{entry.get('title')}' quality={quality}")
+            log.info(f"[yt-dlp] ✓ '{best_entry.get('title')}' dur={best_entry.get('duration')}s quality={quality}")
             return result
     except Exception as e:
         log.warning(f"[yt-dlp] '{query}' → {e}")
@@ -678,20 +730,29 @@ def play_song():
         for query in build_query_variants(title, artist, ''):
             result = fetch_saavn_parallel(query)
             if result and result.get('url'):
-                if has_word_match(title, result['title']) or result.get('score', 0) >= 0.8:
+                if strict_title_match(title, result['title'], result.get('artist', '')):
                     audio_url = result['url']
                     quality   = result.get('quality', 'unknown')
                     source    = 'saavn'
+                    log.info(f"[Play] Saavn title match ✓ '{result['title']}'")
                     break
+                else:
+                    log.info(f"[Play] Saavn mismatch skip: asked='{title}' got='{result['title']}'")
+                    continue
 
     # ── Step 3: yt-dlp — YouTube (BEST fallback) ─────────────
     if not audio_url and title:
         log.info(f"[Play] Saavn miss → yt-dlp for '{title}'")
         yt = fetch_from_ytdlp(title, artist)
         if yt and yt.get('url'):
-            audio_url = yt['url']
-            quality   = yt.get('quality', 'unknown')
-            source    = 'youtube'
+            if strict_title_match(title, yt['title'], yt.get('artist', '')):
+                audio_url = yt['url']
+                quality   = yt.get('quality', 'unknown')
+                source    = 'youtube'
+                log.info(f"[Play] yt-dlp match ✓ '{yt['title']}'")
+            else:
+                log.info(f"[Play] yt-dlp mismatch skip: asked='{title}' got='{yt['title']}'")
+                yt = None
 
     # ── Step 4: Piped (YouTube API fallback) ─────────────────
     if not audio_url and title:
@@ -1050,8 +1111,10 @@ def get_saavn_song():
     # Try Saavn first
     for query in build_query_variants(q, artist, fallback):
         result = fetch_saavn_parallel(query)
-        if result and not has_word_match(q, result['title']):
-            if result.get('score', 0) < 0.8: result = None
+        if result:
+            if not strict_title_match(q, result['title'], result.get('artist', '')):
+                log.info(f"[Saavn] Mismatch skip: asked='{q}' got='{result['title']}'")
+                result = None
         if result:
             if low_quality:
                 low_url, low_q = _pick_low_quality(result.get('_raw_urls', []))
@@ -1086,8 +1149,10 @@ def resolve_song():
     # Step 1: Saavn
     for query in build_query_variants(q, artist, fallback):
         result = fetch_saavn_parallel(query)
-        if result and not has_word_match(q, result['title']):
-            if result.get('score', 0) < 0.8: result = None
+        if result:
+            if not strict_title_match(q, result['title'], result.get('artist', '')):
+                log.info(f"[Resolve] Mismatch skip: asked='{q}' got='{result['title']}'")
+                result = None
         if result:
             log.info(f"[Resolve] ✓ JioSaavn — '{result['title']}' quality={result['quality']}")
             return jsonify({
