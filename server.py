@@ -11,13 +11,13 @@ import secrets
 import hmac
 import hashlib
 import time
+import yt_dlp
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 from urllib.parse import urlparse, quote
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
-# Google JWT verification
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
@@ -48,8 +48,8 @@ def get_real_ip():
         request.remote_addr or '127.0.0.1'
     )
 
-limiter    = Limiter(get_real_ip, app=app, default_limits=[], storage_uri="memory://")
-_executor  = ThreadPoolExecutor(max_workers=8)
+limiter     = Limiter(get_real_ip, app=app, default_limits=[], storage_uri="memory://")
+_executor   = ThreadPoolExecutor(max_workers=16)
 _google_req = google_requests.Request()
 
 # ═══════════════════════════════════════════════════════════════
@@ -58,10 +58,7 @@ _google_req = google_requests.Request()
 def _verify_google_jwt(credential: str) -> dict | None:
     try:
         payload = id_token.verify_oauth2_token(
-            credential,
-            _google_req,
-            GOOGLE_CLIENT_ID,
-            clock_skew_in_seconds=10,
+            credential, _google_req, GOOGLE_CLIENT_ID, clock_skew_in_seconds=10,
         )
         if payload.get('iss') not in ('accounts.google.com', 'https://accounts.google.com'):
             log.warning('[Auth] JWT iss mismatch')
@@ -70,7 +67,6 @@ def _verify_google_jwt(credential: str) -> dict | None:
     except Exception as e:
         log.warning(f'[Auth] JWT verify failed: {e}')
         return None
-
 
 def _extract_bearer_sub(auth_header: str) -> str | None:
     if not auth_header or not auth_header.startswith('Bearer '):
@@ -82,7 +78,6 @@ def _extract_bearer_sub(auth_header: str) -> str | None:
     if not payload:
         return None
     return payload.get('sub', '') or None
-
 
 # ═══════════════════════════════════════════════════════════════
 # DATABASE
@@ -138,6 +133,8 @@ SAAVN_MIRRORS = [
     'https://jiosaavn-api2.vercel.app',
     'https://jiosaavn-api-ts.vercel.app',
     'https://saavn-api-eight.vercel.app',
+    'https://jiosaavn-api.vercel.app',
+    'https://saavn-api-three.vercel.app',
 ]
 
 PIPED_INSTANCES = [
@@ -159,6 +156,7 @@ ALLOWED_STREAM_DOMAINS = [
     'cf.saavncdn.com', 'aac.saavncdn.com', 'static.saavncdn.com',
     'c.saavncdn.com', 'h.saavncdn.com',
     'googlevideo.com', 'youtube.com', 'ytimg.com',
+    'manifest.googlevideo.com',
     'rr1.sn-', 'rr2.sn-', 'rr3.sn-', 'rr4.sn-',
     'r1.sn-', 'r2.sn-', 'r3.sn-', 'r4.sn-',
     'r5.sn-', 'r6.sn-', 'r7.sn-',
@@ -185,26 +183,34 @@ NINETIES_TRIGGERS = [
 ]
 
 # ═══════════════════════════════════════════════════════════════
-# SONGS CACHE — in-memory, TTL 5 minutes
+# METADATA CACHE
+# TTL 10 min — metadata only, NO audio URLs cached
 # ═══════════════════════════════════════════════════════════════
-_songs_cache = {}
-CACHE_TTL = 300  # seconds
+_meta_cache    = {}
+META_CACHE_TTL = 600
 
-def _cache_get(key):
-    entry = _songs_cache.get(key)
+# yt-dlp URL cache — short TTL (4 min) because YT URLs expire fast
+_ytdlp_cache    = {}
+YTDLP_CACHE_TTL = 240
+
+def _cache_get(key, store=None):
+    store = store if store is not None else _meta_cache
+    entry = store.get(key)
     if not entry:
         return None
     ts, data = entry
-    if time.time() - ts > CACHE_TTL:
-        del _songs_cache[key]
+    ttl = YTDLP_CACHE_TTL if store is _ytdlp_cache else META_CACHE_TTL
+    if time.time() - ts > ttl:
+        del store[key]
         return None
     return data
 
-def _cache_set(key, data):
-    _songs_cache[key] = (time.time(), data)
-    if len(_songs_cache) > 100:
-        oldest = min(_songs_cache, key=lambda k: _songs_cache[k][0])
-        del _songs_cache[oldest]
+def _cache_set(key, data, store=None):
+    store = store if store is not None else _meta_cache
+    store[key] = (time.time(), data)
+    if len(store) > 200:
+        oldest = min(store, key=lambda k: store[k][0])
+        del store[oldest]
 
 # ═══════════════════════════════════════════════════════════════
 # CORS
@@ -391,10 +397,32 @@ def _safe_year(date_str):
     except (ValueError, TypeError): return 0
 
 # ═══════════════════════════════════════════════════════════════
-# SAAVN SEARCH — parallel fetch for /api/songs
+# MIRROR HEALTH CACHE — skip dead mirrors fast
+# ═══════════════════════════════════════════════════════════════
+_mirror_fail_count = {}
+_mirror_fail_time  = {}
+MIRROR_FAIL_COOLDOWN = 60  # seconds to skip a failed mirror
+
+def _mirror_ok(mirror):
+    fails = _mirror_fail_count.get(mirror, 0)
+    if fails < 3:
+        return True
+    last_fail = _mirror_fail_time.get(mirror, 0)
+    if time.time() - last_fail > MIRROR_FAIL_COOLDOWN:
+        _mirror_fail_count[mirror] = 0
+        return True
+    return False
+
+def _mirror_failed(mirror):
+    _mirror_fail_count[mirror] = _mirror_fail_count.get(mirror, 0) + 1
+    _mirror_fail_time[mirror]  = time.time()
+
+# ═══════════════════════════════════════════════════════════════
+# SAAVN SEARCH — parallel fetch, ALL mirrors
 # ═══════════════════════════════════════════════════════════════
 def _fetch_saavn_search_mirror(mirror, search_term):
-    """Try all endpoints on one mirror, return raw results list or []."""
+    if not _mirror_ok(mirror):
+        return []
     for endpoint in ['/api/search/songs', '/api/search', '/search/songs']:
         try:
             r = requests.get(
@@ -415,11 +443,14 @@ def _fetch_saavn_search_mirror(mirror, search_term):
                 return raw
         except Exception as e:
             log.warning(f"[SaavnSearch] {mirror}{endpoint} → {e}")
+            _mirror_failed(mirror)
     return []
 
 def _fetch_saavn_search_parallel(search_term):
-    """Fire 3 random mirrors in parallel, return first valid result."""
-    mirrors = random.sample(SAAVN_MIRRORS, min(3, len(SAAVN_MIRRORS)))
+    # Use ALL healthy mirrors in parallel — first valid result wins
+    mirrors = [m for m in SAAVN_MIRRORS if _mirror_ok(m)]
+    if not mirrors:
+        mirrors = SAAVN_MIRRORS  # reset if all marked bad
     futures = {_executor.submit(_fetch_saavn_search_mirror, m, search_term): m for m in mirrors}
     try:
         for future in as_completed(futures, timeout=10):
@@ -436,58 +467,309 @@ def _fetch_saavn_search_parallel(search_term):
     return []
 
 # ═══════════════════════════════════════════════════════════════
-# NORMALIZE SAAVN SONGS — THE ONLY CHANGED FUNCTION
+# NORMALIZE SAAVN SONGS
+# previewUrl = /api/play?id=SONG_ID — fresh URL on every play
 # ═══════════════════════════════════════════════════════════════
 def _normalize_saavn_songs(raw_songs):
-    """
-    Convert Saavn song objects to iTunes-compatible shape for frontend.
-
-    FIX: previewUrl is now a real /api/stream proxy URL pointing to the
-    best-quality audio from Saavn's downloadUrl list. This means songs play
-    immediately as full-quality audio instead of a 30s iTunes preview.
-    Falls back to empty string (filtered out by frontend) if no audio URL found.
-    """
     normalized = []
     for song in raw_songs:
+        song_id = song.get('id', '').strip()
+        if not song_id:
+            continue
         title  = song.get('name') or song.get('title', '')
         artist = song.get('primaryArtists') or song.get('primary_artists') or ''
         image  = pick_image(song)
         year   = str(song.get('year') or '0')[:4]
         dur_ms = int(song.get('duration', 0) or 0) * 1000
-
-        # Extract best-quality audio URL from downloadUrl list
         raw_urls = song.get('downloadUrl') or song.get('download_url') or []
         if isinstance(raw_urls, str):
             raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
-
-        best_url, quality = pick_best_quality(raw_urls)
-
-        # Wrap in /api/stream proxy so CORS + domain restrictions are handled
-        if best_url:
-            stream_url = f"/api/stream?url={quote(best_url, safe='')}"
-        else:
-            # No audio URL available — skip this song entirely
-            # (frontend filters out songs without previewUrl)
+        _, quality = pick_best_quality(raw_urls)
+        if not quality:
             continue
-
         normalized.append({
-            'trackId':         song.get('id', ''),
+            'trackId':         song_id,
             'trackName':       title,
             'artistName':      artist,
             'artworkUrl100':   image.replace('500x500', '100x100') if image else '',
-            'previewUrl':      stream_url,   # Real full-quality audio stream
+            'previewUrl':      f"/api/play?id={quote(song_id, safe='')}",
             'trackTimeMillis': dur_ms,
             'releaseDate':     f"{year}-01-01T00:00:00Z",
-            '_saavnId':        song.get('id', ''),
+            '_saavnId':        song_id,
             '_quality':        quality,
             '_source':         'saavn',
         })
     return normalized
 
 # ═══════════════════════════════════════════════════════════════
-# SAAVN MIRROR FETCH (for audio resolution via /api/saavn & /api/resolve)
+# YT-DLP — YouTube full songs (primary fallback after Saavn)
+# ═══════════════════════════════════════════════════════════════
+def fetch_from_ytdlp(title, artist=''):
+    cache_key = f"ytdlp:{normalize(title)}:{normalize(artist)}"
+    cached = _cache_get(cache_key, _ytdlp_cache)
+    if cached:
+        log.info(f"[yt-dlp] Cache hit → '{title}'")
+        return cached
+
+    query = f"{title} {artist} full song audio".strip()
+    ydl_opts = {
+        'format': 'bestaudio[ext=m4a]/bestaudio/best',
+        'quiet': True,
+        'no_warnings': True,
+        'socket_timeout': 12,
+        'extract_flat': False,
+        'noplaylist': True,
+        'age_limit': None,
+        # Avoid throttling
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+            if not info or not info.get('entries'):
+                return None
+            entry = info['entries'][0]
+            formats = entry.get('formats', [])
+
+            # Prefer audio-only formats
+            audio_formats = [
+                f for f in formats
+                if f.get('acodec') != 'none'
+                and f.get('vcodec') in ('none', None, '')
+                and f.get('url')
+            ]
+            # Fallback: any format with audio
+            if not audio_formats:
+                audio_formats = [
+                    f for f in formats
+                    if f.get('acodec') != 'none' and f.get('url')
+                ]
+            if not audio_formats:
+                return None
+
+            best = max(audio_formats, key=lambda f: f.get('abr') or f.get('tbr') or 0)
+            abr     = best.get('abr') or best.get('tbr') or 0
+            quality = f"{int(abr)}kbps" if abr else 'unknown'
+
+            thumb = entry.get('thumbnail', '')
+            if not thumb:
+                vid_id = entry.get('id', '')
+                if vid_id:
+                    thumb = f"https://img.youtube.com/vi/{vid_id}/mqdefault.jpg"
+
+            result = {
+                'url':     best['url'],
+                'quality': quality,
+                'title':   entry.get('title', title),
+                'artist':  entry.get('uploader', artist),
+                'image':   thumb,
+                'source':  'youtube',
+            }
+            _cache_set(cache_key, result, _ytdlp_cache)
+            log.info(f"[yt-dlp] ✓ '{entry.get('title')}' quality={quality}")
+            return result
+    except Exception as e:
+        log.warning(f"[yt-dlp] '{query}' → {e}")
+        return None
+
+# ═══════════════════════════════════════════════════════════════
+# SAAVN FETCH BY SONG ID — all mirrors, more endpoint patterns
+# ═══════════════════════════════════════════════════════════════
+def _fetch_saavn_by_id(song_id: str) -> dict | None:
+    mirrors   = [m for m in SAAVN_MIRRORS if _mirror_ok(m)] or SAAVN_MIRRORS
+    endpoints = [
+        f'/api/songs/{song_id}',
+        f'/songs/{song_id}',
+        f'/api/songs?id={song_id}',
+        f'/song?id={song_id}',
+        f'/api/song?id={song_id}',
+    ]
+
+    def try_mirror(mirror):
+        for endpoint in endpoints:
+            try:
+                r = requests.get(
+                    f'{mirror}{endpoint}',
+                    timeout=7,
+                    headers={'User-Agent': 'Mozilla/5.0'}
+                )
+                if r.status_code != 200:
+                    continue
+                data = r.json()
+                song = None
+                if isinstance(data.get('data'), list) and data['data']:
+                    song = data['data'][0]
+                elif isinstance(data.get('data'), dict):
+                    song = data['data']
+                elif data.get('id'):
+                    song = data
+                elif data.get('songs'):
+                    songs = data['songs']
+                    song  = songs[0] if isinstance(songs, list) and songs else songs
+                if not song:
+                    continue
+                raw_urls = song.get('downloadUrl') or song.get('download_url') or []
+                if isinstance(raw_urls, str):
+                    raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
+                best_url, quality = pick_best_quality(raw_urls)
+                if best_url:
+                    log.info(f"[PlayID] ✓ id={song_id} quality={quality} via {mirror}{endpoint}")
+                    return {
+                        'url':     best_url,
+                        'quality': quality,
+                        'title':   song.get('name') or song.get('title', ''),
+                        'artist':  song.get('primaryArtists') or song.get('primary_artists') or '',
+                        'image':   pick_image(song),
+                    }
+            except Exception as e:
+                log.warning(f"[PlayID] {mirror}{endpoint} → {e}")
+                _mirror_failed(mirror)
+        return None
+
+    # Run all mirrors in parallel — first hit wins
+    futures = {_executor.submit(try_mirror, m): m for m in mirrors}
+    try:
+        for future in as_completed(futures, timeout=12):
+            try:
+                result = future.result()
+                if result:
+                    for f in futures:
+                        f.cancel()
+                    return result
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return None
+
+# ═══════════════════════════════════════════════════════════════
+# /api/play — GODMODE: fresh URL every time
+# Chain: Saavn by ID → Saavn by title → yt-dlp → Piped → Invidious
+# ═══════════════════════════════════════════════════════════════
+@app.route('/api/play')
+@limiter.limit("180 per minute")
+def play_song():
+    song_id = request.args.get('id', '').strip()
+    title   = request.args.get('title', '').strip()
+    artist  = request.args.get('artist', '').strip()
+
+    if not song_id and not title:
+        return jsonify({'error': 'Missing id or title'}), 400
+
+    audio_url = None
+    quality   = 'unknown'
+    source    = 'unknown'
+
+    # ── Step 1: Saavn by ID (fastest) ────────────────────────
+    if song_id:
+        result = _fetch_saavn_by_id(song_id)
+        if result and result.get('url'):
+            audio_url = result['url']
+            quality   = result.get('quality', 'unknown')
+            source    = 'saavn'
+            if not title:  title  = result.get('title', '')
+            if not artist: artist = result.get('artist', '')
+
+    # ── Step 2: Saavn by title search ────────────────────────
+    if not audio_url and title:
+        log.info(f"[Play] ID miss → title search for '{title}'")
+        for query in build_query_variants(title, artist, ''):
+            result = fetch_saavn_parallel(query)
+            if result and result.get('url'):
+                if has_word_match(title, result['title']) or result.get('score', 0) >= 0.8:
+                    audio_url = result['url']
+                    quality   = result.get('quality', 'unknown')
+                    source    = 'saavn'
+                    break
+
+    # ── Step 3: yt-dlp — YouTube (BEST fallback) ─────────────
+    if not audio_url and title:
+        log.info(f"[Play] Saavn miss → yt-dlp for '{title}'")
+        yt = fetch_from_ytdlp(title, artist)
+        if yt and yt.get('url'):
+            audio_url = yt['url']
+            quality   = yt.get('quality', 'unknown')
+            source    = 'youtube'
+
+    # ── Step 4: Piped (YouTube API fallback) ─────────────────
+    if not audio_url and title:
+        log.info(f"[Play] yt-dlp miss → Piped for '{title}'")
+        piped = fetch_from_piped(title, title=title, artist=artist)
+        if piped and piped.get('url'):
+            audio_url = piped['url']
+            quality   = piped.get('quality', 'unknown')
+            source    = 'piped'
+
+    # ── Step 5: Invidious (last resort) ──────────────────────
+    if not audio_url and title:
+        log.info(f"[Play] Piped miss → Invidious for '{title}'")
+        inv = fetch_from_invidious(title, title=title, artist=artist)
+        if inv and inv.get('url'):
+            audio_url = inv['url']
+            quality   = inv.get('quality', 'unknown')
+            source    = 'invidious'
+
+    if not audio_url:
+        log.warning(f"[Play] ✗ ALL sources failed — id={song_id} title='{title}'")
+        return jsonify({'error': 'No audio source found'}), 404
+
+    log.info(f"[Play] ✓ Streaming — source={source} id={song_id} quality={quality}")
+
+    # ── Stream directly through proxy ────────────────────────
+    try:
+        req_headers = {
+            'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'Accept':          'audio/mpeg,audio/webm,audio/ogg,audio/*;q=0.9,*/*;q=0.5',
+            'Accept-Encoding': 'identity',
+            'Connection':      'keep-alive',
+        }
+        range_header = request.headers.get('Range')
+        if range_header:
+            req_headers['Range'] = range_header
+
+        upstream = requests.get(
+            audio_url, headers=req_headers, stream=True,
+            timeout=60, allow_redirects=True
+        )
+
+        excluded = {'content-encoding', 'transfer-encoding', 'connection'}
+        resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in excluded}
+        resp_headers.update({
+            'Access-Control-Allow-Origin': '*',
+            'Accept-Ranges':               'bytes',
+            'Cache-Control':               'no-store',
+            'X-Audio-Quality':             quality,
+            'X-Audio-Source':              source,
+        })
+        if 'content-type' not in {k.lower() for k in resp_headers}:
+            resp_headers['Content-Type'] = 'audio/mpeg'
+
+        def generate():
+            try:
+                for chunk in upstream.iter_content(chunk_size=65536):
+                    if chunk:
+                        yield chunk
+            finally:
+                upstream.close()
+
+        return Response(
+            stream_with_context(generate()),
+            status=upstream.status_code,
+            headers=resp_headers,
+            direct_passthrough=True,
+        )
+    except Exception as e:
+        log.error(f"[Play] Stream error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# ═══════════════════════════════════════════════════════════════
+# SAAVN MIRROR FETCH (for /api/saavn and /api/resolve)
 # ═══════════════════════════════════════════════════════════════
 def fetch_from_mirror(mirror, query, min_score=0.4):
+    if not _mirror_ok(mirror):
+        return None
     endpoints = ['/api/search/songs', '/api/search', '/search/songs']
     for endpoint in endpoints:
         try:
@@ -531,12 +813,14 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
             }
         except Exception as e:
             log.warning(f"[Mirror {mirror}] {endpoint} → {e}")
+            _mirror_failed(mirror)
             continue
     return None
 
 def fetch_saavn_parallel(query):
     threshold = dynamic_min_score(query)
-    futures   = {_executor.submit(fetch_from_mirror, mirror, query, threshold): mirror for mirror in SAAVN_MIRRORS}
+    mirrors   = [m for m in SAAVN_MIRRORS if _mirror_ok(m)] or SAAVN_MIRRORS
+    futures   = {_executor.submit(fetch_from_mirror, mirror, query, threshold): mirror for mirror in mirrors}
     all_results = []
     try:
         for future in as_completed(futures, timeout=12):
@@ -564,7 +848,11 @@ def fetch_from_piped(query, title='', artist=''):
     search_q = f"{title} {artist}".strip() if title else query
     for instance in PIPED_INSTANCES:
         try:
-            r = requests.get(f'{instance}/search', params={'q': search_q, 'filter': 'music_songs'}, timeout=8, headers={'User-Agent': 'Mozilla/5.0'})
+            r = requests.get(
+                f'{instance}/search',
+                params={'q': search_q, 'filter': 'music_songs'},
+                timeout=8, headers={'User-Agent': 'Mozilla/5.0'}
+            )
             if r.status_code != 200: continue
             results = r.json().get('items', [])
             if not results: continue
@@ -580,7 +868,10 @@ def fetch_from_piped(query, title='', artist=''):
             if not best or best_score < 0.3: continue
             video_id = best.get('url', '').replace('/watch?v=', '').strip()
             if not video_id: continue
-            sr = requests.get(f'{instance}/streams/{video_id}', timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
+            sr = requests.get(
+                f'{instance}/streams/{video_id}',
+                timeout=10, headers={'User-Agent': 'Mozilla/5.0'}
+            )
             if sr.status_code != 200: continue
             audio_streams = sr.json().get('audioStreams', [])
             if not audio_streams: continue
@@ -593,7 +884,11 @@ def fetch_from_piped(query, title='', artist=''):
             if not best_audio or not best_audio.get('url'): continue
             quality_label = f"{best_bitrate // 1000}kbps" if best_bitrate > 0 else 'unknown'
             log.info(f"[Piped] ✓ '{best.get('title')}' via {instance}")
-            return {'url': best_audio['url'], 'quality': quality_label, 'title': best.get('title', title), 'artist': best.get('uploaderName', artist), 'image': best.get('thumbnail', ''), 'score': round(best_score, 3), 'source': 'piped'}
+            return {
+                'url': best_audio['url'], 'quality': quality_label,
+                'title': best.get('title', title), 'artist': best.get('uploaderName', artist),
+                'image': best.get('thumbnail', ''), 'score': round(best_score, 3), 'source': 'piped'
+            }
         except Exception as e:
             log.warning(f"[Piped {instance}] {e}"); continue
     return None
@@ -605,7 +900,11 @@ def fetch_from_invidious(query, title='', artist=''):
     search_q = f"{title} {artist}".strip() if title else query
     for instance in INVIDIOUS_INSTANCES:
         try:
-            r = requests.get(f'{instance}/api/v1/search', params={'q': search_q, 'type': 'video', 'page': 1}, timeout=8, headers={'User-Agent': 'Mozilla/5.0'})
+            r = requests.get(
+                f'{instance}/api/v1/search',
+                params={'q': search_q, 'type': 'video', 'page': 1},
+                timeout=8, headers={'User-Agent': 'Mozilla/5.0'}
+            )
             if r.status_code != 200: continue
             results = r.json()
             if not results: continue
@@ -620,7 +919,11 @@ def fetch_from_invidious(query, title='', artist=''):
             if not best or best_score < 0.3: continue
             video_id = best.get('videoId', '')
             if not video_id: continue
-            vr = requests.get(f'{instance}/api/v1/videos/{video_id}', params={'fields': 'adaptiveFormats,title,author'}, timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
+            vr = requests.get(
+                f'{instance}/api/v1/videos/{video_id}',
+                params={'fields': 'adaptiveFormats,title,author'},
+                timeout=10, headers={'User-Agent': 'Mozilla/5.0'}
+            )
             if vr.status_code != 200: continue
             formats = vr.json().get('adaptiveFormats', [])
             audio_formats = [f for f in formats if f.get('type', '').startswith('audio')]
@@ -630,13 +933,18 @@ def fetch_from_invidious(query, title='', artist=''):
             bitrate = best_fmt.get('bitrate', 0)
             quality_label = f"{bitrate // 1000}kbps" if bitrate > 0 else 'unknown'
             log.info(f"[Invidious] ✓ '{best.get('title')}' via {instance}")
-            return {'url': best_fmt['url'], 'quality': quality_label, 'title': best.get('title', title), 'artist': best.get('author', artist), 'image': f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg", 'score': round(best_score, 3), 'source': 'invidious'}
+            return {
+                'url': best_fmt['url'], 'quality': quality_label,
+                'title': best.get('title', title), 'artist': best.get('author', artist),
+                'image': f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg",
+                'score': round(best_score, 3), 'source': 'invidious'
+            }
         except Exception as e:
             log.warning(f"[Invidious {instance}] {e}"); continue
     return None
 
 # ═══════════════════════════════════════════════════════════════
-# /api/songs — PRIMARY SEARCH (Saavn-first, iTunes fallback for English)
+# /api/songs — PRIMARY SEARCH
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/songs')
 @limiter.limit("60 per minute")
@@ -726,7 +1034,7 @@ def get_90s_songs():
         return jsonify({'results': [], 'error': str(e)})
 
 # ═══════════════════════════════════════════════════════════════
-# JIOSAAVN ENDPOINT
+# /api/saavn — direct song fetch with yt-dlp fallback
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/saavn')
 @limiter.limit("80 per minute")
@@ -738,6 +1046,8 @@ def get_saavn_song():
     low_quality = request.args.get('low_quality', 'false').lower() == 'true'
     if not q:
         return jsonify({'success': False, 'url': None, 'token': token})
+
+    # Try Saavn first
     for query in build_query_variants(q, artist, fallback):
         result = fetch_saavn_parallel(query)
         if result and not has_word_match(q, result['title']):
@@ -749,11 +1059,19 @@ def get_saavn_song():
                     result['url'] = low_url; result['quality'] = low_q
             log.info(f"[Saavn] ✓ q='{q}' → '{result['title']}' quality={result['quality']} score={result['score']}")
             return jsonify({'success': True, 'token': token, **result})
+
+    # Saavn miss → yt-dlp fallback
+    log.info(f"[Saavn] Miss → yt-dlp for '{q}'")
+    yt = fetch_from_ytdlp(q, artist)
+    if yt and yt.get('url'):
+        log.info(f"[Saavn/yt-dlp] ✓ '{yt['title']}'")
+        return jsonify({'success': True, 'token': token, **yt})
+
     log.info(f"[Saavn] ✗ No match — q='{q}'")
     return jsonify({'success': False, 'url': None, 'token': token})
 
 # ═══════════════════════════════════════════════════════════════
-# RESOLVE — Saavn → Piped → Invidious chain
+# /api/resolve — full chain with yt-dlp
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/resolve')
 @limiter.limit("80 per minute")
@@ -764,21 +1082,54 @@ def resolve_song():
     token    = request.args.get('token', '').strip()
     if not q:
         return jsonify({'success': False, 'url': None, 'token': token})
+
+    # Step 1: Saavn
     for query in build_query_variants(q, artist, fallback):
         result = fetch_saavn_parallel(query)
         if result and not has_word_match(q, result['title']):
             if result.get('score', 0) < 0.8: result = None
         if result:
             log.info(f"[Resolve] ✓ JioSaavn — '{result['title']}' quality={result['quality']}")
-            return jsonify({'success': True, 'token': token, 'url': f"/api/stream?url={quote(result['url'], safe='')}", 'quality': result['quality'], 'title': result['title'], 'artist': result['artist'], 'image': result.get('image', ''), 'source': 'saavn'})
-    log.info(f"[Resolve] JioSaavn miss → Piped for '{q}'")
-    piped_result = fetch_from_piped(q, title=q, artist=artist)
-    if piped_result and piped_result.get('url'):
-        return jsonify({'success': True, 'token': token, 'url': f"/api/stream?url={quote(piped_result['url'], safe='')}", 'quality': piped_result['quality'], 'title': piped_result['title'], 'artist': piped_result['artist'], 'image': piped_result.get('image', ''), 'source': 'piped'})
+            return jsonify({
+                'success': True, 'token': token,
+                'url': f"/api/stream?url={quote(result['url'], safe='')}",
+                'quality': result['quality'], 'title': result['title'],
+                'artist': result['artist'], 'image': result.get('image', ''), 'source': 'saavn'
+            })
+
+    # Step 2: yt-dlp
+    log.info(f"[Resolve] Saavn miss → yt-dlp for '{q}'")
+    yt = fetch_from_ytdlp(q, artist)
+    if yt and yt.get('url'):
+        return jsonify({
+            'success': True, 'token': token,
+            'url': f"/api/stream?url={quote(yt['url'], safe='')}",
+            'quality': yt['quality'], 'title': yt['title'],
+            'artist': yt['artist'], 'image': yt.get('image', ''), 'source': 'youtube'
+        })
+
+    # Step 3: Piped
+    log.info(f"[Resolve] yt-dlp miss → Piped for '{q}'")
+    piped = fetch_from_piped(q, title=q, artist=artist)
+    if piped and piped.get('url'):
+        return jsonify({
+            'success': True, 'token': token,
+            'url': f"/api/stream?url={quote(piped['url'], safe='')}",
+            'quality': piped['quality'], 'title': piped['title'],
+            'artist': piped['artist'], 'image': piped.get('image', ''), 'source': 'piped'
+        })
+
+    # Step 4: Invidious
     log.info(f"[Resolve] Piped miss → Invidious for '{q}'")
-    inv_result = fetch_from_invidious(q, title=q, artist=artist)
-    if inv_result and inv_result.get('url'):
-        return jsonify({'success': True, 'token': token, 'url': f"/api/stream?url={quote(inv_result['url'], safe='')}", 'quality': inv_result['quality'], 'title': inv_result['title'], 'artist': inv_result['artist'], 'image': inv_result.get('image', ''), 'source': 'invidious'})
+    inv = fetch_from_invidious(q, title=q, artist=artist)
+    if inv and inv.get('url'):
+        return jsonify({
+            'success': True, 'token': token,
+            'url': f"/api/stream?url={quote(inv['url'], safe='')}",
+            'quality': inv['quality'], 'title': inv['title'],
+            'artist': inv['artist'], 'image': inv.get('image', ''), 'source': 'invidious'
+        })
+
     log.info(f"[Resolve] ✗ All sources failed for '{q}'")
     return jsonify({'success': False, 'url': None, 'token': token})
 
@@ -792,7 +1143,7 @@ def _is_allowed_domain(domain):
     return False
 
 @app.route('/api/stream')
-@limiter.limit("120 per minute")
+@limiter.limit("180 per minute")
 def stream_audio():
     url = request.args.get('url', '').strip()
     if not url: return jsonify({'error': 'Missing URL'}), 400
@@ -805,13 +1156,23 @@ def stream_audio():
             return jsonify({'error': 'Domain not allowed'}), 403
     except Exception: return jsonify({'error': 'Invalid URL'}), 400
     try:
-        req_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', 'Accept': 'audio/mpeg,audio/webm,audio/ogg,audio/*;q=0.9,*/*;q=0.5', 'Accept-Encoding': 'identity', 'Connection': 'keep-alive'}
+        req_headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'Accept': 'audio/mpeg,audio/webm,audio/ogg,audio/*;q=0.9,*/*;q=0.5',
+            'Accept-Encoding': 'identity',
+            'Connection': 'keep-alive'
+        }
         range_header = request.headers.get('Range')
         if range_header: req_headers['Range'] = range_header
         upstream = requests.get(url, headers=req_headers, stream=True, timeout=60, allow_redirects=True)
         excluded = {'content-encoding', 'transfer-encoding', 'connection'}
         resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in excluded}
-        resp_headers.update({'Access-Control-Allow-Origin': '*', 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})
+        resp_headers.update({
+            'Access-Control-Allow-Origin': '*',
+            'Accept-Ranges': 'bytes',
+            'Cache-Control': 'no-store',
+            'X-Content-Type-Options': 'nosniff'
+        })
         if 'content-type' not in {k.lower() for k in resp_headers}: resp_headers['Content-Type'] = 'audio/mpeg'
         def generate():
             try:
@@ -833,8 +1194,10 @@ def download_song():
     artist  = request.args.get('artist', '').strip()
     quality = request.args.get('quality', 'full').strip()
     if not q: return jsonify({'error': 'Missing query'}), 400
+
     stream_url = None; content_type = 'audio/mpeg'
     filename_base = f"{q} - {artist}".strip(' -') if artist else q
+
     for query in build_query_variants(q, artist, ''):
         result = fetch_saavn_parallel(query)
         if result and result.get('url'):
@@ -847,15 +1210,30 @@ def download_song():
             log.info(f"[Download] JioSaavn → '{result['title']}' quality={result.get('quality')}")
             filename_base = f"{result['title']} - {result['artist']}".strip(' -')
             break
+
+    if not stream_url:
+        yt = fetch_from_ytdlp(q, artist)
+        if yt and yt.get('url'):
+            stream_url = yt['url']
+            filename_base = f"{yt['title']} - {yt['artist']}".strip(' -')
+            content_type = 'audio/webm'
+
     if not stream_url:
         piped = fetch_from_piped(q, title=q, artist=artist)
         if piped and piped.get('url'):
-            stream_url = piped['url']; filename_base = f"{piped['title']} - {piped['artist']}".strip(' -'); content_type = 'audio/webm'
+            stream_url = piped['url']
+            filename_base = f"{piped['title']} - {piped['artist']}".strip(' -')
+            content_type = 'audio/webm'
+
     if not stream_url:
         inv = fetch_from_invidious(q, title=q, artist=artist)
         if inv and inv.get('url'):
-            stream_url = inv['url']; filename_base = f"{inv['title']} - {inv['artist']}".strip(' -'); content_type = 'audio/webm'
+            stream_url = inv['url']
+            filename_base = f"{inv['title']} - {inv['artist']}".strip(' -')
+            content_type = 'audio/webm'
+
     if not stream_url: return jsonify({'error': 'Song not found on any source'}), 404
+
     try:
         clean_name = re.sub(r'[/\\?%*:|"<>]', '-', filename_base)
         headers    = {'User-Agent': 'Mozilla/5.0', 'Accept': 'audio/*,*/*;q=0.8', 'Accept-Encoding': 'identity'}
@@ -864,7 +1242,11 @@ def download_song():
         actual_ct  = upstream.headers.get('Content-Type', content_type)
         ext        = 'webm' if 'webm' in actual_ct else ('m4a' if ('mp4' in actual_ct or 'm4a' in actual_ct) else 'mp3')
         filename   = f"{clean_name}.{ext}"
-        resp_headers = {'Content-Disposition': f'attachment; filename="{filename}"', 'Content-Type': actual_ct, 'Accept-Ranges': 'bytes', 'Access-Control-Allow-Origin': '*'}
+        resp_headers = {
+            'Content-Disposition': f'attachment; filename="{filename}"',
+            'Content-Type': actual_ct, 'Accept-Ranges': 'bytes',
+            'Access-Control-Allow-Origin': '*'
+        }
         if 'Content-Length' in upstream.headers: resp_headers['Content-Length'] = upstream.headers['Content-Length']
         def generate():
             try:
@@ -877,7 +1259,7 @@ def download_song():
         return jsonify({'error': str(e)}), 500
 
 # ═══════════════════════════════════════════════════════════════
-# GOOGLE AUTH + PREMIUM SYNC ENDPOINTS
+# GOOGLE AUTH + SYNC ENDPOINTS
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/auth/google', methods=['POST'])
 @limiter.limit("20 per minute")
@@ -953,19 +1335,12 @@ def get_playback_state():
     if not sub:
         return jsonify({'error': 'Unauthorized'}), 401
     with get_db() as conn:
-        row = conn.execute(
-            'SELECT * FROM playback_state WHERE google_sub = ?', (sub,)
-        ).fetchone()
+        row = conn.execute('SELECT * FROM playback_state WHERE google_sub = ?', (sub,)).fetchone()
     if row:
         return jsonify({
-            'success'   : True,
-            'songId'    : row['song_id'],
-            'songTitle' : row['song_title'],
-            'artist'    : row['artist'],
-            'artUrl'    : row['art_url'],
-            'progress'  : row['progress'],
-            'device'    : row['device'],
-            'updatedAt' : row['updated_at'],
+            'success': True, 'songId': row['song_id'], 'songTitle': row['song_title'],
+            'artist': row['artist'], 'artUrl': row['art_url'], 'progress': row['progress'],
+            'device': row['device'], 'updatedAt': row['updated_at']
         })
     return jsonify({'success': False})
 
@@ -996,7 +1371,10 @@ def poll_tv_pairing():
             conn.execute('DELETE FROM tv_pairing WHERE pairing_code = ?', (code,))
             conn.commit()
             if user:
-                return jsonify({'status': 'authorized', 'user': {'sub': user['google_sub'], 'name': user['name'], 'email': user['email'], 'picture': user['picture']}})
+                return jsonify({'status': 'authorized', 'user': {
+                    'sub': user['google_sub'], 'name': user['name'],
+                    'email': user['email'], 'picture': user['picture']
+                }})
     return jsonify({'status': 'pending'})
 
 @app.route('/api/auth/tv-verify-mobile', methods=['POST'])
@@ -1050,9 +1428,7 @@ def admin_users():
     if not hmac.compare_digest(secret, ADMIN_KEY):
         return jsonify({'error': 'Unauthorized'}), 401
     with get_db() as conn:
-        rows = conn.execute(
-            'SELECT name, email, picture, created_at FROM users ORDER BY created_at DESC'
-        ).fetchall()
+        rows = conn.execute('SELECT name, email, picture, created_at FROM users ORDER BY created_at DESC').fetchall()
     return jsonify({'users': [dict(r) for r in rows], 'total': len(rows)})
 
 # ═══════════════════════════════════════════════════════════════
@@ -1060,7 +1436,15 @@ def admin_users():
 # ═══════════════════════════════════════════════════════════════
 @app.route('/health')
 def health():
-    return jsonify({'status': 'ok', 'sources': ['saavn', 'piped', 'invidious'], 'auth': 'google-oauth'})
+    healthy_mirrors = [m for m in SAAVN_MIRRORS if _mirror_ok(m)]
+    return jsonify({
+        'status':          'ok',
+        'sources':         ['saavn', 'yt-dlp', 'piped', 'invidious'],
+        'auth':            'google-oauth',
+        'healthy_mirrors': len(healthy_mirrors),
+        'total_mirrors':   len(SAAVN_MIRRORS),
+        'play_endpoint':   '/api/play?id=SONG_ID  (fresh URL, never expires)',
+    })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 7700))
