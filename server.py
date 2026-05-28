@@ -10,6 +10,7 @@ import string
 import secrets
 import hmac
 import hashlib
+import time
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse, quote
@@ -23,7 +24,6 @@ from google.auth.transport import requests as google_requests
 BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
 DB_PATH   = os.path.join(BASE_DIR, 'aurum_cloud.db')
 
-# ── Read once at startup; crash early if missing ──────────────────────────────
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 ADMIN_KEY        = os.environ.get('ADMIN_KEY', '')
 
@@ -48,8 +48,8 @@ def get_real_ip():
         request.remote_addr or '127.0.0.1'
     )
 
-limiter     = Limiter(get_real_ip, app=app, default_limits=[], storage_uri="memory://")
-_executor   = ThreadPoolExecutor(max_workers=8)
+limiter    = Limiter(get_real_ip, app=app, default_limits=[], storage_uri="memory://")
+_executor  = ThreadPoolExecutor(max_workers=8)
 _google_req = google_requests.Request()
 
 # ═══════════════════════════════════════════════════════════════
@@ -58,7 +58,10 @@ _google_req = google_requests.Request()
 def _verify_google_jwt(credential: str) -> dict | None:
     try:
         payload = id_token.verify_oauth2_token(
-            credential, _google_req, GOOGLE_CLIENT_ID, clock_skew_in_seconds=10,
+            credential,
+            _google_req,
+            GOOGLE_CLIENT_ID,
+            clock_skew_in_seconds=10,
         )
         if payload.get('iss') not in ('accounts.google.com', 'https://accounts.google.com'):
             log.warning('[Auth] JWT iss mismatch')
@@ -67,6 +70,7 @@ def _verify_google_jwt(credential: str) -> dict | None:
     except Exception as e:
         log.warning(f'[Auth] JWT verify failed: {e}')
         return None
+
 
 def _extract_bearer_sub(auth_header: str) -> str | None:
     if not auth_header or not auth_header.startswith('Bearer '):
@@ -78,6 +82,7 @@ def _extract_bearer_sub(auth_header: str) -> str | None:
     if not payload:
         return None
     return payload.get('sub', '') or None
+
 
 # ═══════════════════════════════════════════════════════════════
 # DATABASE
@@ -149,13 +154,6 @@ INVIDIOUS_INSTANCES = [
     'https://y.com.sb',
 ]
 
-# Cobalt instances — tried in order, first success wins
-COBALT_INSTANCES = [
-    'https://api.cobalt.tools',
-    'https://cobalt.api.lostluma.dev',
-    'https://cobalt.ggtyler.dev',
-]
-
 ALLOWED_STREAM_DOMAINS = [
     'akamaized.net', 'jiocdn.com', 'saavncdn.com',
     'cf.saavncdn.com', 'aac.saavncdn.com', 'static.saavncdn.com',
@@ -164,9 +162,6 @@ ALLOWED_STREAM_DOMAINS = [
     'rr1.sn-', 'rr2.sn-', 'rr3.sn-', 'rr4.sn-',
     'r1.sn-', 'r2.sn-', 'r3.sn-', 'r4.sn-',
     'r5.sn-', 'r6.sn-', 'r7.sn-',
-    # Cobalt CDN domains
-    'cobalt.tools', 'lostluma.dev', 'ggtyler.dev',
-    'cdn.discordapp.com', 'media.discordapp.net',
 ]
 
 QUALITY_RANK = {
@@ -189,14 +184,27 @@ NINETIES_TRIGGERS = [
     'classic', 'nineties', 'throwback', 'evergreen', 'gaane',
 ]
 
-# YouTube trending music queries (India-focused)
-YT_TRENDING_QUERIES = [
-    'trending hindi songs 2024',
-    'bollywood hits trending',
-    'top india music chart',
-    'new hindi songs trending',
-    'viral bollywood songs',
-]
+# ═══════════════════════════════════════════════════════════════
+# SONGS CACHE — in-memory, TTL 5 minutes
+# ═══════════════════════════════════════════════════════════════
+_songs_cache = {}
+CACHE_TTL = 300  # seconds
+
+def _cache_get(key):
+    entry = _songs_cache.get(key)
+    if not entry:
+        return None
+    ts, data = entry
+    if time.time() - ts > CACHE_TTL:
+        del _songs_cache[key]
+        return None
+    return data
+
+def _cache_set(key, data):
+    _songs_cache[key] = (time.time(), data)
+    if len(_songs_cache) > 100:
+        oldest = min(_songs_cache, key=lambda k: _songs_cache[k][0])
+        del _songs_cache[oldest]
 
 # ═══════════════════════════════════════════════════════════════
 # CORS
@@ -383,7 +391,101 @@ def _safe_year(date_str):
     except (ValueError, TypeError): return 0
 
 # ═══════════════════════════════════════════════════════════════
-# SAAVN MIRROR FETCH
+# SAAVN SEARCH — parallel fetch for /api/songs
+# ═══════════════════════════════════════════════════════════════
+def _fetch_saavn_search_mirror(mirror, search_term):
+    """Try all endpoints on one mirror, return raw results list or []."""
+    for endpoint in ['/api/search/songs', '/api/search', '/search/songs']:
+        try:
+            r = requests.get(
+                f'{mirror}{endpoint}',
+                params={'query': search_term, 'q': search_term, 'limit': 20},
+                timeout=6,
+                headers={'User-Agent': 'Mozilla/5.0'}
+            )
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            raw = (
+                data.get('data', {}).get('results') or
+                data.get('results') or
+                data.get('songs', {}).get('results') or []
+            )
+            if raw:
+                return raw
+        except Exception as e:
+            log.warning(f"[SaavnSearch] {mirror}{endpoint} → {e}")
+    return []
+
+def _fetch_saavn_search_parallel(search_term):
+    """Fire 3 random mirrors in parallel, return first valid result."""
+    mirrors = random.sample(SAAVN_MIRRORS, min(3, len(SAAVN_MIRRORS)))
+    futures = {_executor.submit(_fetch_saavn_search_mirror, m, search_term): m for m in mirrors}
+    try:
+        for future in as_completed(futures, timeout=10):
+            try:
+                result = future.result()
+                if result:
+                    for f in futures:
+                        f.cancel()
+                    return result
+            except Exception as e:
+                log.warning(f"[SaavnSearch/Parallel] future error: {e}")
+    except Exception as e:
+        log.error(f"[SaavnSearch/Parallel] timeout: {e}")
+    return []
+
+# ═══════════════════════════════════════════════════════════════
+# NORMALIZE SAAVN SONGS — THE ONLY CHANGED FUNCTION
+# ═══════════════════════════════════════════════════════════════
+def _normalize_saavn_songs(raw_songs):
+    """
+    Convert Saavn song objects to iTunes-compatible shape for frontend.
+
+    FIX: previewUrl is now a real /api/stream proxy URL pointing to the
+    best-quality audio from Saavn's downloadUrl list. This means songs play
+    immediately as full-quality audio instead of a 30s iTunes preview.
+    Falls back to empty string (filtered out by frontend) if no audio URL found.
+    """
+    normalized = []
+    for song in raw_songs:
+        title  = song.get('name') or song.get('title', '')
+        artist = song.get('primaryArtists') or song.get('primary_artists') or ''
+        image  = pick_image(song)
+        year   = str(song.get('year') or '0')[:4]
+        dur_ms = int(song.get('duration', 0) or 0) * 1000
+
+        # Extract best-quality audio URL from downloadUrl list
+        raw_urls = song.get('downloadUrl') or song.get('download_url') or []
+        if isinstance(raw_urls, str):
+            raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
+
+        best_url, quality = pick_best_quality(raw_urls)
+
+        # Wrap in /api/stream proxy so CORS + domain restrictions are handled
+        if best_url:
+            stream_url = f"/api/stream?url={quote(best_url, safe='')}"
+        else:
+            # No audio URL available — skip this song entirely
+            # (frontend filters out songs without previewUrl)
+            continue
+
+        normalized.append({
+            'trackId':         song.get('id', ''),
+            'trackName':       title,
+            'artistName':      artist,
+            'artworkUrl100':   image.replace('500x500', '100x100') if image else '',
+            'previewUrl':      stream_url,   # Real full-quality audio stream
+            'trackTimeMillis': dur_ms,
+            'releaseDate':     f"{year}-01-01T00:00:00Z",
+            '_saavnId':        song.get('id', ''),
+            '_quality':        quality,
+            '_source':         'saavn',
+        })
+    return normalized
+
+# ═══════════════════════════════════════════════════════════════
+# SAAVN MIRROR FETCH (for audio resolution via /api/saavn & /api/resolve)
 # ═══════════════════════════════════════════════════════════════
 def fetch_from_mirror(mirror, query, min_score=0.4):
     endpoints = ['/api/search/songs', '/api/search', '/search/songs']
@@ -402,14 +504,15 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
                 data.get('results') or
                 data.get('songs', {}).get('results') or []
             )
-            best_song, best_score = None, -1
+            best_song, best_score, best_duration = None, -1, float('inf')
             for song in results:
                 song_title  = song.get('name') or song.get('title', '')
                 song_artist = song.get('primaryArtists') or song.get('primary_artists') or ''
                 if not has_word_match(query, song_title): continue
-                score = title_score(query, song_title, song_artist)
-                if score > best_score:
-                    best_score = score; best_song = song
+                score    = title_score(query, song_title, song_artist)
+                duration = int(song.get('duration', 999) or 999)
+                if score > best_score or (score == best_score and duration < best_duration):
+                    best_score = score; best_song = song; best_duration = duration
             if not best_song or best_score < min_score: continue
             raw_urls = best_song.get('downloadUrl') or best_song.get('download_url') or []
             if isinstance(raw_urls, str):
@@ -455,75 +558,6 @@ def fetch_saavn_parallel(query):
     return best
 
 # ═══════════════════════════════════════════════════════════════
-# COBALT — YouTube audio extraction (NEW)
-# ═══════════════════════════════════════════════════════════════
-def fetch_from_cobalt(video_id: str) -> dict | None:
-    """
-    Extract audio-only stream URL from YouTube via Cobalt API.
-    Tries multiple Cobalt instances for reliability.
-    Returns dict with url, quality, source='cobalt' or None.
-    """
-    if not video_id:
-        return None
-
-    yt_url = f'https://www.youtube.com/watch?v={video_id}'
-    payload = {
-        'url': yt_url,
-        'downloadMode': 'audio',
-        'audioFormat': 'mp3',
-        'audioBitrate': '128',
-    }
-    headers = {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0',
-    }
-
-    for instance in COBALT_INSTANCES:
-        try:
-            r = requests.post(
-                f'{instance}/',
-                json=payload,
-                headers=headers,
-                timeout=12,
-            )
-            if r.status_code not in (200, 201):
-                log.warning(f"[Cobalt {instance}] HTTP {r.status_code}")
-                continue
-
-            data   = r.json()
-            status = data.get('status', '')
-
-            # Direct stream URL
-            if status in ('stream', 'tunnel', 'redirect') and data.get('url'):
-                log.info(f"[Cobalt] ✓ videoId={video_id} via {instance} status={status}")
-                return {
-                    'url':     data['url'],
-                    'quality': '128kbps',
-                    'source':  'cobalt',
-                }
-
-            # Picker response (multiple streams) — pick first audio
-            if status == 'picker' and data.get('picker'):
-                for item in data['picker']:
-                    if item.get('url'):
-                        log.info(f"[Cobalt] ✓ picker videoId={video_id} via {instance}")
-                        return {
-                            'url':     item['url'],
-                            'quality': '128kbps',
-                            'source':  'cobalt',
-                        }
-
-            log.warning(f"[Cobalt {instance}] Unexpected status: {status} — {data.get('error', {})}")
-
-        except Exception as e:
-            log.warning(f"[Cobalt {instance}] {e}")
-            continue
-
-    log.info(f"[Cobalt] ✗ All instances failed for videoId={video_id}")
-    return None
-
-# ═══════════════════════════════════════════════════════════════
 # PIPED — YouTube full songs
 # ═══════════════════════════════════════════════════════════════
 def fetch_from_piped(query, title='', artist=''):
@@ -559,12 +593,7 @@ def fetch_from_piped(query, title='', artist=''):
             if not best_audio or not best_audio.get('url'): continue
             quality_label = f"{best_bitrate // 1000}kbps" if best_bitrate > 0 else 'unknown'
             log.info(f"[Piped] ✓ '{best.get('title')}' via {instance}")
-            return {
-                'url': best_audio['url'], 'quality': quality_label,
-                'title': best.get('title', title), 'artist': best.get('uploaderName', artist),
-                'image': best.get('thumbnail', ''), 'score': round(best_score, 3),
-                'source': 'piped', 'videoId': video_id,
-            }
+            return {'url': best_audio['url'], 'quality': quality_label, 'title': best.get('title', title), 'artist': best.get('uploaderName', artist), 'image': best.get('thumbnail', ''), 'score': round(best_score, 3), 'source': 'piped'}
         except Exception as e:
             log.warning(f"[Piped {instance}] {e}"); continue
     return None
@@ -601,394 +630,100 @@ def fetch_from_invidious(query, title='', artist=''):
             bitrate = best_fmt.get('bitrate', 0)
             quality_label = f"{bitrate // 1000}kbps" if bitrate > 0 else 'unknown'
             log.info(f"[Invidious] ✓ '{best.get('title')}' via {instance}")
-            return {
-                'url': best_fmt['url'], 'quality': quality_label,
-                'title': best.get('title', title), 'artist': best.get('author', artist),
-                'image': f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg",
-                'score': round(best_score, 3), 'source': 'invidious', 'videoId': video_id,
-            }
+            return {'url': best_fmt['url'], 'quality': quality_label, 'title': best.get('title', title), 'artist': best.get('author', artist), 'image': f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg", 'score': round(best_score, 3), 'source': 'invidious'}
         except Exception as e:
             log.warning(f"[Invidious {instance}] {e}"); continue
     return None
 
 # ═══════════════════════════════════════════════════════════════
-# YOUTUBE SEARCH via Piped (no API key needed) (NEW)
-# ═══════════════════════════════════════════════════════════════
-def _piped_search_raw(query: str, limit: int = 20) -> list:
-    """
-    Search YouTube via Piped instances.
-    Returns list of raw video items with videoId, title, uploaderName, thumbnail, duration.
-    """
-    for instance in PIPED_INSTANCES:
-        try:
-            r = requests.get(
-                f'{instance}/search',
-                params={'q': query, 'filter': 'music_songs'},
-                timeout=8,
-                headers={'User-Agent': 'Mozilla/5.0'},
-            )
-            if r.status_code != 200:
-                continue
-            items = r.json().get('items', [])
-            results = []
-            for item in items:
-                if item.get('type') != 'stream':
-                    continue
-                raw_id = item.get('url', '')
-                video_id = raw_id.replace('/watch?v=', '').strip()
-                if not video_id:
-                    continue
-                duration_s = item.get('duration', 0) or 0
-                results.append({
-                    'videoId':      video_id,
-                    'title':        item.get('title', ''),
-                    'artist':       item.get('uploaderName', ''),
-                    'thumbnail':    item.get('thumbnail', f'https://img.youtube.com/vi/{video_id}/mqdefault.jpg'),
-                    'duration':     duration_s,
-                    'durationText': _fmt_seconds(duration_s),
-                    'views':        item.get('views', 0),
-                })
-                if len(results) >= limit:
-                    break
-            if results:
-                log.info(f"[YT Search] ✓ '{query}' → {len(results)} results via {instance}")
-                return results
-        except Exception as e:
-            log.warning(f"[YT Search {instance}] {e}")
-            continue
-    return []
-
-def _invidious_search_raw(query: str, limit: int = 20) -> list:
-    """
-    Fallback YouTube search via Invidious.
-    """
-    for instance in INVIDIOUS_INSTANCES:
-        try:
-            r = requests.get(
-                f'{instance}/api/v1/search',
-                params={'q': query, 'type': 'video', 'page': 1},
-                timeout=8,
-                headers={'User-Agent': 'Mozilla/5.0'},
-            )
-            if r.status_code != 200:
-                continue
-            items = r.json()
-            results = []
-            for item in items:
-                video_id = item.get('videoId', '')
-                if not video_id:
-                    continue
-                duration_s = item.get('lengthSeconds', 0) or 0
-                results.append({
-                    'videoId':      video_id,
-                    'title':        item.get('title', ''),
-                    'artist':       item.get('author', ''),
-                    'thumbnail':    f'https://img.youtube.com/vi/{video_id}/mqdefault.jpg',
-                    'duration':     duration_s,
-                    'durationText': _fmt_seconds(duration_s),
-                    'views':        item.get('viewCount', 0),
-                })
-                if len(results) >= limit:
-                    break
-            if results:
-                log.info(f"[YT Search Inv] ✓ '{query}' → {len(results)} results via {instance}")
-                return results
-        except Exception as e:
-            log.warning(f"[YT Search Inv {instance}] {e}")
-            continue
-    return []
-
-def _fmt_seconds(s: int) -> str:
-    s = int(s or 0)
-    m, sec = divmod(s, 60)
-    if m >= 60:
-        h, m = divmod(m, 60)
-        return f"{h}:{m:02d}:{sec:02d}"
-    return f"{m}:{sec:02d}"
-
-# ═══════════════════════════════════════════════════════════════
-# ITUNES SEARCH
+# /api/songs — PRIMARY SEARCH (Saavn-first, iTunes fallback for English)
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/songs')
 @limiter.limit("60 per minute")
 def get_songs():
-    q           = request.args.get('q', 'top songs').strip()
-    era         = request.args.get('era', '').strip()
-    is_90s      = (era == '90s') or any(t in q.lower() for t in NINETIES_TRIGGERS)
+    q      = request.args.get('q', 'top bollywood songs').strip()
+    era    = request.args.get('era', '').strip()
+    is_90s = (era == '90s') or any(t in q.lower() for t in NINETIES_TRIGGERS)
     search_term = random.choice(NINETIES_SEEDS) if is_90s else q
+
+    cache_key = f"songs:{search_term.lower()}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        log.info(f"[Songs] Cache hit → '{search_term}'")
+        return jsonify({'results': cached, '_cached': True})
+
+    raw = _fetch_saavn_search_parallel(search_term)
+
+    if raw:
+        normalized = _normalize_saavn_songs(raw)
+        if is_90s:
+            filtered = [s for s in normalized if 1990 <= _safe_year(s.get('releaseDate')) <= 1999]
+            normalized = filtered if len(filtered) >= 5 else normalized
+            random.shuffle(normalized)
+        result = normalized[:30]
+        _cache_set(cache_key, result)
+        log.info(f"[Songs] Saavn → '{search_term}' — {len(result)} songs")
+        return jsonify({'results': result})
+
+    # Saavn miss → iTunes fallback
+    log.info(f"[Songs] Saavn miss → iTunes fallback for '{search_term}'")
     try:
-        r = requests.get('https://itunes.apple.com/search', params={'term': search_term, 'media': 'music', 'entity': 'song', 'limit': 50, 'country': 'IN'}, timeout=15)
+        r = requests.get(
+            'https://itunes.apple.com/search',
+            params={'term': search_term, 'media': 'music', 'entity': 'song', 'limit': 50, 'country': 'IN'},
+            timeout=15
+        )
         r.raise_for_status()
         results = r.json().get('results', [])
         if is_90s:
             filtered = [s for s in results if s.get('previewUrl') and 1990 <= _safe_year(s.get('releaseDate')) <= 1999]
             if len(filtered) < 5: filtered = [s for s in results if s.get('previewUrl')]
             random.shuffle(filtered)
-            return jsonify({'results': filtered[:30]})
-        return jsonify({'results': [s for s in results if s.get('previewUrl')]})
+            result = filtered[:30]
+        else:
+            result = [s for s in results if s.get('previewUrl')]
+        _cache_set(cache_key, result)
+        return jsonify({'results': result})
     except Exception as e:
-        log.error(f"[iTunes] Search failed '{search_term}': {e}")
+        log.error(f"[Songs/iTunes] fallback failed '{search_term}': {e}")
         return jsonify({'results': [], 'error': str(e)})
+
 
 @app.route('/api/songs/90s')
 @limiter.limit("60 per minute")
 def get_90s_songs():
-    seed = random.choice(NINETIES_SEEDS)
+    seed      = random.choice(NINETIES_SEEDS)
+    cache_key = f"songs:{seed.lower()}"
+    cached    = _cache_get(cache_key)
+    if cached is not None:
+        return jsonify({'results': cached, 'seed': seed, '_cached': True})
+
+    raw = _fetch_saavn_search_parallel(seed)
+    if raw:
+        normalized = _normalize_saavn_songs(raw)
+        filtered   = [s for s in normalized if 1990 <= _safe_year(s.get('releaseDate')) <= 1999]
+        result     = (filtered if len(filtered) >= 5 else normalized)[:30]
+        random.shuffle(result)
+        _cache_set(cache_key, result)
+        return jsonify({'results': result, 'seed': seed})
+
     try:
-        r = requests.get('https://itunes.apple.com/search', params={'term': seed, 'media': 'music', 'entity': 'song', 'limit': 50, 'country': 'IN'}, timeout=15)
+        r = requests.get(
+            'https://itunes.apple.com/search',
+            params={'term': seed, 'media': 'music', 'entity': 'song', 'limit': 50, 'country': 'IN'},
+            timeout=15
+        )
         r.raise_for_status()
-        results = r.json().get('results', [])
+        results  = r.json().get('results', [])
         filtered = [s for s in results if s.get('previewUrl') and 1990 <= _safe_year(s.get('releaseDate')) <= 1999]
         if len(filtered) < 5: filtered = [s for s in results if s.get('previewUrl')]
         random.shuffle(filtered)
-        return jsonify({'results': filtered[:30], 'seed': seed})
+        result = filtered[:30]
+        _cache_set(cache_key, result)
+        return jsonify({'results': result, 'seed': seed})
     except Exception as e:
-        log.error(f"[iTunes/90s] Seed '{seed}' failed: {e}")
+        log.error(f"[90s/iTunes] Seed '{seed}' failed: {e}")
         return jsonify({'results': [], 'error': str(e)})
-
-# ═══════════════════════════════════════════════════════════════
-# YOUTUBE ENDPOINTS (NEW)
-# ═══════════════════════════════════════════════════════════════
-
-@app.route('/api/yt/search')
-@limiter.limit("40 per minute")
-def yt_search():
-    """
-    Search YouTube music. Returns list of video items.
-    Query params: q (required), limit (optional, default 20)
-    """
-    q     = request.args.get('q', '').strip()
-    limit = min(int(request.args.get('limit', 20)), 50)
-    if not q:
-        return jsonify({'success': False, 'results': [], 'error': 'Missing query'}), 400
-
-    # Try Piped first, fallback to Invidious
-    results = _piped_search_raw(q, limit)
-    if not results:
-        log.info(f"[YT Search] Piped failed → trying Invidious for '{q}'")
-        results = _invidious_search_raw(q, limit)
-
-    return jsonify({'success': True, 'results': results, 'query': q, 'count': len(results)})
-
-
-@app.route('/api/yt/trending')
-@limiter.limit("20 per minute")
-def yt_trending():
-    """
-    Get trending YouTube music for India.
-    Uses Piped /trending endpoint, falls back to search.
-    """
-    # Try Piped trending endpoint first
-    for instance in PIPED_INSTANCES:
-        try:
-            r = requests.get(
-                f'{instance}/trending',
-                params={'region': 'IN'},
-                timeout=10,
-                headers={'User-Agent': 'Mozilla/5.0'},
-            )
-            if r.status_code != 200:
-                continue
-            items = r.json()
-            results = []
-            for item in items:
-                if item.get('type') != 'stream':
-                    continue
-                raw_id   = item.get('url', '')
-                video_id = raw_id.replace('/watch?v=', '').strip()
-                if not video_id:
-                    continue
-                # Only include music-ish content (filter by duration 2-10 min)
-                duration_s = item.get('duration', 0) or 0
-                if not (120 <= duration_s <= 600):
-                    continue
-                results.append({
-                    'videoId':      video_id,
-                    'title':        item.get('title', ''),
-                    'artist':       item.get('uploaderName', ''),
-                    'thumbnail':    item.get('thumbnail', f'https://img.youtube.com/vi/{video_id}/mqdefault.jpg'),
-                    'duration':     duration_s,
-                    'durationText': _fmt_seconds(duration_s),
-                    'views':        item.get('views', 0),
-                })
-                if len(results) >= 30:
-                    break
-            if results:
-                log.info(f"[YT Trending] ✓ {len(results)} results via {instance}")
-                return jsonify({'success': True, 'results': results, 'source': 'piped_trending'})
-        except Exception as e:
-            log.warning(f"[YT Trending {instance}] {e}")
-            continue
-
-    # Fallback: search for trending queries
-    log.info("[YT Trending] Piped trending failed → using search fallback")
-    q       = random.choice(YT_TRENDING_QUERIES)
-    results = _piped_search_raw(q, 20)
-    if not results:
-        results = _invidious_search_raw(q, 20)
-
-    return jsonify({'success': bool(results), 'results': results, 'source': 'search_fallback', 'query': q})
-
-
-@app.route('/api/yt/suggestions')
-@limiter.limit("40 per minute")
-def yt_suggestions():
-    """
-    Get related videos for a given videoId (for Up Next / autoplay).
-    Query params: videoId (required)
-    """
-    video_id = request.args.get('videoId', '').strip()
-    if not video_id:
-        return jsonify({'success': False, 'results': [], 'error': 'Missing videoId'}), 400
-
-    for instance in PIPED_INSTANCES:
-        try:
-            r = requests.get(
-                f'{instance}/streams/{video_id}',
-                timeout=10,
-                headers={'User-Agent': 'Mozilla/5.0'},
-            )
-            if r.status_code != 200:
-                continue
-            data         = r.json()
-            related_raw  = data.get('relatedStreams', [])
-            results      = []
-            for item in related_raw:
-                if item.get('type') != 'stream':
-                    continue
-                raw_id   = item.get('url', '')
-                vid      = raw_id.replace('/watch?v=', '').strip()
-                if not vid:
-                    continue
-                duration_s = item.get('duration', 0) or 0
-                results.append({
-                    'videoId':      vid,
-                    'title':        item.get('title', ''),
-                    'artist':       item.get('uploaderName', ''),
-                    'thumbnail':    item.get('thumbnail', f'https://img.youtube.com/vi/{vid}/mqdefault.jpg'),
-                    'duration':     duration_s,
-                    'durationText': _fmt_seconds(duration_s),
-                    'views':        item.get('views', 0),
-                })
-                if len(results) >= 15:
-                    break
-            if results:
-                log.info(f"[YT Suggestions] ✓ {len(results)} for videoId={video_id} via {instance}")
-                return jsonify({'success': True, 'results': results})
-        except Exception as e:
-            log.warning(f"[YT Suggestions {instance}] {e}")
-            continue
-
-    return jsonify({'success': False, 'results': [], 'error': 'No suggestions found'})
-
-
-@app.route('/api/yt/stream')
-@limiter.limit("60 per minute")
-def yt_stream_url():
-    """
-    Get audio stream URL for a YouTube videoId.
-    Chain: Cobalt → Piped → Invidious
-    Query params: videoId (required), title (optional), artist (optional)
-    """
-    video_id = request.args.get('videoId', '').strip()
-    title    = request.args.get('title', '').strip()
-    artist   = request.args.get('artist', '').strip()
-
-    if not video_id:
-        return jsonify({'success': False, 'error': 'Missing videoId'}), 400
-
-    # ── Step 1: Cobalt (most reliable audio extraction) ──────
-    cobalt_result = fetch_from_cobalt(video_id)
-    if cobalt_result and cobalt_result.get('url'):
-        log.info(f"[YT Stream] ✓ Cobalt — videoId={video_id}")
-        return jsonify({
-            'success':  True,
-            'url':      f"/api/stream?url={quote(cobalt_result['url'], safe='')}",
-            'quality':  cobalt_result['quality'],
-            'source':   'cobalt',
-            'videoId':  video_id,
-            'title':    title,
-            'artist':   artist,
-            'image':    f'https://img.youtube.com/vi/{video_id}/mqdefault.jpg',
-        })
-
-    # ── Step 2: Piped audio streams ──────────────────────────
-    log.info(f"[YT Stream] Cobalt miss → Piped for videoId={video_id}")
-    for instance in PIPED_INSTANCES:
-        try:
-            r = requests.get(
-                f'{instance}/streams/{video_id}',
-                timeout=10,
-                headers={'User-Agent': 'Mozilla/5.0'},
-            )
-            if r.status_code != 200:
-                continue
-            audio_streams = r.json().get('audioStreams', [])
-            if not audio_streams:
-                continue
-            best_audio   = None
-            best_bitrate = 0
-            for stream in audio_streams:
-                bitrate = stream.get('bitrate', 0)
-                fmt     = stream.get('format', '').lower()
-                if bitrate > best_bitrate or (bitrate == best_bitrate and 'm4a' in fmt):
-                    best_bitrate = bitrate
-                    best_audio   = stream
-            if best_audio and best_audio.get('url'):
-                quality_label = f"{best_bitrate // 1000}kbps" if best_bitrate > 0 else 'unknown'
-                log.info(f"[YT Stream] ✓ Piped — videoId={video_id} {quality_label} via {instance}")
-                return jsonify({
-                    'success': True,
-                    'url':     f"/api/stream?url={quote(best_audio['url'], safe='')}",
-                    'quality': quality_label,
-                    'source':  'piped',
-                    'videoId': video_id,
-                    'title':   title,
-                    'artist':  artist,
-                    'image':   f'https://img.youtube.com/vi/{video_id}/mqdefault.jpg',
-                })
-        except Exception as e:
-            log.warning(f"[YT Stream Piped {instance}] {e}")
-            continue
-
-    # ── Step 3: Invidious ─────────────────────────────────────
-    log.info(f"[YT Stream] Piped miss → Invidious for videoId={video_id}")
-    for instance in INVIDIOUS_INSTANCES:
-        try:
-            r = requests.get(
-                f'{instance}/api/v1/videos/{video_id}',
-                params={'fields': 'adaptiveFormats,title,author'},
-                timeout=10,
-                headers={'User-Agent': 'Mozilla/5.0'},
-            )
-            if r.status_code != 200:
-                continue
-            formats       = r.json().get('adaptiveFormats', [])
-            audio_formats = [f for f in formats if f.get('type', '').startswith('audio')]
-            if not audio_formats:
-                continue
-            best_fmt = max(audio_formats, key=lambda f: f.get('bitrate', 0))
-            if not best_fmt.get('url'):
-                continue
-            bitrate       = best_fmt.get('bitrate', 0)
-            quality_label = f"{bitrate // 1000}kbps" if bitrate > 0 else 'unknown'
-            log.info(f"[YT Stream] ✓ Invidious — videoId={video_id} via {instance}")
-            return jsonify({
-                'success': True,
-                'url':     f"/api/stream?url={quote(best_fmt['url'], safe='')}",
-                'quality': quality_label,
-                'source':  'invidious',
-                'videoId': video_id,
-                'title':   title,
-                'artist':  artist,
-                'image':   f'https://img.youtube.com/vi/{video_id}/mqdefault.jpg',
-            })
-        except Exception as e:
-            log.warning(f"[YT Stream Invidious {instance}] {e}")
-            continue
-
-    log.info(f"[YT Stream] ✗ All sources failed for videoId={video_id}")
-    return jsonify({'success': False, 'error': 'Could not extract audio stream', 'videoId': video_id})
 
 # ═══════════════════════════════════════════════════════════════
 # JIOSAAVN ENDPOINT
@@ -1018,7 +753,7 @@ def get_saavn_song():
     return jsonify({'success': False, 'url': None, 'token': token})
 
 # ═══════════════════════════════════════════════════════════════
-# RESOLVE — Saavn → Cobalt → Piped → Invidious chain (UPDATED)
+# RESOLVE — Saavn → Piped → Invidious chain
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/resolve')
 @limiter.limit("80 per minute")
@@ -1029,75 +764,21 @@ def resolve_song():
     token    = request.args.get('token', '').strip()
     if not q:
         return jsonify({'success': False, 'url': None, 'token': token})
-
-    # ── Step 1: JioSaavn ─────────────────────────────────────
     for query in build_query_variants(q, artist, fallback):
         result = fetch_saavn_parallel(query)
         if result and not has_word_match(q, result['title']):
             if result.get('score', 0) < 0.8: result = None
         if result:
             log.info(f"[Resolve] ✓ JioSaavn — '{result['title']}' quality={result['quality']}")
-            return jsonify({
-                'success': True, 'token': token,
-                'url':     f"/api/stream?url={quote(result['url'], safe='')}",
-                'quality': result['quality'], 'title': result['title'],
-                'artist':  result['artist'],  'image': result.get('image', ''),
-                'source':  'saavn',
-            })
-
-    # ── Step 2: Piped search → Cobalt audio ──────────────────
-    log.info(f"[Resolve] JioSaavn miss → Piped+Cobalt for '{q}'")
-    piped_search = fetch_from_piped(q, title=q, artist=artist)
-    if piped_search:
-        video_id = piped_search.get('videoId', '')
-        if video_id:
-            cobalt = fetch_from_cobalt(video_id)
-            if cobalt and cobalt.get('url'):
-                log.info(f"[Resolve] ✓ Piped search + Cobalt audio — '{piped_search['title']}'")
-                return jsonify({
-                    'success': True, 'token': token,
-                    'url':     f"/api/stream?url={quote(cobalt['url'], safe='')}",
-                    'quality': cobalt['quality'],
-                    'title':   piped_search['title'], 'artist': piped_search['artist'],
-                    'image':   piped_search.get('image', f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg"),
-                    'source':  'cobalt',
-                })
-        # Piped direct stream (no Cobalt)
-        if piped_search.get('url'):
-            return jsonify({
-                'success': True, 'token': token,
-                'url':     f"/api/stream?url={quote(piped_search['url'], safe='')}",
-                'quality': piped_search['quality'], 'title': piped_search['title'],
-                'artist':  piped_search['artist'],  'image': piped_search.get('image', ''),
-                'source':  'piped',
-            })
-
-    # ── Step 3: Invidious ─────────────────────────────────────
+            return jsonify({'success': True, 'token': token, 'url': f"/api/stream?url={quote(result['url'], safe='')}", 'quality': result['quality'], 'title': result['title'], 'artist': result['artist'], 'image': result.get('image', ''), 'source': 'saavn'})
+    log.info(f"[Resolve] JioSaavn miss → Piped for '{q}'")
+    piped_result = fetch_from_piped(q, title=q, artist=artist)
+    if piped_result and piped_result.get('url'):
+        return jsonify({'success': True, 'token': token, 'url': f"/api/stream?url={quote(piped_result['url'], safe='')}", 'quality': piped_result['quality'], 'title': piped_result['title'], 'artist': piped_result['artist'], 'image': piped_result.get('image', ''), 'source': 'piped'})
     log.info(f"[Resolve] Piped miss → Invidious for '{q}'")
     inv_result = fetch_from_invidious(q, title=q, artist=artist)
-    if inv_result:
-        video_id = inv_result.get('videoId', '')
-        if video_id:
-            cobalt = fetch_from_cobalt(video_id)
-            if cobalt and cobalt.get('url'):
-                log.info(f"[Resolve] ✓ Invidious search + Cobalt audio — '{inv_result['title']}'")
-                return jsonify({
-                    'success': True, 'token': token,
-                    'url':     f"/api/stream?url={quote(cobalt['url'], safe='')}",
-                    'quality': cobalt['quality'],
-                    'title':   inv_result['title'], 'artist': inv_result['artist'],
-                    'image':   inv_result.get('image', ''),
-                    'source':  'cobalt',
-                })
-        if inv_result.get('url'):
-            return jsonify({
-                'success': True, 'token': token,
-                'url':     f"/api/stream?url={quote(inv_result['url'], safe='')}",
-                'quality': inv_result['quality'], 'title': inv_result['title'],
-                'artist':  inv_result['artist'],  'image': inv_result.get('image', ''),
-                'source':  'invidious',
-            })
-
+    if inv_result and inv_result.get('url'):
+        return jsonify({'success': True, 'token': token, 'url': f"/api/stream?url={quote(inv_result['url'], safe='')}", 'quality': inv_result['quality'], 'title': inv_result['title'], 'artist': inv_result['artist'], 'image': inv_result.get('image', ''), 'source': 'invidious'})
     log.info(f"[Resolve] ✗ All sources failed for '{q}'")
     return jsonify({'success': False, 'url': None, 'token': token})
 
@@ -1124,25 +805,14 @@ def stream_audio():
             return jsonify({'error': 'Domain not allowed'}), 403
     except Exception: return jsonify({'error': 'Invalid URL'}), 400
     try:
-        req_headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-            'Accept': 'audio/mpeg,audio/webm,audio/ogg,audio/*;q=0.9,*/*;q=0.5',
-            'Accept-Encoding': 'identity',
-            'Connection': 'keep-alive',
-        }
+        req_headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', 'Accept': 'audio/mpeg,audio/webm,audio/ogg,audio/*;q=0.9,*/*;q=0.5', 'Accept-Encoding': 'identity', 'Connection': 'keep-alive'}
         range_header = request.headers.get('Range')
         if range_header: req_headers['Range'] = range_header
         upstream = requests.get(url, headers=req_headers, stream=True, timeout=60, allow_redirects=True)
         excluded = {'content-encoding', 'transfer-encoding', 'connection'}
         resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in excluded}
-        resp_headers.update({
-            'Access-Control-Allow-Origin': '*',
-            'Accept-Ranges': 'bytes',
-            'Cache-Control': 'no-store',
-            'X-Content-Type-Options': 'nosniff',
-        })
-        if 'content-type' not in {k.lower() for k in resp_headers}:
-            resp_headers['Content-Type'] = 'audio/mpeg'
+        resp_headers.update({'Access-Control-Allow-Origin': '*', 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff'})
+        if 'content-type' not in {k.lower() for k in resp_headers}: resp_headers['Content-Type'] = 'audio/mpeg'
         def generate():
             try:
                 for chunk in upstream.iter_content(chunk_size=65536):
@@ -1162,64 +832,30 @@ def download_song():
     q       = request.args.get('q', '').strip()
     artist  = request.args.get('artist', '').strip()
     quality = request.args.get('quality', 'full').strip()
-    # YouTube download via videoId
-    video_id = request.args.get('videoId', '').strip()
-
-    if not q and not video_id:
-        return jsonify({'error': 'Missing query or videoId'}), 400
-
+    if not q: return jsonify({'error': 'Missing query'}), 400
     stream_url = None; content_type = 'audio/mpeg'
-    filename_base = f"{q} - {artist}".strip(' -') if artist else (q or video_id)
-
-    # If videoId provided — use Cobalt directly
-    if video_id:
-        cobalt = fetch_from_cobalt(video_id)
-        if cobalt and cobalt.get('url'):
-            stream_url    = cobalt['url']
-            content_type  = 'audio/mpeg'
-            filename_base = q or video_id
-            log.info(f"[Download] Cobalt → videoId={video_id}")
-
-    # Otherwise try Saavn chain
-    if not stream_url and q:
-        for query in build_query_variants(q, artist, ''):
-            result = fetch_saavn_parallel(query)
-            if result and result.get('url'):
-                raw_urls = result.get('_raw_urls', [])
-                if quality == 'gift' and raw_urls:
-                    for item in raw_urls:
-                        if '320' in str(item.get('quality', '')):
-                            stream_url = item.get('url') or item.get('link'); break
-                if not stream_url: stream_url = result['url']
-                log.info(f"[Download] JioSaavn → '{result['title']}' quality={result.get('quality')}")
-                filename_base = f"{result['title']} - {result['artist']}".strip(' -')
-                break
-
-        if not stream_url:
-            piped = fetch_from_piped(q, title=q, artist=artist)
-            if piped:
-                vid = piped.get('videoId', '')
-                if vid:
-                    cobalt = fetch_from_cobalt(vid)
-                    if cobalt and cobalt.get('url'):
-                        stream_url    = cobalt['url']
-                        filename_base = f"{piped['title']} - {piped['artist']}".strip(' -')
-                        log.info(f"[Download] Piped+Cobalt → '{piped['title']}'")
-                if not stream_url and piped.get('url'):
-                    stream_url    = piped['url']
-                    filename_base = f"{piped['title']} - {piped['artist']}".strip(' -')
-                    content_type  = 'audio/webm'
-
-        if not stream_url:
-            inv = fetch_from_invidious(q, title=q, artist=artist)
-            if inv and inv.get('url'):
-                stream_url    = inv['url']
-                filename_base = f"{inv['title']} - {inv['artist']}".strip(' -')
-                content_type  = 'audio/webm'
-
+    filename_base = f"{q} - {artist}".strip(' -') if artist else q
+    for query in build_query_variants(q, artist, ''):
+        result = fetch_saavn_parallel(query)
+        if result and result.get('url'):
+            raw_urls = result.get('_raw_urls', [])
+            if quality == 'gift' and raw_urls:
+                for item in raw_urls:
+                    if '320' in str(item.get('quality', '')):
+                        stream_url = item.get('url') or item.get('link'); break
+            if not stream_url: stream_url = result['url']
+            log.info(f"[Download] JioSaavn → '{result['title']}' quality={result.get('quality')}")
+            filename_base = f"{result['title']} - {result['artist']}".strip(' -')
+            break
     if not stream_url:
-        return jsonify({'error': 'Song not found on any source'}), 404
-
+        piped = fetch_from_piped(q, title=q, artist=artist)
+        if piped and piped.get('url'):
+            stream_url = piped['url']; filename_base = f"{piped['title']} - {piped['artist']}".strip(' -'); content_type = 'audio/webm'
+    if not stream_url:
+        inv = fetch_from_invidious(q, title=q, artist=artist)
+        if inv and inv.get('url'):
+            stream_url = inv['url']; filename_base = f"{inv['title']} - {inv['artist']}".strip(' -'); content_type = 'audio/webm'
+    if not stream_url: return jsonify({'error': 'Song not found on any source'}), 404
     try:
         clean_name = re.sub(r'[/\\?%*:|"<>]', '-', filename_base)
         headers    = {'User-Agent': 'Mozilla/5.0', 'Accept': 'audio/*,*/*;q=0.8', 'Accept-Encoding': 'identity'}
@@ -1228,14 +864,8 @@ def download_song():
         actual_ct  = upstream.headers.get('Content-Type', content_type)
         ext        = 'webm' if 'webm' in actual_ct else ('m4a' if ('mp4' in actual_ct or 'm4a' in actual_ct) else 'mp3')
         filename   = f"{clean_name}.{ext}"
-        resp_headers = {
-            'Content-Disposition': f'attachment; filename="{filename}"',
-            'Content-Type': actual_ct,
-            'Accept-Ranges': 'bytes',
-            'Access-Control-Allow-Origin': '*',
-        }
-        if 'Content-Length' in upstream.headers:
-            resp_headers['Content-Length'] = upstream.headers['Content-Length']
+        resp_headers = {'Content-Disposition': f'attachment; filename="{filename}"', 'Content-Type': actual_ct, 'Accept-Ranges': 'bytes', 'Access-Control-Allow-Origin': '*'}
+        if 'Content-Length' in upstream.headers: resp_headers['Content-Length'] = upstream.headers['Content-Length']
         def generate():
             try:
                 for chunk in upstream.iter_content(chunk_size=65536):
@@ -1249,7 +879,6 @@ def download_song():
 # ═══════════════════════════════════════════════════════════════
 # GOOGLE AUTH + PREMIUM SYNC ENDPOINTS
 # ═══════════════════════════════════════════════════════════════
-
 @app.route('/api/auth/google', methods=['POST'])
 @limiter.limit("20 per minute")
 def handle_google_auth():
@@ -1324,7 +953,9 @@ def get_playback_state():
     if not sub:
         return jsonify({'error': 'Unauthorized'}), 401
     with get_db() as conn:
-        row = conn.execute('SELECT * FROM playback_state WHERE google_sub = ?', (sub,)).fetchone()
+        row = conn.execute(
+            'SELECT * FROM playback_state WHERE google_sub = ?', (sub,)
+        ).fetchone()
     if row:
         return jsonify({
             'success'   : True,
@@ -1419,7 +1050,9 @@ def admin_users():
     if not hmac.compare_digest(secret, ADMIN_KEY):
         return jsonify({'error': 'Unauthorized'}), 401
     with get_db() as conn:
-        rows = conn.execute('SELECT name, email, picture, created_at FROM users ORDER BY created_at DESC').fetchall()
+        rows = conn.execute(
+            'SELECT name, email, picture, created_at FROM users ORDER BY created_at DESC'
+        ).fetchall()
     return jsonify({'users': [dict(r) for r in rows], 'total': len(rows)})
 
 # ═══════════════════════════════════════════════════════════════
@@ -1427,12 +1060,7 @@ def admin_users():
 # ═══════════════════════════════════════════════════════════════
 @app.route('/health')
 def health():
-    return jsonify({
-        'status':  'ok',
-        'sources': ['saavn', 'cobalt', 'piped', 'invidious'],
-        'auth':    'google-oauth',
-        'yt_endpoints': ['/api/yt/search', '/api/yt/trending', '/api/yt/suggestions', '/api/yt/stream'],
-    })
+    return jsonify({'status': 'ok', 'sources': ['saavn', 'piped', 'invidious'], 'auth': 'google-oauth'})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 7700))
