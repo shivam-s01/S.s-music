@@ -155,18 +155,16 @@ _discovered_set = set(_BASE_MIRRORS)
 
 # ═══════════════════════════════════════════════════════════════
 # SELF-HEALING: SOURCE HEALTH TRACKING
-# Tracks fail counts, response times, last-seen-alive for ALL sources
 # ═══════════════════════════════════════════════════════════════
-_source_health = {}   # url → {fails, last_fail, last_ok, avg_ms, total_hits}
+_source_health = {}
 _health_lock   = threading.Lock()
 
 def _health_record_ok(url: str, elapsed_ms: float = 0):
     with _health_lock:
         h = _source_health.setdefault(url, {'fails': 0, 'last_fail': 0, 'last_ok': 0, 'avg_ms': 0, 'total_hits': 0})
-        h['fails']      = max(0, h['fails'] - 1)   # partial recovery
+        h['fails']      = max(0, h['fails'] - 1)
         h['last_ok']    = time.time()
         h['total_hits'] = h.get('total_hits', 0) + 1
-        # rolling average response time
         if elapsed_ms > 0:
             h['avg_ms'] = (h['avg_ms'] * 0.8 + elapsed_ms * 0.2) if h['avg_ms'] else elapsed_ms
 
@@ -177,7 +175,6 @@ def _health_record_fail(url: str):
         h['last_fail']  = time.time()
 
 def _health_score(url: str) -> float:
-    """Higher = better. Used to sort sources by reliability."""
     with _health_lock:
         h = _source_health.get(url, {})
     fails    = h.get('fails', 0)
@@ -186,8 +183,8 @@ def _health_score(url: str) -> float:
     age_ok   = time.time() - last_ok if last_ok else 9999
     score    = 100.0
     score   -= fails * 10
-    score   -= min(age_ok / 60, 50)        # penalize stale sources (max -50)
-    score   -= min(avg_ms / 100, 30)       # penalize slow sources (max -30)
+    score   -= min(age_ok / 60, 50)
+    score   -= min(avg_ms / 100, 30)
     return score
 
 def _is_source_alive(url: str) -> bool:
@@ -196,7 +193,6 @@ def _is_source_alive(url: str) -> bool:
     fails     = h.get('fails', 0)
     last_fail = h.get('last_fail', 0)
     if fails < 5: return True
-    # After 5 fails, cool down 60s before retrying
     if time.time() - last_fail > 60:
         with _health_lock:
             _source_health[url]['fails'] = 0
@@ -303,13 +299,11 @@ def _verify_existing_mirrors():
                 if url in SAAVN_MIRRORS:
                     SAAVN_MIRRORS.remove(url)
                 _discovered_set.discard(url)
-        # Immediately trigger discovery to find replacements
         log.info(f'[SelfHeal] {len(to_remove)} Saavn mirrors died — triggering immediate rediscovery')
         _executor.submit(_discover_mirrors)
 
 # ═══════════════════════════════════════════════════════════════
 # SELF-HEALING: PIPED INSTANCE DISCOVERY
-# Fetches live instance list from official Piped registry
 # ═══════════════════════════════════════════════════════════════
 _BASE_PIPED = [
     'https://pipedapi.kavin.rocks',
@@ -337,7 +331,6 @@ def _test_piped_instance(url: str) -> bool:
     return False
 
 def _heal_piped():
-    """Fetch official Piped instance list and test new ones."""
     global PIPED_INSTANCES
     try:
         r = requests.get('https://piped-instances.kavin.rocks/', timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
@@ -367,7 +360,6 @@ def _heal_piped():
     except Exception as e:
         log.warning(f'[SelfHeal:Piped] Registry fetch failed: {e}')
 
-    # Verify existing — remove dead ones
     dead = []
     with _piped_lock:
         current = list(PIPED_INSTANCES)
@@ -386,7 +378,6 @@ def _heal_piped():
 
 # ═══════════════════════════════════════════════════════════════
 # SELF-HEALING: INVIDIOUS INSTANCE DISCOVERY
-# Fetches live instance list from api.invidious.io
 # ═══════════════════════════════════════════════════════════════
 _BASE_INVIDIOUS = [
     'https://invidious.snopyta.org',
@@ -413,7 +404,6 @@ def _test_invidious_instance(url: str) -> bool:
     return False
 
 def _heal_invidious():
-    """Fetch official Invidious instance list and test new ones."""
     global INVIDIOUS_INSTANCES
     try:
         r = requests.get('https://api.invidious.io/instances.json', params={'sort_by': 'health'}, timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
@@ -421,17 +411,15 @@ def _heal_invidious():
             instances = r.json()
             new_candidates = []
             for inst in instances:
-                # inst is [name, data_dict]
                 if not isinstance(inst, list) or len(inst) < 2: continue
                 data = inst[1]
                 uri  = data.get('uri', '').rstrip('/')
-                # Only HTTPS, only API-enabled instances
                 if not uri.startswith('https'): continue
                 if not data.get('api', False): continue
                 if uri not in _invidious_known:
                     new_candidates.append(uri)
             log.info(f'[SelfHeal:Invidious] Testing {len(new_candidates)} new instances...')
-            futures = {_executor.submit(_test_invidious_instance, u): u for u in new_candidates[:20]}  # test top 20
+            futures = {_executor.submit(_test_invidious_instance, u): u for u in new_candidates[:20]}
             try:
                 for future in as_completed(futures, timeout=40):
                     url = futures[future]
@@ -449,7 +437,6 @@ def _heal_invidious():
     except Exception as e:
         log.warning(f'[SelfHeal:Invidious] Registry fetch failed: {e}')
 
-    # Remove dead ones
     dead = []
     with _invidious_lock:
         current = list(INVIDIOUS_INSTANCES)
@@ -468,12 +455,11 @@ def _heal_invidious():
 
 # ═══════════════════════════════════════════════════════════════
 # SELF-HEALING: SOUNDCLOUD CLIENT ID AUTO-REFRESH
-# SoundCloud embeds a fresh client_id in its JS — we extract it
 # ═══════════════════════════════════════════════════════════════
 SOUNDCLOUD_CLIENT_ID     = os.environ.get('SOUNDCLOUD_CLIENT_ID', 'a3e059563d7fd3372b49b37f00a00bcf')
 _sc_client_id_lock       = threading.Lock()
 _sc_client_id_last_check = 0
-_SC_ID_REFRESH_INTERVAL  = 3600  # refresh every 1 hour
+_SC_ID_REFRESH_INTERVAL  = 3600
 
 def _refresh_soundcloud_client_id():
     global SOUNDCLOUD_CLIENT_ID
@@ -481,13 +467,11 @@ def _refresh_soundcloud_client_id():
         r = requests.get('https://soundcloud.com', timeout=10, headers={'User-Agent': 'Mozilla/5.0'})
         if r.status_code != 200:
             return
-        # Find script URLs embedded in the page
         script_urls = re.findall(r'<script[^>]+src="(https://a-v2\.sndcdn\.com/assets/[^"]+\.js)"', r.text)
-        for script_url in script_urls[-5:]:  # check last 5 scripts (most recent)
+        for script_url in script_urls[-5:]:
             try:
                 sr = requests.get(script_url, timeout=8, headers={'User-Agent': 'Mozilla/5.0'})
                 if sr.status_code != 200: continue
-                # Extract client_id from script
                 match = re.search(r'client_id\s*[:=]\s*["\']([a-zA-Z0-9]{32})["\']', sr.text)
                 if match:
                     new_id = match.group(1)
@@ -510,15 +494,12 @@ def _maybe_refresh_sc_id():
 
 # ═══════════════════════════════════════════════════════════════
 # SELF-HEALING: MASTER HEAL LOOP
-# Runs every 30 min — heals ALL sources automatically
 # ═══════════════════════════════════════════════════════════════
 def _master_heal_loop():
-    # Stagger startup so we don't hammer everything at once
     time.sleep(30)
     while True:
         try:
             log.info('[SelfHeal] Starting full heal cycle...')
-            # Run all healers in parallel
             futures = [
                 _executor.submit(_discover_mirrors),
                 _executor.submit(_verify_existing_mirrors),
@@ -530,24 +511,21 @@ def _master_heal_loop():
                 try: f.result()
                 except Exception as e: log.warning(f'[SelfHeal] Healer error: {e}')
 
-            # Log current health status
             with _mirror_lock:   sm = len(SAAVN_MIRRORS)
             with _piped_lock:    pi = len(PIPED_INSTANCES)
             with _invidious_lock: iv = len(INVIDIOUS_INSTANCES)
             log.info(f'[SelfHeal] ✓ Cycle done — Saavn:{sm} Piped:{pi} Invidious:{iv}')
         except Exception as e:
             log.error(f'[SelfHeal] Master loop error: {e}')
-        time.sleep(1800)  # every 30 min
+        time.sleep(1800)
 
 # ═══════════════════════════════════════════════════════════════
 # SELF-HEALING: REACTIVE HEAL
-# Called inline when a source fails too many times in a session
 # ═══════════════════════════════════════════════════════════════
 _reactive_heal_cooldown = {}
-_REACTIVE_COOLDOWN_S    = 120  # max once per 2 min per source type
+_REACTIVE_COOLDOWN_S    = 120
 
 def _maybe_reactive_heal(source_type: str):
-    """Trigger immediate heal for a source type if it's failing a lot."""
     now = time.time()
     last = _reactive_heal_cooldown.get(source_type, 0)
     if now - last < _REACTIVE_COOLDOWN_S:
@@ -676,7 +654,7 @@ def serve_static(filename):
     return jsonify({'error': 'Not found'}), 404
 
 # ═══════════════════════════════════════════════════════════════
-# TEXT HELPERS  [IMPROVED]
+# TEXT HELPERS
 # ═══════════════════════════════════════════════════════════════
 def clean_query(text):
     text = re.sub(r'\(From\s+["\u201c\u201d\u2018\u2019]?[^)]*["\u201c\u201d\u2018\u2019]?\)', '', text, flags=re.IGNORECASE)
@@ -686,7 +664,6 @@ def clean_query(text):
     text = re.sub(r'["\u201c\u201d\u2018\u2019\'()]', '', text)
     return re.sub(r'\s+', ' ', text).strip()
 
-# FIX: More query variants for better Saavn hit rate
 def build_query_variants(title, artist='', fallback=''):
     title_c      = clean_query(title)
     artist_c     = clean_query(artist) if artist else ''
@@ -700,28 +677,23 @@ def build_query_variants(title, artist='', fallback=''):
         if v and v not in seen:
             seen.add(v); variants.append(v)
 
-    # Primary
     add(title_c)
     if artist_first: add(f"{title_c} {artist_first}")
     if artist_c:     add(f"{title_c} {artist_c}")
     if fb_c and fb_c != title_c: add(fb_c)
     if artist_c and fb_c: add(f"{artist_c} {title_c}")
 
-    # FIX: Extra variants — remove brackets/parens/dashes, first words only
     bracket_free = re.sub(r'\s*[\(\[].*?[\)\]]\s*', ' ', title_c).strip()
     add(bracket_free)
     dash_free = re.sub(r'\s*[-–]\s*', ' ', title_c).strip()
     add(dash_free)
-    # First 2-3 words only (handles long song names)
     words = title_c.split()
     if len(words) > 2: add(' '.join(words[:3]))
     if len(words) > 3: add(' '.join(words[:2]))
     if artist_first and title_first:
         add(f"{title_first} {artist_first}")
-    # Artist name + first word of title
     if artist_c and title_first:
         add(f"{artist_c} {title_first}")
-    # Fallback: just title first word + artist
     if artist_first and len(words) > 1:
         add(f"{words[0]} {words[1]} {artist_first}")
 
@@ -765,7 +737,6 @@ def title_score(query, song_title, song_artist=''):
         if q_words: score += (artist_match / len(q_words)) * 0.5
     return score
 
-# FIX: Lower thresholds — hindi short titles were getting filtered out
 def dynamic_min_score(query):
     length = len(normalize(query).replace(' ', ''))
     if length <= 2:    return 0.10
@@ -835,7 +806,7 @@ def _safe_year(date_str):
     except (ValueError, TypeError): return 0
 
 # ═══════════════════════════════════════════════════════════════
-# MIRROR HEALTH  [backed by unified _source_health system]
+# MIRROR HEALTH
 # ═══════════════════════════════════════════════════════════════
 _mirror_fail_count = {}
 _mirror_fail_time  = {}
@@ -855,7 +826,6 @@ def _mirror_failed(mirror):
     _mirror_fail_count[mirror] = _mirror_fail_count.get(mirror, 0) + 1
     _mirror_fail_time[mirror]  = time.time()
     _health_record_fail(mirror)
-    # If half of mirrors are failing, trigger reactive heal immediately
     dead_count = sum(1 for m in SAAVN_MIRRORS if _mirror_fail_count.get(m, 0) >= 5)
     if dead_count >= max(1, len(SAAVN_MIRRORS) // 2):
         _maybe_reactive_heal('saavn')
@@ -880,7 +850,7 @@ def _fetch_saavn_search_mirror(mirror, search_term):
                 data.get('songs', {}).get('results') or []
             )
             if raw: return raw
-        except Exception as e:
+        except Exception:
             _mirror_failed(mirror)
     return []
 
@@ -930,7 +900,7 @@ def _normalize_saavn_songs(raw_songs):
     return normalized
 
 # ═══════════════════════════════════════════════════════════════
-# YT-DLP  [IMPROVED — better format selection + more search strategies]
+# YT-DLP
 # ═══════════════════════════════════════════════════════════════
 def fetch_from_ytdlp(title, artist=''):
     cache_key = f"ytdlp:{normalize(title)}:{normalize(artist)}"
@@ -1002,21 +972,18 @@ def fetch_from_ytdlp(title, artist=''):
 
             formats = best_result.get('formats', [])
 
-            # FIX: Relaxed vcodec check — was too strict before
             audio_formats = [
                 f for f in formats
                 if f.get('acodec') not in ('none', None, '')
                 and f.get('url')
                 and (f.get('vcodec') in ('none', None, '') or not f.get('vcodec'))
             ]
-            # Fallback 1: any format with audio codec set
             if not audio_formats:
                 audio_formats = [
                     f for f in formats
                     if f.get('acodec') not in ('none', None, '')
                     and f.get('url')
                 ]
-            # Fallback 2: just grab any format with a URL
             if not audio_formats:
                 audio_formats = [f for f in formats if f.get('url')]
 
@@ -1049,14 +1016,13 @@ def fetch_from_ytdlp(title, artist=''):
         return None
 
 # ═══════════════════════════════════════════════════════════════
-# SOUNDCLOUD  [IMPROVED — lower score threshold]
+# SOUNDCLOUD
 # ═══════════════════════════════════════════════════════════════
 def fetch_from_soundcloud(title, artist=''):
     cache_key = f"sc:{normalize(title)}:{normalize(artist)}"
     cached = _cache_get(cache_key, _ytdlp_cache)
     if cached: return cached
 
-    # Refresh SC client ID if stale
     _maybe_refresh_sc_id()
 
     clean_title  = re.sub(r'\(.*?\)|\[.*?\]', '', title).strip()
@@ -1081,14 +1047,13 @@ def fetch_from_soundcloud(title, artist=''):
             best = None; best_score = -1
             for entry in info['entries']:
                 if not entry: continue
-                if entry.get('duration', 0) < 60: continue   # FIX: was 90, some songs are shorter
+                if entry.get('duration', 0) < 60: continue
                 sc_title  = entry.get('title', '')
                 sc_artist = entry.get('uploader', '')
                 score = title_score(title, sc_title, sc_artist)
                 if score > best_score:
                     best_score = score; best = entry
 
-            # FIX: was 0.4 — too strict, now 0.20
             if not best or best_score < 0.20:
                 return None
 
@@ -1163,7 +1128,7 @@ def _fetch_saavn_by_id(song_id: str) -> dict | None:
                         'artist':  song.get('primaryArtists') or song.get('primary_artists') or '',
                         'image':   pick_image(song),
                     }
-            except Exception as e:
+            except Exception:
                 _mirror_failed(mirror)
         return None
 
@@ -1180,7 +1145,7 @@ def _fetch_saavn_by_id(song_id: str) -> dict | None:
     return None
 
 # ═══════════════════════════════════════════════════════════════
-# /api/play  [IMPROVED — title rescue + parallel yt+sc + better fallback]
+# /api/play
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/play')
 @limiter.limit("200 per minute")
@@ -1196,25 +1161,20 @@ def play_song():
     quality   = 'unknown'
     source    = 'unknown'
 
-    # Step 1: Saavn by ID — fastest
     if song_id:
         result = _fetch_saavn_by_id(song_id)
         if result and result.get('url'):
             audio_url = result['url']
             quality   = result.get('quality', 'unknown')
             source    = 'saavn'
-            # Always fill title/artist from saavn result if missing
             if not title:  title  = result.get('title', '')
             if not artist: artist = result.get('artist', '')
             log.info(f"[Play] ✓ Saavn ID quality={quality}")
 
-    # FIX: If saavn ID failed but we have no title, try to make a title from the ID
-    # so downstream sources (yt-dlp etc) still have something to search
     if not audio_url and song_id and not title:
         title = song_id.replace('_', ' ').replace('-', ' ').strip()
         log.info(f"[Play] ID→title rescue: '{title}'")
 
-    # Step 2: Saavn by title — try all variants
     if not audio_url and title:
         for query in build_query_variants(title, artist, ''):
             result = fetch_saavn_parallel(query)
@@ -1225,13 +1185,11 @@ def play_song():
                 log.info(f"[Play] ✓ Saavn title='{result['title']}' quality={quality}")
                 break
 
-    # Step 3 + 4: yt-dlp AND SoundCloud in PARALLEL — saves time
     if not audio_url and title:
         log.info(f"[Play] Saavn miss → parallel yt-dlp + SoundCloud: '{title}'")
         yt_future = _executor.submit(fetch_from_ytdlp, title, artist)
         sc_future = _executor.submit(fetch_from_soundcloud, title, artist)
 
-        # Wait for first successful result
         for future in as_completed([yt_future, sc_future], timeout=25):
             try:
                 res = future.result()
@@ -1240,14 +1198,12 @@ def play_song():
                     quality   = res.get('quality', 'unknown')
                     source    = res.get('source', 'unknown')
                     log.info(f"[Play] ✓ {source} '{res.get('title')}' quality={quality}")
-                    # Cancel the other future
                     yt_future.cancel()
                     sc_future.cancel()
                     break
             except Exception:
                 pass
 
-    # Step 5: Piped
     if not audio_url and title:
         log.info(f"[Play] yt-dlp+SC miss → Piped: '{title}'")
         piped = fetch_from_piped(title, title=title, artist=artist)
@@ -1256,7 +1212,6 @@ def play_song():
             quality   = piped.get('quality', 'unknown')
             source    = 'piped'
 
-    # Step 6: Invidious
     if not audio_url and title:
         log.info(f"[Play] Piped miss → Invidious: '{title}'")
         inv = fetch_from_invidious(title, title=title, artist=artist)
@@ -1265,10 +1220,9 @@ def play_song():
             quality   = inv.get('quality', 'unknown')
             source    = 'invidious'
 
-    # FIX: Step 7 — Last resort: yt-dlp with very broad query (no artist filter)
     if not audio_url and title:
         log.info(f"[Play] All failed → last resort yt-dlp broad: '{title}'")
-        broad = fetch_from_ytdlp(title, '')  # No artist — cast wide net
+        broad = fetch_from_ytdlp(title, '')
         if broad and broad.get('url'):
             audio_url = broad['url']
             quality   = broad.get('quality', 'unknown')
@@ -1279,7 +1233,6 @@ def play_song():
         log.warning(f"[Play] ✗ ALL sources failed id={song_id} title='{title}'")
         return jsonify({'error': 'No audio source found'}), 404
 
-    # Stream proxy
     try:
         req_headers = {
             'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
@@ -1323,7 +1276,7 @@ def play_song():
         return jsonify({'error': str(e)}), 500
 
 # ═══════════════════════════════════════════════════════════════
-# FETCH FROM MIRROR  [IMPROVED — _mirror_failed on all exceptions]
+# FETCH FROM MIRROR
 # ═══════════════════════════════════════════════════════════════
 def fetch_from_mirror(mirror, query, min_score=0.4):
     if not _mirror_ok(mirror): return None
@@ -1366,8 +1319,8 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
                 'source':    'saavn',
                 '_raw_urls': raw_urls,
             }
-        except Exception as e:
-            _mirror_failed(mirror)  # FIX: was missing in original
+        except Exception:
+            _mirror_failed(mirror)
             continue
     return None
 
@@ -1396,7 +1349,6 @@ def fetch_saavn_parallel(query):
 # ═══════════════════════════════════════════════════════════════
 def fetch_from_piped(query, title='', artist=''):
     search_q = f"{title} {artist}".strip() if title else query
-    # Sort by health score — best instances first
     with _piped_lock:
         instances = sorted(PIPED_INSTANCES, key=_health_score, reverse=True)
     fail_count = 0
@@ -1445,7 +1397,6 @@ def fetch_from_piped(query, title='', artist=''):
             _health_record_fail(instance)
             fail_count += 1
             log.warning(f"[Piped {instance}] {e}"); continue
-    # All Piped instances failed — trigger reactive heal
     if fail_count >= len(instances):
         _maybe_reactive_heal('piped')
     return None
@@ -1455,7 +1406,6 @@ def fetch_from_piped(query, title='', artist=''):
 # ═══════════════════════════════════════════════════════════════
 def fetch_from_invidious(query, title='', artist=''):
     search_q = f"{title} {artist}".strip() if title else query
-    # Sort by health score — best instances first
     with _invidious_lock:
         instances = sorted(INVIDIOUS_INSTANCES, key=_health_score, reverse=True)
     fail_count = 0
@@ -1507,7 +1457,6 @@ def fetch_from_invidious(query, title='', artist=''):
             _health_record_fail(instance)
             fail_count += 1
             log.warning(f"[Invidious {instance}] {e}"); continue
-    # All Invidious instances failed — trigger reactive heal
     if fail_count >= len(instances):
         _maybe_reactive_heal('invidious')
     return None
@@ -1793,7 +1742,7 @@ def download_song():
         return jsonify({'error': str(e)}), 500
 
 # ═══════════════════════════════════════════════════════════════
-# /api/health — Live source health dashboard
+# /api/health
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/health')
 def health_status():
@@ -1850,6 +1799,7 @@ def handle_google_auth():
             ON CONFLICT(google_sub) DO UPDATE SET name=excluded.name, email=excluded.email, picture=excluded.picture
         ''', (sub, profile.get('name',''), profile.get('email',''), profile.get('picture','')))
         conn.commit()
+    log.info(f"[Auth] User upserted: {profile.get('email', '')}")
     return jsonify({'success': True, 'sub': sub, 'name': profile.get('name','')})
 
 @app.route('/api/sync/state', methods=['POST'])
@@ -1874,3 +1824,121 @@ def save_playback_state():
         ''', (sub, song_id, data.get('songTitle',''), data.get('artist',''), data.get('artUrl',''), progress, device))
         conn.commit()
     return jsonify({'status': 'ok'})
+
+@app.route('/api/sync/state', methods=['GET'])
+@limiter.limit("60 per minute")
+def get_playback_state():
+    sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
+    if not sub: return jsonify({'error': 'Unauthorized'}), 401
+    with get_db() as conn:
+        row = conn.execute('SELECT * FROM playback_state WHERE google_sub = ?', (sub,)).fetchone()
+    if row:
+        return jsonify({
+            'success'   : True,
+            'songId'    : row['song_id'],
+            'songTitle' : row['song_title'],
+            'artist'    : row['artist'],
+            'artUrl'    : row['art_url'],
+            'progress'  : row['progress'],
+            'device'    : row['device'],
+            'updatedAt' : row['updated_at'],
+        })
+    return jsonify({'success': False})
+
+# ═══════════════════════════════════════════════════════════════
+# TV PAIRING
+# ═══════════════════════════════════════════════════════════════
+@app.route('/api/auth/tv-generate-code', methods=['POST'])
+@limiter.limit("10 per minute")
+def generate_tv_code():
+    data       = request.get_json() or {}
+    session_id = data.get('sessionId') or secrets.token_hex(8)
+    code       = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
+    expiry     = (datetime.utcnow() + timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S')
+    with get_db() as conn:
+        conn.execute('DELETE FROM tv_pairing WHERE tv_session_id = ?', (session_id,))
+        conn.execute('INSERT INTO tv_pairing (pairing_code, tv_session_id, expires_at) VALUES (?, ?, ?)', (code, session_id, expiry))
+        conn.commit()
+    return jsonify({'code': code, 'sessionId': session_id, 'expiresIn': 300})
+
+@app.route('/api/auth/tv-poll')
+@limiter.limit("60 per minute")
+def poll_tv_pairing():
+    code    = request.args.get('code', '').strip().upper()
+    now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    if not code: return jsonify({'status': 'pending'}), 400
+    with get_db() as conn:
+        row = conn.execute('SELECT * FROM tv_pairing WHERE pairing_code = ? AND expires_at > ?', (code, now_str)).fetchone()
+        if not row: return jsonify({'status': 'expired'})
+        if row['google_sub']:
+            user = conn.execute('SELECT * FROM users WHERE google_sub = ?', (row['google_sub'],)).fetchone()
+            conn.execute('DELETE FROM tv_pairing WHERE pairing_code = ?', (code,))
+            conn.commit()
+            if user:
+                return jsonify({'status': 'authorized', 'user': {'sub': user['google_sub'], 'name': user['name'], 'email': user['email'], 'picture': user['picture']}})
+    return jsonify({'status': 'pending'})
+
+@app.route('/api/auth/tv-verify-mobile', methods=['POST'])
+@limiter.limit("20 per minute")
+def mobile_verify_tv():
+    sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
+    if not sub: return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+    data    = request.get_json() or {}
+    code    = data.get('code', '').strip().upper()
+    now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    if not code: return jsonify({'success': False, 'error': 'Missing code'}), 400
+    with get_db() as conn:
+        row = conn.execute('SELECT * FROM tv_pairing WHERE pairing_code = ? AND expires_at > ?', (code, now_str)).fetchone()
+        if not row: return jsonify({'success': False, 'error': 'Invalid or expired code'}), 404
+        conn.execute('UPDATE tv_pairing SET google_sub = ? WHERE pairing_code = ?', (sub, code))
+        conn.commit()
+    return jsonify({'success': True})
+
+# ═══════════════════════════════════════════════════════════════
+# GHOST PIN
+# ═══════════════════════════════════════════════════════════════
+@app.route('/api/auth/verify-ghost-pin', methods=['POST'])
+@limiter.limit("10 per minute")
+def verify_ghost_pin():
+    sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
+    if not sub: return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+    data = request.get_json() or {}
+    pin  = data.get('pin', '').strip()
+    if not pin: return jsonify({'success': False}), 400
+    h_input = hashlib.sha256(pin.encode('utf-8')).hexdigest()
+    with get_db() as conn:
+        user = conn.execute('SELECT ghost_pin_hash FROM users WHERE google_sub = ?', (sub,)).fetchone()
+        if not user: return jsonify({'success': False}), 404
+        if not user['ghost_pin_hash']:
+            conn.execute('UPDATE users SET ghost_pin_hash = ? WHERE google_sub = ?', (h_input, sub))
+            conn.commit()
+            return jsonify({'success': True})
+        if hmac.compare_digest(user['ghost_pin_hash'], h_input):
+            return jsonify({'success': True})
+    return jsonify({'success': False})
+
+# ═══════════════════════════════════════════════════════════════
+# ADMIN — View registered users
+# ═══════════════════════════════════════════════════════════════
+@app.route('/api/admin/users')
+@limiter.limit("10 per minute")
+def admin_users():
+    secret = request.args.get('key', '')
+    if not hmac.compare_digest(secret, ADMIN_KEY):
+        return jsonify({'error': 'Unauthorized'}), 401
+    with get_db() as conn:
+        rows = conn.execute(
+            'SELECT name, email, picture, created_at FROM users ORDER BY created_at DESC'
+        ).fetchall()
+    return jsonify({'users': [dict(r) for r in rows], 'total': len(rows)})
+
+# ═══════════════════════════════════════════════════════════════
+# HEALTH
+# ═══════════════════════════════════════════════════════════════
+@app.route('/health')
+def health():
+    return jsonify({'status': 'ok', 'sources': ['saavn', 'piped', 'invidious'], 'auth': 'google-oauth'})
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 7700))
+    app.run(host='0.0.0.0', port=port, threaded=True, debug=False)
