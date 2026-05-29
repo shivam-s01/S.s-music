@@ -5,33 +5,39 @@ import os
 import re
 import logging
 import random
-import sqlite3
 import string
 import secrets
 import hmac
 import hashlib
 import time
 import threading
+import asyncio
 import yt_dlp
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse, quote, urlencode
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+import libsql_client
 
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
 BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
-DB_PATH   = os.path.join(BASE_DIR, 'aurum_cloud.db')
 
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 ADMIN_KEY        = os.environ.get('ADMIN_KEY', '')
+TURSO_URL        = os.environ.get('TURSO_URL', '')
+TURSO_TOKEN      = os.environ.get('TURSO_TOKEN', '')
 
 if not GOOGLE_CLIENT_ID:
     raise RuntimeError('GOOGLE_CLIENT_ID env var is required')
 if not ADMIN_KEY:
     raise RuntimeError('ADMIN_KEY env var is required')
+if not TURSO_URL:
+    raise RuntimeError('TURSO_URL env var is required')
+if not TURSO_TOKEN:
+    raise RuntimeError('TURSO_TOKEN env var is required')
 
 # ═══════════════════════════════════════════════════════════════
 # APP INIT
@@ -80,46 +86,41 @@ def _extract_bearer_sub(auth_header: str) -> str | None:
     return payload.get('sub', '') or None
 
 # ═══════════════════════════════════════════════════════════════
-# DATABASE
+# DATABASE — TURSO
 # ═══════════════════════════════════════════════════════════════
-def get_db():
-    db = sqlite3.connect(DB_PATH)
-    db.row_factory = sqlite3.Row
-    return db
+def _run_async(coro):
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
+
+async def _turso_execute(sql, args=None):
+    async with libsql_client.create_client(url=TURSO_URL, auth_token=TURSO_TOKEN) as client:
+        if args:
+            return await client.execute(sql, args)
+        return await client.execute(sql)
+
+async def _turso_batch(statements):
+    async with libsql_client.create_client(url=TURSO_URL, auth_token=TURSO_TOKEN) as client:
+        return await client.batch(statements)
+
+def db_execute(sql, args=None):
+    return _run_async(_turso_execute(sql, args))
+
+def db_batch(statements):
+    return _run_async(_turso_batch(statements))
 
 def init_db():
-    with get_db() as conn:
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                google_sub     TEXT PRIMARY KEY,
-                name           TEXT,
-                email          TEXT,
-                picture        TEXT,
-                ghost_pin_hash TEXT,
-                created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS playback_state (
-                google_sub  TEXT PRIMARY KEY,
-                song_id     TEXT,
-                song_title  TEXT,
-                artist      TEXT,
-                art_url     TEXT,
-                progress    REAL DEFAULT 0,
-                device      TEXT DEFAULT 'mobile',
-                updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS tv_pairing (
-                pairing_code  TEXT PRIMARY KEY,
-                tv_session_id TEXT,
-                google_sub    TEXT,
-                expires_at    TIMESTAMP
-            )
-        ''')
-        conn.commit()
+    db_batch([
+        "CREATE TABLE IF NOT EXISTS users (google_sub TEXT PRIMARY KEY, name TEXT, email TEXT, picture TEXT, ghost_pin_hash TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS playback_state (google_sub TEXT PRIMARY KEY, song_id TEXT, song_title TEXT, artist TEXT, art_url TEXT, progress REAL DEFAULT 0, device TEXT DEFAULT 'mobile', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS tv_pairing (pairing_code TEXT PRIMARY KEY, tv_session_id TEXT, google_sub TEXT, expires_at TIMESTAMP)",
+    ])
+    log.info('[DB] Turso tables initialized')
 
 init_db()
 
@@ -1793,12 +1794,10 @@ def handle_google_auth():
     if not profile: return jsonify({'error': 'Invalid credential'}), 401
     sub = profile.get('sub', '').strip()
     if not sub: return jsonify({'error': 'Missing sub'}), 400
-    with get_db() as conn:
-        conn.execute('''
-            INSERT INTO users (google_sub, name, email, picture) VALUES (?, ?, ?, ?)
-            ON CONFLICT(google_sub) DO UPDATE SET name=excluded.name, email=excluded.email, picture=excluded.picture
-        ''', (sub, profile.get('name',''), profile.get('email',''), profile.get('picture','')))
-        conn.commit()
+    db_execute(
+        "INSERT INTO users (google_sub, name, email, picture) VALUES (?, ?, ?, ?) ON CONFLICT(google_sub) DO UPDATE SET name=excluded.name, email=excluded.email, picture=excluded.picture",
+        [sub, profile.get('name',''), profile.get('email',''), profile.get('picture','')]
+    )
     log.info(f"[Auth] User upserted: {profile.get('email', '')}")
     return jsonify({'success': True, 'sub': sub, 'name': profile.get('name','')})
 
@@ -1814,15 +1813,10 @@ def save_playback_state():
     device = data.get('device', 'mobile')
     if device not in ('mobile', 'tv'): device = 'mobile'
     if not song_id: return jsonify({'status': 'ignored'}), 200
-    with get_db() as conn:
-        conn.execute('''
-            INSERT INTO playback_state (google_sub, song_id, song_title, artist, art_url, progress, device, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(google_sub) DO UPDATE SET song_id=excluded.song_id, song_title=excluded.song_title,
-            artist=excluded.artist, art_url=excluded.art_url, progress=excluded.progress,
-            device=excluded.device, updated_at=CURRENT_TIMESTAMP
-        ''', (sub, song_id, data.get('songTitle',''), data.get('artist',''), data.get('artUrl',''), progress, device))
-        conn.commit()
+    db_execute(
+        "INSERT INTO playback_state (google_sub, song_id, song_title, artist, art_url, progress, device, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(google_sub) DO UPDATE SET song_id=excluded.song_id, song_title=excluded.song_title, artist=excluded.artist, art_url=excluded.art_url, progress=excluded.progress, device=excluded.device, updated_at=CURRENT_TIMESTAMP",
+        [sub, song_id, data.get('songTitle',''), data.get('artist',''), data.get('artUrl',''), progress, device]
+    )
     return jsonify({'status': 'ok'})
 
 @app.route('/api/sync/state', methods=['GET'])
@@ -1830,18 +1824,20 @@ def save_playback_state():
 def get_playback_state():
     sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
     if not sub: return jsonify({'error': 'Unauthorized'}), 401
-    with get_db() as conn:
-        row = conn.execute('SELECT * FROM playback_state WHERE google_sub = ?', (sub,)).fetchone()
-    if row:
+    result = db_execute("SELECT * FROM playback_state WHERE google_sub = ?", [sub])
+    if result.rows:
+        row = result.rows[0]
+        cols = [c.name for c in result.columns]
+        r = dict(zip(cols, row))
         return jsonify({
             'success'   : True,
-            'songId'    : row['song_id'],
-            'songTitle' : row['song_title'],
-            'artist'    : row['artist'],
-            'artUrl'    : row['art_url'],
-            'progress'  : row['progress'],
-            'device'    : row['device'],
-            'updatedAt' : row['updated_at'],
+            'songId'    : r['song_id'],
+            'songTitle' : r['song_title'],
+            'artist'    : r['artist'],
+            'artUrl'    : r['art_url'],
+            'progress'  : r['progress'],
+            'device'    : r['device'],
+            'updatedAt' : r['updated_at'],
         })
     return jsonify({'success': False})
 
@@ -1855,10 +1851,8 @@ def generate_tv_code():
     session_id = data.get('sessionId') or secrets.token_hex(8)
     code       = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
     expiry     = (datetime.utcnow() + timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S')
-    with get_db() as conn:
-        conn.execute('DELETE FROM tv_pairing WHERE tv_session_id = ?', (session_id,))
-        conn.execute('INSERT INTO tv_pairing (pairing_code, tv_session_id, expires_at) VALUES (?, ?, ?)', (code, session_id, expiry))
-        conn.commit()
+    db_execute("DELETE FROM tv_pairing WHERE tv_session_id = ?", [session_id])
+    db_execute("INSERT INTO tv_pairing (pairing_code, tv_session_id, expires_at) VALUES (?, ?, ?)", [code, session_id, expiry])
     return jsonify({'code': code, 'sessionId': session_id, 'expiresIn': 300})
 
 @app.route('/api/auth/tv-poll')
@@ -1867,15 +1861,17 @@ def poll_tv_pairing():
     code    = request.args.get('code', '').strip().upper()
     now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
     if not code: return jsonify({'status': 'pending'}), 400
-    with get_db() as conn:
-        row = conn.execute('SELECT * FROM tv_pairing WHERE pairing_code = ? AND expires_at > ?', (code, now_str)).fetchone()
-        if not row: return jsonify({'status': 'expired'})
-        if row['google_sub']:
-            user = conn.execute('SELECT * FROM users WHERE google_sub = ?', (row['google_sub'],)).fetchone()
-            conn.execute('DELETE FROM tv_pairing WHERE pairing_code = ?', (code,))
-            conn.commit()
-            if user:
-                return jsonify({'status': 'authorized', 'user': {'sub': user['google_sub'], 'name': user['name'], 'email': user['email'], 'picture': user['picture']}})
+    result = db_execute("SELECT * FROM tv_pairing WHERE pairing_code = ? AND expires_at > ?", [code, now_str])
+    if not result.rows: return jsonify({'status': 'expired'})
+    cols = [c.name for c in result.columns]
+    row  = dict(zip(cols, result.rows[0]))
+    if row.get('google_sub'):
+        user_result = db_execute("SELECT * FROM users WHERE google_sub = ?", [row['google_sub']])
+        db_execute("DELETE FROM tv_pairing WHERE pairing_code = ?", [code])
+        if user_result.rows:
+            ucols = [c.name for c in user_result.columns]
+            user  = dict(zip(ucols, user_result.rows[0]))
+            return jsonify({'status': 'authorized', 'user': {'sub': user['google_sub'], 'name': user['name'], 'email': user['email'], 'picture': user['picture']}})
     return jsonify({'status': 'pending'})
 
 @app.route('/api/auth/tv-verify-mobile', methods=['POST'])
@@ -1887,11 +1883,9 @@ def mobile_verify_tv():
     code    = data.get('code', '').strip().upper()
     now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
     if not code: return jsonify({'success': False, 'error': 'Missing code'}), 400
-    with get_db() as conn:
-        row = conn.execute('SELECT * FROM tv_pairing WHERE pairing_code = ? AND expires_at > ?', (code, now_str)).fetchone()
-        if not row: return jsonify({'success': False, 'error': 'Invalid or expired code'}), 404
-        conn.execute('UPDATE tv_pairing SET google_sub = ? WHERE pairing_code = ?', (sub, code))
-        conn.commit()
+    result = db_execute("SELECT * FROM tv_pairing WHERE pairing_code = ? AND expires_at > ?", [code, now_str])
+    if not result.rows: return jsonify({'success': False, 'error': 'Invalid or expired code'}), 404
+    db_execute("UPDATE tv_pairing SET google_sub = ? WHERE pairing_code = ?", [sub, code])
     return jsonify({'success': True})
 
 # ═══════════════════════════════════════════════════════════════
@@ -1906,15 +1900,15 @@ def verify_ghost_pin():
     pin  = data.get('pin', '').strip()
     if not pin: return jsonify({'success': False}), 400
     h_input = hashlib.sha256(pin.encode('utf-8')).hexdigest()
-    with get_db() as conn:
-        user = conn.execute('SELECT ghost_pin_hash FROM users WHERE google_sub = ?', (sub,)).fetchone()
-        if not user: return jsonify({'success': False}), 404
-        if not user['ghost_pin_hash']:
-            conn.execute('UPDATE users SET ghost_pin_hash = ? WHERE google_sub = ?', (h_input, sub))
-            conn.commit()
-            return jsonify({'success': True})
-        if hmac.compare_digest(user['ghost_pin_hash'], h_input):
-            return jsonify({'success': True})
+    result = db_execute("SELECT ghost_pin_hash FROM users WHERE google_sub = ?", [sub])
+    if not result.rows: return jsonify({'success': False}), 404
+    cols = [c.name for c in result.columns]
+    user = dict(zip(cols, result.rows[0]))
+    if not user.get('ghost_pin_hash'):
+        db_execute("UPDATE users SET ghost_pin_hash = ? WHERE google_sub = ?", [h_input, sub])
+        return jsonify({'success': True})
+    if hmac.compare_digest(user['ghost_pin_hash'], h_input):
+        return jsonify({'success': True})
     return jsonify({'success': False})
 
 # ═══════════════════════════════════════════════════════════════
@@ -1926,11 +1920,10 @@ def admin_users():
     secret = request.args.get('key', '')
     if not hmac.compare_digest(secret, ADMIN_KEY):
         return jsonify({'error': 'Unauthorized'}), 401
-    with get_db() as conn:
-        rows = conn.execute(
-            'SELECT name, email, picture, created_at FROM users ORDER BY created_at DESC'
-        ).fetchall()
-    return jsonify({'users': [dict(r) for r in rows], 'total': len(rows)})
+    result = db_execute("SELECT name, email, picture, created_at FROM users ORDER BY created_at DESC")
+    cols   = [c.name for c in result.columns]
+    users  = [dict(zip(cols, row)) for row in result.rows]
+    return jsonify({'users': users, 'total': len(users)})
 
 # ═══════════════════════════════════════════════════════════════
 # HEALTH
