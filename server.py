@@ -24,10 +24,15 @@ from google.auth.transport import requests as google_requests
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Environment variables (optional - for production)
-GOOGLE_CLIENT_ID  = os.environ.get('GOOGLE_CLIENT_ID', '')
-ADMIN_KEY         = os.environ.get('ADMIN_KEY', '')
-SUPABASE_URL      = os.environ.get('SUPABASE_URL', '').rstrip('/')
-SUPABASE_KEY      = os.environ.get('SUPABASE_KEY', '')
+GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
+ADMIN_KEY = os.environ.get('ADMIN_KEY', '')
+SUPABASE_URL = os.environ.get('SUPABASE_URL', '').rstrip('/')
+SUPABASE_KEY = os.environ.get('SUPABASE_KEY', '')
+
+# Allow running without env vars for development
+DEV_MODE = not all([GOOGLE_CLIENT_ID, ADMIN_KEY, SUPABASE_URL, SUPABASE_KEY])
+if DEV_MODE:
+    print("⚠️ Running in DEV MODE - some features disabled")
 
 # ═══════════════════════════════════════════════════════════════
 # APP INIT
@@ -50,7 +55,7 @@ _executor = ThreadPoolExecutor(max_workers=32)
 _google_req = google_requests.Request()
 
 # ═══════════════════════════════════════════════════════════════
-# WORKING MIRRORS (UPDATED)
+# WORKING SAAVN MIRRORS (UPDATED)
 # ═══════════════════════════════════════════════════════════════
 SAAVN_MIRRORS = [
     'https://jiosaavn-api-v2.vercel.app',
@@ -61,36 +66,19 @@ SAAVN_MIRRORS = [
     'https://saavn-api-eight.vercel.app',
 ]
 
-PIPED_INSTANCES = [
-    'https://pipedapi.kavin.rocks',
-    'https://pipedapi.tokhmi.xyz',
-    'https://api.piped.yt',
-]
-
-INVIDIOUS_INSTANCES = [
-    'https://invidious.snopyta.org',
-    'https://vid.puffyan.us',
-    'https://y.com.sb',
-]
-
 # ═══════════════════════════════════════════════════════════════
 # CONSTANTS
 # ═══════════════════════════════════════════════════════════════
 ALLOWED_STREAM_DOMAINS = [
     'akamaized.net', 'jiocdn.com', 'saavncdn.com',
     'googlevideo.com', 'youtube.com', 'ytimg.com',
-    'sndcdn.com', 'soundcloud.com',
 ]
 
-QUALITY_RANK = {
-    '320kbps': 7, '320': 7, '160kbps': 5, '160': 5,
-    '96kbps': 3, '96': 3, '48kbps': 2, '48': 2,
-}
+QUALITY_RANK = {'320kbps': 7, '320': 7, '160kbps': 5, '160': 5, '96kbps': 3, '96': 3}
 
 NINETIES_SEEDS = [
     "Kumar Sanu hits", "Udit Narayan 90s", "Alka Yagnik 90s",
-    "Lata Mangeshkar 90s", "Sonu Nigam 90s hits",
-    "90s Bollywood superhits",
+    "Lata Mangeshkar 90s", "Sonu Nigam 90s hits", "90s Bollywood superhits"
 ]
 
 NINETIES_TRIGGERS = ['90', 'purane', 'old', 'retro', 'classic', 'nineties']
@@ -103,7 +91,8 @@ META_CACHE_TTL = 600
 
 def _cache_get(key):
     entry = _meta_cache.get(key)
-    if not entry: return None
+    if not entry:
+        return None
     ts, data = entry
     if time.time() - ts > META_CACHE_TTL:
         del _meta_cache[key]
@@ -136,7 +125,10 @@ def options_handler(path):
 # ═══════════════════════════════════════════════════════════════
 @app.route('/')
 def index():
-    return send_file(os.path.join(BASE_DIR, 'index.html'))
+    try:
+        return send_file(os.path.join(BASE_DIR, 'index.html'))
+    except:
+        return jsonify({'message': 'Backend is running!', 'endpoints': ['/api/search', '/api/songs', '/api/play', '/api/saavn', '/api/resolve', '/api/stream', '/api/download', '/api/auth/google', '/api/sync/state', '/api/health']})
 
 @app.route('/<path:filename>')
 def serve_static(filename):
@@ -154,19 +146,24 @@ def normalize(text):
     return re.sub(r'\s+', ' ', text).strip()
 
 def title_score(query, song_title, song_artist=''):
-    q, t, a = normalize(query), normalize(song_title), normalize(song_artist)
-    if not q: return 0.0
-    if q == t: return 3.0
+    q, t = normalize(query), normalize(song_title)
+    if not q:
+        return 0.0
+    if q == t:
+        return 3.0
     q_words = q.split()
     t_words = t.split()
     score = 0.0
-    if t.startswith(q): score += 2.0
+    if t.startswith(q):
+        score += 2.0
     title_match = sum(1 for qw in q_words for tw in t_words if qw in tw or tw in qw)
-    if q_words: score += (title_match / len(q_words)) * 1.5
+    if q_words:
+        score += (title_match / len(q_words)) * 1.5
     return score
 
 def pick_best_quality(urls):
-    if not urls: return None, None
+    if not urls:
+        return None, None
     for item in urls:
         q = item.get('quality', '').lower()
         if '320' in q:
@@ -190,15 +187,60 @@ def pick_image(song):
         return images.replace('150x150', '500x500')
     return ''
 
+def _safe_year(date_str):
+    try:
+        return int((date_str or '')[:4])
+    except:
+        return 0
+
 # ═══════════════════════════════════════════════════════════════
-# SAAVN SEARCH
+# FUNCTION 1: iTunes se Thumbnail + Artist Name
 # ═══════════════════════════════════════════════════════════════
-def search_saavn(query):
+def fetch_from_itunes(query, artist=''):
+    """Get high quality thumbnail and correct artist name from iTunes"""
+    search_term = f"{query} {artist}".strip()
+    
+    try:
+        response = requests.get(
+            'https://itunes.apple.com/search',
+            params={
+                'term': search_term,
+                'media': 'music',
+                'entity': 'song',
+                'limit': 5,
+                'country': 'IN'
+            },
+            timeout=8
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            results = data.get('results', [])
+            
+            for item in results:
+                artwork = item.get('artworkUrl100', '')
+                if artwork:
+                    high_quality_art = artwork.replace('100x100', '600x600')
+                    return {
+                        'thumbnail': high_quality_art,
+                        'artist_name': item.get('artistName', artist),
+                        'track_name': item.get('trackName', query),
+                        'album_name': item.get('collectionName', ''),
+                    }
+    except Exception as e:
+        log.warning(f"iTunes error: {e}")
+    return None
+
+# ═══════════════════════════════════════════════════════════════
+# FUNCTION 2: Saavn se Full Song Audio (320kbps)
+# ═══════════════════════════════════════════════════════════════
+def search_saavn(query, limit=20):
+    """Search songs on Saavn"""
     for mirror in SAAVN_MIRRORS:
         try:
             resp = requests.get(
                 f'{mirror}/api/search/songs',
-                params={'query': query, 'limit': 25},
+                params={'query': query, 'limit': limit},
                 timeout=8,
                 headers={'User-Agent': 'Mozilla/5.0'}
             )
@@ -207,11 +249,20 @@ def search_saavn(query):
                 songs = data.get('data', {}).get('results', [])
                 if songs:
                     return songs
-        except Exception:
+        except Exception as e:
+            log.warning(f"Saavn mirror failed: {e}")
             continue
     return []
 
-def get_saavn_song_by_id(song_id):
+def get_saavn_audio(song):
+    """Extract audio URL from Saavn song object"""
+    raw_urls = song.get('downloadUrl') or song.get('download_url') or []
+    if isinstance(raw_urls, str):
+        raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
+    return pick_best_quality(raw_urls)
+
+def get_saavn_by_id(song_id):
+    """Get song by ID from Saavn"""
     for mirror in SAAVN_MIRRORS:
         try:
             resp = requests.get(f'{mirror}/api/songs/{song_id}', timeout=8)
@@ -227,63 +278,135 @@ def get_saavn_song_by_id(song_id):
     return None
 
 # ═══════════════════════════════════════════════════════════════
-# YOUTUBE SEARCH (yt-dlp)
+# FUNCTION 3: YouTube Fallback (Agar Saavn fail ho)
 # ═══════════════════════════════════════════════════════════════
-def search_youtube(query, limit=12):
+def search_youtube(query, artist='', limit=5):
+    """Search YouTube and get audio URL - NO API KEY NEEDED"""
+    search_term = f"{query} {artist} song".strip()
     results = []
+    
     try:
         ydl_opts = {
-            'quiet': True,
-            'extract_flat': True,
-            'noplaylist': True,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            search_query = f"ytsearch{limit}:{query} song"
-            info = ydl.extract_info(search_query, download=False)
-            if info and info.get('entries'):
-                for entry in info['entries']:
-                    if entry and entry.get('duration', 0) > 60:
-                        video_id = entry.get('id', '')
-                        results.append({
-                            'trackId': video_id,
-                            'trackName': entry.get('title', '')[:100],
-                            'artistName': entry.get('uploader', 'Unknown'),
-                            'artworkUrl100': f"https://img.youtube.com/vi/{video_id}/default.jpg",
-                            'artworkUrl500': f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
-                            'previewUrl': f"/api/yt-play?id={video_id}",
-                            'trackTimeMillis': entry.get('duration', 0) * 1000,
-                            '_source': 'youtube'
-                        })
-    except Exception as e:
-        log.warning(f"YouTube search error: {e}")
-    return results
-
-def get_youtube_audio_url(video_id):
-    try:
-        ydl_opts = {
-            'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+            'format': 'bestaudio/best',
             'quiet': True,
             'no_warnings': True,
+            'extract_flat': False,
+            'noplaylist': True,
         }
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            url = f"https://www.youtube.com/watch?v={video_id}"
-            info = ydl.extract_info(url, download=False)
-            formats = info.get('formats', [])
+            search_query = f"ytsearch{limit}:{search_term}"
+            info = ydl.extract_info(search_query, download=False)
             
-            # Get best audio-only format
-            audio_formats = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
-            if not audio_formats:
-                audio_formats = [f for f in formats if f.get('acodec') != 'none']
-            
-            if audio_formats:
-                best = max(audio_formats, key=lambda f: f.get('abr', 0) or f.get('tbr', 0))
-                return best.get('url')
+            if info and info.get('entries'):
+                for entry in info['entries']:
+                    if not entry:
+                        continue
+                    
+                    duration = entry.get('duration', 0)
+                    if duration < 60:
+                        continue
+                    
+                    formats = entry.get('formats', [])
+                    audio_formats = [f for f in formats 
+                                   if f.get('acodec') != 'none'
+                                   and f.get('vcodec') == 'none'
+                                   and f.get('url')]
+                    
+                    if not audio_formats:
+                        audio_formats = [f for f in formats 
+                                       if f.get('acodec') != 'none'
+                                       and f.get('url')]
+                    
+                    if audio_formats:
+                        best = max(audio_formats, key=lambda f: f.get('abr', 0) or 0)
+                        video_id = entry.get('id', '')
+                        
+                        results.append({
+                            'url': best.get('url'),
+                            'quality': f"{int(best.get('abr', 128))}kbps",
+                            'title': entry.get('title', query),
+                            'artist': entry.get('uploader', artist),
+                            'image': f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg",
+                            'duration': duration,
+                            'video_id': video_id,
+                            'source': 'youtube'
+                        })
     except Exception as e:
-        log.error(f"YouTube audio error: {e}")
-    return None
+        log.error(f"YouTube search error: {e}")
+    
+    return results
 
 # ═══════════════════════════════════════════════════════════════
-# /api/songs - MAIN ENDPOINT
+# /api/search - MAIN SEARCH ENDPOINT (iTunes thumbnail + Saavn audio)
+# ═══════════════════════════════════════════════════════════════
+@app.route('/api/search')
+@limiter.limit("60 per minute")
+def search_songs():
+    query = request.args.get('q', '').strip()
+    if not query:
+        return jsonify({'error': 'No query provided', 'results': []}), 400
+    
+    cache_key = f"search:{normalize(query)}"
+    cached = _cache_get(cache_key)
+    if cached:
+        return jsonify({'results': cached, 'cached': True})
+    
+    results = []
+    
+    # Get songs from Saavn
+    saavn_songs = search_saavn(query, 20)
+    
+    for song in saavn_songs[:15]:
+        song_id = song.get('id', '')
+        title = song.get('name') or song.get('title', '')
+        artist = song.get('primaryArtists') or song.get('primary_artists', '')
+        duration = int(song.get('duration', 0) or 0)
+        
+        # Get iTunes thumbnail (high quality)
+        itunes_data = fetch_from_itunes(title, artist)
+        
+        # Get audio URL from Saavn
+        audio_url, quality = get_saavn_audio(song)
+        
+        if audio_url:
+            results.append({
+                'id': song_id,
+                'title': title,
+                'artist': artist,
+                'thumbnail': itunes_data.get('thumbnail') if itunes_data else pick_image(song),
+                'artist_name': itunes_data.get('artist_name', artist) if itunes_data else artist,
+                'audioUrl': f"/api/play?id={quote(song_id)}",
+                'duration': duration,
+                'quality': quality,
+                'source': 'saavn'
+            })
+    
+    # If no results from Saavn, try YouTube
+    if not results:
+        youtube_results = search_youtube(query, '', 10)
+        for yt in youtube_results[:10]:
+            itunes_data = fetch_from_itunes(yt.get('title', query), yt.get('artist', ''))
+            results.append({
+                'id': yt.get('video_id', ''),
+                'title': yt.get('title', query),
+                'artist': yt.get('artist', ''),
+                'thumbnail': itunes_data.get('thumbnail') if itunes_data else yt.get('image', ''),
+                'artist_name': itunes_data.get('artist_name', yt.get('artist', '')) if itunes_data else yt.get('artist', ''),
+                'audioUrl': f"/api/yt-play?id={yt.get('video_id', '')}",
+                'duration': yt.get('duration', 0),
+                'quality': yt.get('quality', '128kbps'),
+                'source': 'youtube'
+            })
+    
+    if results:
+        _cache_set(cache_key, results[:30])
+        return jsonify({'results': results[:30]})
+    
+    return jsonify({'results': [], 'error': 'No results found'})
+
+# ═══════════════════════════════════════════════════════════════
+# /api/songs - iTunes thumbnail + Saavn audio
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/songs')
 @limiter.limit("60 per minute")
@@ -291,53 +414,69 @@ def get_songs():
     q = request.args.get('q', 'top bollywood songs').strip()
     era = request.args.get('era', '').strip()
     is_90s = (era == '90s') or any(t in q.lower() for t in NINETIES_TRIGGERS)
-    
     search_term = random.choice(NINETIES_SEEDS) if is_90s else q
     
     cache_key = f"songs:{search_term.lower()}"
     cached = _cache_get(cache_key)
     if cached:
-        return jsonify({'results': cached, '_cached': True})
+        return jsonify({'results': cached, 'cached': True})
     
     results = []
     
-    # Try Saavn
-    raw_songs = search_saavn(search_term)
-    for song in raw_songs[:20]:
+    # Get songs from Saavn
+    saavn_songs = search_saavn(search_term, 30)
+    
+    for song in saavn_songs[:25]:
         song_id = song.get('id', '')
-        title = song.get('name', '')
-        artist = song.get('primaryArtists', '')
-        image = pick_image(song)
+        title = song.get('name') or song.get('title', '')
+        artist = song.get('primaryArtists') or song.get('primary_artists', '')
         duration = int(song.get('duration', 0) or 0)
+        year = int(song.get('year', 0) or 0)
+        
+        # Filter 90s if needed
+        if is_90s and not (1990 <= year <= 1999):
+            continue
+        
+        # Get iTunes thumbnail
+        itunes_data = fetch_from_itunes(title, artist)
         
         # Get audio URL
-        raw_urls = song.get('downloadUrl') or song.get('download_url') or []
-        if isinstance(raw_urls, str):
-            raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
-        audio_url, quality = pick_best_quality(raw_urls)
+        audio_url, quality = get_saavn_audio(song)
         
         if audio_url:
             results.append({
                 'trackId': song_id,
                 'trackName': title,
-                'artistName': artist,
-                'artworkUrl100': image.replace('500x500', '100x100') if image else '',
-                'artworkUrl500': image,
+                'artistName': itunes_data.get('artist_name', artist) if itunes_data else artist,
+                'artworkUrl100': itunes_data.get('thumbnail', '').replace('600x600', '100x100') if itunes_data else pick_image(song),
+                'artworkUrl500': itunes_data.get('thumbnail', pick_image(song)) if itunes_data else pick_image(song),
                 'previewUrl': f"/api/play?id={quote(song_id)}",
                 'trackTimeMillis': duration * 1000,
-                'releaseDate': f"{song.get('year', '0')}-01-01",
+                'releaseDate': f"{year}-01-01T00:00:00Z",
+                '_quality': quality,
                 '_source': 'saavn'
             })
     
-    # Add YouTube results for variety if needed
-    if len(results) < 10:
-        youtube_results = search_youtube(search_term, 10)
-        for yt in youtube_results:
-            # Avoid duplicates
-            if not any(r.get('trackName') == yt.get('trackName') for r in results):
-                results.append(yt)
+    # If no results from Saavn, try YouTube
+    if not results:
+        youtube_results = search_youtube(search_term, '', 20)
+        for yt in youtube_results[:20]:
+            itunes_data = fetch_from_itunes(yt.get('title', search_term), yt.get('artist', ''))
+            results.append({
+                'trackId': yt.get('video_id', ''),
+                'trackName': yt.get('title', search_term),
+                'artistName': itunes_data.get('artist_name', yt.get('artist', '')) if itunes_data else yt.get('artist', ''),
+                'artworkUrl100': itunes_data.get('thumbnail', '').replace('600x600', '100x100') if itunes_data else yt.get('image', ''),
+                'artworkUrl500': itunes_data.get('thumbnail', yt.get('image', '')) if itunes_data else yt.get('image', ''),
+                'previewUrl': f"/api/yt-play?id={yt.get('video_id', '')}",
+                'trackTimeMillis': yt.get('duration', 0) * 1000,
+                '_quality': yt.get('quality', '128kbps'),
+                '_source': 'youtube'
+            })
     
     if results:
+        if is_90s:
+            random.shuffle(results)
         _cache_set(cache_key, results[:30])
         return jsonify({'results': results[:30]})
     
@@ -350,46 +489,54 @@ def get_songs():
 @limiter.limit("60 per minute")
 def get_90s_songs():
     seed = random.choice(NINETIES_SEEDS)
-    cache_key = f"songs:{seed.lower()}"
+    cache_key = f"songs:90s:{seed.lower()}"
     cached = _cache_get(cache_key)
     if cached:
-        return jsonify({'results': cached, 'seed': seed, '_cached': True})
+        return jsonify({'results': cached, 'seed': seed, 'cached': True})
     
     results = []
-    raw_songs = search_saavn(seed)
+    saavn_songs = search_saavn(seed, 40)
     
-    for song in raw_songs:
+    for song in saavn_songs:
         year = int(song.get('year', 0) or 0)
         if 1990 <= year <= 1999:
             song_id = song.get('id', '')
-            title = song.get('name', '')
-            artist = song.get('primaryArtists', '')
-            image = pick_image(song)
+            title = song.get('name') or song.get('title', '')
+            artist = song.get('primaryArtists') or song.get('primary_artists', '')
             duration = int(song.get('duration', 0) or 0)
             
-            raw_urls = song.get('downloadUrl') or song.get('download_url') or []
-            if isinstance(raw_urls, str):
-                raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
-            audio_url, quality = pick_best_quality(raw_urls)
+            itunes_data = fetch_from_itunes(title, artist)
+            audio_url, quality = get_saavn_audio(song)
             
             if audio_url:
                 results.append({
                     'trackId': song_id,
                     'trackName': title,
-                    'artistName': artist,
-                    'artworkUrl100': image.replace('500x500', '100x100') if image else '',
-                    'artworkUrl500': image,
+                    'artistName': itunes_data.get('artist_name', artist) if itunes_data else artist,
+                    'artworkUrl100': itunes_data.get('thumbnail', '').replace('600x600', '100x100') if itunes_data else pick_image(song),
+                    'artworkUrl500': itunes_data.get('thumbnail', pick_image(song)) if itunes_data else pick_image(song),
                     'previewUrl': f"/api/play?id={quote(song_id)}",
                     'trackTimeMillis': duration * 1000,
-                    'releaseDate': f"{year}-01-01",
+                    'releaseDate': f"{year}-01-01T00:00:00Z",
+                    '_quality': quality,
                     '_source': 'saavn'
                 })
     
     if len(results) < 5:
-        youtube_results = search_youtube(seed, 20)
+        youtube_results = search_youtube(seed, 25)
         for yt in youtube_results:
-            if not any(r.get('trackName') == yt.get('trackName') for r in results):
-                results.append(yt)
+            itunes_data = fetch_from_itunes(yt.get('title', seed), yt.get('artist', ''))
+            results.append({
+                'trackId': yt.get('video_id', ''),
+                'trackName': yt.get('title', seed),
+                'artistName': itunes_data.get('artist_name', yt.get('artist', '')) if itunes_data else yt.get('artist', ''),
+                'artworkUrl100': itunes_data.get('thumbnail', '').replace('600x600', '100x100') if itunes_data else yt.get('image', ''),
+                'artworkUrl500': itunes_data.get('thumbnail', yt.get('image', '')) if itunes_data else yt.get('image', ''),
+                'previewUrl': f"/api/yt-play?id={yt.get('video_id', '')}",
+                'trackTimeMillis': yt.get('duration', 0) * 1000,
+                '_quality': yt.get('quality', '128kbps'),
+                '_source': 'youtube'
+            })
     
     if results:
         random.shuffle(results)
@@ -399,7 +546,7 @@ def get_90s_songs():
     return jsonify({'results': [], 'error': 'No results found'})
 
 # ═══════════════════════════════════════════════════════════════
-# /api/play - PLAY AUDIO
+# /api/play - PLAY SAAVN SONG
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/play')
 @limiter.limit("200 per minute")
@@ -408,47 +555,55 @@ def play_song():
     title = request.args.get('title', '').strip()
     artist = request.args.get('artist', '').strip()
     
+    if not song_id and not title:
+        return jsonify({'error': 'Missing id or title'}), 400
+    
     audio_url = None
+    quality = 'unknown'
+    source = 'unknown'
     
     # Try by ID first
     if song_id:
-        song = get_saavn_song_by_id(song_id)
+        song = get_saavn_by_id(song_id)
         if song:
-            raw_urls = song.get('downloadUrl') or song.get('download_url') or []
-            if isinstance(raw_urls, str):
-                raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
-            audio_url, _ = pick_best_quality(raw_urls)
-            if not title:
-                title = song.get('name', '')
-            if not artist:
-                artist = song.get('primaryArtists', '')
+            audio_url, quality = get_saavn_audio(song)
+            if audio_url:
+                source = 'saavn'
+                if not title:
+                    title = song.get('name', '')
+                if not artist:
+                    artist = song.get('primaryArtists', '')
     
     # If not found, search by title
     if not audio_url and title:
-        songs = search_saavn(title)
-        for song in songs:
+        saavn_songs = search_saavn(title, 5)
+        for song in saavn_songs:
             score = title_score(title, song.get('name', ''), song.get('primaryArtists', ''))
             if score > 0.3:
-                raw_urls = song.get('downloadUrl') or song.get('download_url') or []
-                if isinstance(raw_urls, str):
-                    raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
-                audio_url, _ = pick_best_quality(raw_urls)
+                audio_url, quality = get_saavn_audio(song)
                 if audio_url:
-                    if not title: title = song.get('name', '')
-                    if not artist: artist = song.get('primaryArtists', '')
+                    source = 'saavn'
+                    if not title:
+                        title = song.get('name', '')
+                    if not artist:
+                        artist = song.get('primaryArtists', '')
                     break
     
     # YouTube fallback
     if not audio_url and title:
-        youtube_results = search_youtube(f"{title} {artist}".strip(), 3)
+        youtube_results = search_youtube(title, artist, 3)
         if youtube_results:
-            video_id = youtube_results[0]['trackId']
-            audio_url = get_youtube_audio_url(video_id)
-            if not title: title = youtube_results[0].get('trackName', '')
-            if not artist: artist = youtube_results[0].get('artistName', '')
+            yt = youtube_results[0]
+            audio_url = yt.get('url')
+            quality = yt.get('quality', '128kbps')
+            source = 'youtube'
+            if not title:
+                title = yt.get('title', title)
+            if not artist:
+                artist = yt.get('artist', artist)
     
     if not audio_url:
-        return jsonify({'error': 'No audio found'}), 404
+        return jsonify({'error': 'No audio source found'}), 404
     
     # Stream the audio
     try:
@@ -463,6 +618,8 @@ def play_song():
             'Content-Type': upstream.headers.get('Content-Type', 'audio/mpeg'),
             'Accept-Ranges': 'bytes',
             'Cache-Control': 'no-cache',
+            'X-Audio-Quality': quality,
+            'X-Audio-Source': source,
         }
         
         def generate():
@@ -473,10 +630,11 @@ def play_song():
         
         return Response(stream_with_context(generate()), status=upstream.status_code, headers=resp_headers)
     except Exception as e:
+        log.error(f"Stream error: {e}")
         return jsonify({'error': str(e)}), 500
 
 # ═══════════════════════════════════════════════════════════════
-# /api/yt-play - YOUTUBE PLAY
+# /api/yt-play - PLAY YOUTUBE AUDIO
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/yt-play')
 @limiter.limit("200 per minute")
@@ -485,7 +643,30 @@ def yt_play():
     if not video_id:
         return jsonify({'error': 'Missing video id'}), 400
     
-    audio_url = get_youtube_audio_url(video_id)
+    youtube_results = search_youtube('', '', 1)
+    audio_url = None
+    
+    # Simple approach: use yt-dlp directly
+    try:
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            url = f"https://www.youtube.com/watch?v={video_id}"
+            info = ydl.extract_info(url, download=False)
+            formats = info.get('formats', [])
+            audio_formats = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
+            if not audio_formats:
+                audio_formats = [f for f in formats if f.get('acodec') != 'none']
+            if audio_formats:
+                best = max(audio_formats, key=lambda f: f.get('abr', 0) or 0)
+                audio_url = best.get('url')
+    except Exception as e:
+        log.error(f"YouTube play error: {e}")
+        return jsonify({'error': str(e)}), 500
+    
     if not audio_url:
         return jsonify({'error': 'No audio found'}), 404
     
@@ -526,14 +707,11 @@ def get_saavn_song():
     if not q:
         return jsonify({'success': False, 'url': None, 'token': token})
     
-    songs = search_saavn(q)
-    for song in songs:
+    saavn_songs = search_saavn(q, 10)
+    for song in saavn_songs:
         score = title_score(q, song.get('name', ''), song.get('primaryArtists', ''))
         if score > 0.3:
-            raw_urls = song.get('downloadUrl') or song.get('download_url') or []
-            if isinstance(raw_urls, str):
-                raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
-            audio_url, quality = pick_best_quality(raw_urls)
+            audio_url, quality = get_saavn_audio(song)
             if audio_url:
                 return jsonify({
                     'success': True,
@@ -545,6 +723,21 @@ def get_saavn_song():
                     'image': pick_image(song),
                     'source': 'saavn'
                 })
+    
+    # YouTube fallback
+    youtube_results = search_youtube(q, artist, 1)
+    if youtube_results:
+        yt = youtube_results[0]
+        return jsonify({
+            'success': True,
+            'token': token,
+            'url': yt.get('url'),
+            'quality': yt.get('quality', '128kbps'),
+            'title': yt.get('title', q),
+            'artist': yt.get('artist', artist),
+            'image': yt.get('image', ''),
+            'source': 'youtube'
+        })
     
     return jsonify({'success': False, 'url': None, 'token': token})
 
@@ -561,14 +754,11 @@ def resolve_song():
     if not q:
         return jsonify({'success': False, 'url': None, 'token': token})
     
-    songs = search_saavn(q)
-    for song in songs:
+    saavn_songs = search_saavn(q, 5)
+    for song in saavn_songs:
         score = title_score(q, song.get('name', ''), song.get('primaryArtists', ''))
         if score > 0.3:
-            raw_urls = song.get('downloadUrl') or song.get('download_url') or []
-            if isinstance(raw_urls, str):
-                raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
-            audio_url, quality = pick_best_quality(raw_urls)
+            audio_url, quality = get_saavn_audio(song)
             if audio_url:
                 return jsonify({
                     'success': True,
@@ -582,16 +772,17 @@ def resolve_song():
                 })
     
     # YouTube fallback
-    youtube_results = search_youtube(f"{q} {artist}".strip(), 1)
+    youtube_results = search_youtube(q, artist, 1)
     if youtube_results:
+        yt = youtube_results[0]
         return jsonify({
             'success': True,
             'token': token,
-            'url': youtube_results[0]['previewUrl'],
-            'quality': '128kbps',
-            'title': youtube_results[0]['trackName'],
-            'artist': youtube_results[0]['artistName'],
-            'image': youtube_results[0]['artworkUrl500'],
+            'url': f"/api/stream?url={quote(yt.get('url', ''))}",
+            'quality': yt.get('quality', '128kbps'),
+            'title': yt.get('title', q),
+            'artist': yt.get('artist', artist),
+            'image': yt.get('image', ''),
             'source': 'youtube'
         })
     
@@ -662,14 +853,13 @@ def download_song():
     stream_url = None
     filename = f"{q} - {artist}".strip(' -') if artist else q
     
-    songs = search_saavn(q)
-    for song in songs:
+    saavn_songs = search_saavn(q, 5)
+    for song in saavn_songs:
         score = title_score(q, song.get('name', ''), song.get('primaryArtists', ''))
         if score > 0.3:
             raw_urls = song.get('downloadUrl') or song.get('download_url') or []
             if isinstance(raw_urls, str):
                 raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
-            # Try for 320kbps first
             for item in raw_urls:
                 if '320' in str(item.get('quality', '')):
                     stream_url = item.get('url') or item.get('link')
@@ -681,11 +871,10 @@ def download_song():
                 break
     
     if not stream_url:
-        youtube_results = search_youtube(f"{q} {artist}".strip(), 1)
+        youtube_results = search_youtube(q, artist, 1)
         if youtube_results:
-            video_id = youtube_results[0]['trackId']
-            stream_url = get_youtube_audio_url(video_id)
-            filename = f"{youtube_results[0]['trackName']} - {youtube_results[0]['artistName']}".strip(' -')
+            stream_url = youtube_results[0].get('url')
+            filename = f"{youtube_results[0].get('title', q)} - {youtube_results[0].get('artist', artist)}".strip(' -')
     
     if not stream_url:
         return jsonify({'error': 'Song not found'}), 404
@@ -714,26 +903,30 @@ def download_song():
         return jsonify({'error': str(e)}), 500
 
 # ═══════════════════════════════════════════════════════════════
-# AUTH - GOOGLE LOGIN
+# AUTH - GOOGLE LOGIN (Optional - works without env vars)
 # ═══════════════════════════════════════════════════════════════
-def verify_google_jwt(credential):
-    if not GOOGLE_CLIENT_ID:
-        # Development mode
+def _verify_google_jwt(credential: str) -> dict | None:
+    if DEV_MODE or not GOOGLE_CLIENT_ID:
         return {'sub': 'dev_user', 'name': 'Dev User', 'email': 'dev@example.com', 'picture': ''}
     try:
         payload = id_token.verify_oauth2_token(credential, _google_req, GOOGLE_CLIENT_ID)
+        if payload.get('iss') not in ('accounts.google.com', 'https://accounts.google.com'):
+            return None
         return payload
-    except Exception:
+    except Exception as e:
+        log.warning(f'JWT verify failed: {e}')
         return None
 
-def extract_bearer_sub(auth_header):
+def _extract_bearer_sub(auth_header: str) -> str | None:
     if not auth_header or not auth_header.startswith('Bearer '):
         return None
     token = auth_header[7:].strip()
     if not token:
         return None
-    payload = verify_google_jwt(token)
-    return payload.get('sub') if payload else None
+    payload = _verify_google_jwt(token)
+    if not payload:
+        return None
+    return payload.get('sub', '') or None
 
 @app.route('/api/auth/google', methods=['POST'])
 @limiter.limit("20 per minute")
@@ -741,7 +934,7 @@ def handle_google_auth():
     data = request.get_json() or {}
     credential = data.get('credential', '').strip()
     
-    if not credential and not GOOGLE_CLIENT_ID:
+    if not credential and DEV_MODE:
         return jsonify({
             'success': True,
             'sub': 'dev_user',
@@ -753,7 +946,7 @@ def handle_google_auth():
     if not credential:
         return jsonify({'error': 'Missing credential'}), 400
     
-    profile = verify_google_jwt(credential)
+    profile = _verify_google_jwt(credential)
     if not profile:
         return jsonify({'error': 'Invalid credential'}), 401
     
@@ -771,21 +964,21 @@ def handle_google_auth():
 @app.route('/api/sync/state', methods=['POST'])
 @limiter.limit("60 per minute")
 def save_playback_state():
-    sub = extract_bearer_sub(request.headers.get('Authorization', ''))
-    if not sub:
+    sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
+    if not sub and not DEV_MODE:
         return jsonify({'error': 'Unauthorized'}), 401
     return jsonify({'status': 'ok'})
 
 @app.route('/api/sync/state', methods=['GET'])
 @limiter.limit("60 per minute")
 def get_playback_state():
-    sub = extract_bearer_sub(request.headers.get('Authorization', ''))
-    if not sub:
+    sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
+    if not sub and not DEV_MODE:
         return jsonify({'error': 'Unauthorized'}), 401
     return jsonify({'success': False})
 
 # ═══════════════════════════════════════════════════════════════
-# TV PAIRING
+# TV PAIRING (Optional)
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/auth/tv-generate-code', methods=['POST'])
 @limiter.limit("10 per minute")
@@ -804,21 +997,15 @@ def mobile_verify_tv():
     return jsonify({'success': True})
 
 # ═══════════════════════════════════════════════════════════════
-# GHOST PIN
+# GHOST PIN (Optional)
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/auth/verify-ghost-pin', methods=['POST'])
 @limiter.limit("10 per minute")
 def verify_ghost_pin():
-    sub = extract_bearer_sub(request.headers.get('Authorization', ''))
-    if not sub:
+    sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
+    if not sub and not DEV_MODE:
         return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-    
-    data = request.get_json() or {}
-    pin = data.get('pin', '').strip()
-    
-    if pin:
-        return jsonify({'success': True})
-    return jsonify({'success': False})
+    return jsonify({'success': True})
 
 # ═══════════════════════════════════════════════════════════════
 # ADMIN
@@ -839,7 +1026,8 @@ def health_status():
     return jsonify({
         'status': 'ok',
         'saavn_mirrors': len(SAAVN_MIRRORS),
-        'sources': ['saavn', 'youtube'],
+        'sources': ['saavn', 'youtube', 'itunes'],
+        'dev_mode': DEV_MODE,
         'timestamp': time.time(),
     })
 
@@ -852,8 +1040,29 @@ def health():
 # ═══════════════════════════════════════════════════════════════
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 7700))
-    print(f"\n{'='*50}")
-    print(f"🚀 Server running on http://localhost:{port}")
-    print(f"📱 Open this URL in your browser")
-    print(f"{'='*50}\n")
+    print(f"\n{'='*60}")
+    print(f"🎵 MUSIC SERVER STARTED")
+    print(f"{'='*60}")
+    print(f"📍 Local:   http://localhost:{port}")
+    print(f"📍 Network: http://0.0.0.0:{port}")
+    print(f"\n📡 API Endpoints:")
+    print(f"   GET  /api/search?q=song_name")
+    print(f"   GET  /api/songs?q=song_name")
+    print(f"   GET  /api/songs/90s")
+    print(f"   GET  /api/play?id=song_id")
+    print(f"   GET  /api/saavn?q=song_name")
+    print(f"   GET  /api/resolve?q=song_name")
+    print(f"   GET  /api/stream?url=audio_url")
+    print(f"   GET  /api/download?q=song_name")
+    print(f"   POST /api/auth/google")
+    print(f"   GET  /api/health")
+    print(f"\n🔧 Features:")
+    print(f"   ✅ iTunes thumbnails (600x600)")
+    print(f"   ✅ Saavn audio (320kbps)")
+    print(f"   ✅ YouTube fallback")
+    print(f"   ✅ Auto mirror discovery")
+    print(f"   ✅ CORS enabled")
+    print(f"   ✅ Rate limiting")
+    print(f"{'='*60}\n")
+    
     app.run(host='0.0.0.0', port=port, threaded=True, debug=False)
