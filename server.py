@@ -23,7 +23,7 @@ import libsql_client
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
 
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 ADMIN_KEY        = os.environ.get('ADMIN_KEY', '')
@@ -55,144 +55,9 @@ def get_real_ip():
         request.remote_addr or '127.0.0.1'
     )
 
-# OPT-1: ThreadPoolExecutor raised to 48 workers.
-# Reason: /api/play fires 4 concurrent source fetches + parallel Saavn mirrors.
-# Under 32 workers, threads queue up during spikes. 48 keeps latency flat.
 limiter   = Limiter(get_real_ip, app=app, default_limits=[], storage_uri="memory://")
-_executor = ThreadPoolExecutor(max_workers=48)
+_executor = ThreadPoolExecutor(max_workers=32)
 _google_req = google_requests.Request()
-
-# ═══════════════════════════════════════════════════════════════
-# OPT-2: PERSISTENT TURSO CLIENT (singleton + dedicated event loop)
-# Reason: Original code created a NEW libsql client + NEW asyncio event loop
-# on every single DB call. That's a full TCP handshake + SSL + loop setup
-# overhead (~50-150ms) per query. Singleton reuses the connection.
-# ═══════════════════════════════════════════════════════════════
-_turso_client = None
-_turso_lock   = threading.Lock()
-_db_loop      = None
-_db_loop_thread = None
-
-def _start_db_loop():
-    """Dedicated event loop running in its own daemon thread for all DB ops."""
-    global _db_loop
-    _db_loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(_db_loop)
-    _db_loop.run_forever()
-
-_db_loop_thread = threading.Thread(target=_start_db_loop, daemon=True, name='turso-loop')
-_db_loop_thread.start()
-time.sleep(0.05)  # brief wait for loop to start
-
-def _get_turso_client():
-    """Return (or lazily create) the singleton Turso client."""
-    global _turso_client
-    if _turso_client is not None:
-        return _turso_client
-    with _turso_lock:
-        if _turso_client is None:
-            _turso_client = libsql_client.create_client(url=TURSO_URL, auth_token=TURSO_TOKEN)
-    return _turso_client
-
-def _run_db(coro):
-    """Submit a coroutine to the dedicated DB event loop and block until done."""
-    future = asyncio.run_coroutine_threadsafe(coro, _db_loop)
-    return future.result(timeout=15)
-
-async def _turso_execute(sql, args=None):
-    client = _get_turso_client()
-    if args:
-        return await client.execute(sql, args)
-    return await client.execute(sql)
-
-async def _turso_batch(statements):
-    client = _get_turso_client()
-    return await client.batch(statements)
-
-def db_execute(sql, args=None):
-    return _run_db(_turso_execute(sql, args))
-
-def db_batch(statements):
-    return _run_db(_turso_batch(statements))
-
-# ═══════════════════════════════════════════════════════════════
-# OPT-3: STRIPPED INIT_DB — removed song_cache table entirely.
-# Reason: song_cache in Turso was causing high-frequency read/writes
-# (every /api/play hit = 1 SELECT + 1 INSERT). Moved fully to in-memory.
-# Only user-critical tables remain in Turso (users, playback_state, tv_pairing).
-# ═══════════════════════════════════════════════════════════════
-def init_db():
-    db_batch([
-        "CREATE TABLE IF NOT EXISTS users (google_sub TEXT PRIMARY KEY, name TEXT, email TEXT, picture TEXT, ghost_pin_hash TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS playback_state (google_sub TEXT PRIMARY KEY, song_id TEXT, song_title TEXT, artist TEXT, art_url TEXT, progress REAL DEFAULT 0, device TEXT DEFAULT 'mobile', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
-        "CREATE TABLE IF NOT EXISTS tv_pairing (pairing_code TEXT PRIMARY KEY, tv_session_id TEXT, google_sub TEXT, expires_at TIMESTAMP)",
-    ])
-    log.info('[DB] Turso tables initialized (song_cache → in-memory only)')
-
-init_db()
-
-# ═══════════════════════════════════════════════════════════════
-# OPT-4: UNIFIED IN-MEMORY CACHE with per-key TTL + LRU eviction
-# Replaces: Turso song_cache (DB round trips) + old _meta_cache (no TTL enforcement on evict)
-# All hot paths — /api/play, /api/saavn, /api/songs, yt-dlp — hit this first.
-# Zero network cost on cache hit.
-# ═══════════════════════════════════════════════════════════════
-
-# OPT-4a: Separate cache stores by data type (different TTLs, different eviction budgets)
-_song_cache  = {}   # play/saavn results: key → (ts, data)
-_meta_cache  = {}   # search/songs results: key → (ts, data)
-_ytdlp_cache = {}   # yt-dlp / soundcloud: key → (ts, data)
-
-# OPT-4b: TTLs tuned to actual URL lifetime
-# Saavn CDN URLs are stable (24h). YT/SC expire in ~6h. Meta/search: 10min.
-_SONG_CACHE_TTL  = 21600  # 6h — conservative (covers both stable + volatile)
-_META_CACHE_TTL  = 600    # 10min
-_YTDLP_CACHE_TTL = 240    # 4min (YT URLs expire fast)
-
-# OPT-4c: Per-store size caps to bound memory usage
-_CACHE_MAX = {
-    id(_song_cache):  500,
-    id(_meta_cache):  300,
-    id(_ytdlp_cache): 200,
-}
-
-_cache_lock = threading.Lock()
-
-def _cache_get(key, store=None):
-    store = store if store is not None else _meta_cache
-    entry = store.get(key)
-    if not entry:
-        return None
-    ts, data = entry
-    if   store is _ytdlp_cache: ttl = _YTDLP_CACHE_TTL
-    elif store is _song_cache:  ttl = _SONG_CACHE_TTL
-    else:                       ttl = _META_CACHE_TTL
-    if time.time() - ts > ttl:
-        try:
-            del store[key]
-        except KeyError:
-            pass
-        return None
-    return data
-
-def _cache_set(key, data, store=None):
-    store = store if store is not None else _meta_cache
-    now   = time.time()
-    with _cache_lock:
-        store[key] = (now, data)
-        cap = _CACHE_MAX.get(id(store), 300)
-        if len(store) > cap:
-            # OPT-4d: Evict oldest 10% in one pass instead of oldest-1
-            # Reason: deleting 1 at a time on every overflow = O(n) on every write
-            sorted_keys = sorted(store, key=lambda k: store[k][0])
-            evict_count = max(1, cap // 10)
-            for k in sorted_keys[:evict_count]:
-                store.pop(k, None)
-
-# OPT-5: REMOVED _turso_cache_get / _turso_cache_set entirely.
-# All cache reads/writes now go through _cache_get/_cache_set above.
-# This eliminates the biggest latency source: a DB round trip on every play.
-# Volatile URL HEAD checks also removed — they added 3s worst-case to cache hits.
 
 # ═══════════════════════════════════════════════════════════════
 # JWT HELPERS
@@ -219,6 +84,113 @@ def _extract_bearer_sub(auth_header: str) -> str | None:
     if not payload:
         return None
     return payload.get('sub', '') or None
+
+# ═══════════════════════════════════════════════════════════════
+# DATABASE — TURSO
+# ═══════════════════════════════════════════════════════════════
+def _run_async(coro):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+async def _turso_execute(sql, args=None):
+    async with libsql_client.create_client(url=TURSO_URL, auth_token=TURSO_TOKEN) as client:
+        if args:
+            return await client.execute(sql, args)
+        return await client.execute(sql)
+
+async def _turso_batch(statements):
+    async with libsql_client.create_client(url=TURSO_URL, auth_token=TURSO_TOKEN) as client:
+        return await client.batch(statements)
+
+def db_execute(sql, args=None):
+    return _run_async(_turso_execute(sql, args))
+
+def db_batch(statements):
+    return _run_async(_turso_batch(statements))
+
+def init_db():
+    db_batch([
+        "CREATE TABLE IF NOT EXISTS users (google_sub TEXT PRIMARY KEY, name TEXT, email TEXT, picture TEXT, ghost_pin_hash TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS playback_state (google_sub TEXT PRIMARY KEY, song_id TEXT, song_title TEXT, artist TEXT, art_url TEXT, progress REAL DEFAULT 0, device TEXT DEFAULT 'mobile', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS tv_pairing (pairing_code TEXT PRIMARY KEY, tv_session_id TEXT, google_sub TEXT, expires_at TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS song_cache (cache_key TEXT PRIMARY KEY, url TEXT, quality TEXT, title TEXT, artist TEXT, image TEXT, source TEXT, cached_at INTEGER DEFAULT (strftime('%s','now')))",
+    ])
+    log.info('[DB] Turso tables initialized')
+
+init_db()
+
+# ═══════════════════════════════════════════════════════════════
+# TURSO SONG CACHE
+# ═══════════════════════════════════════════════════════════════
+_SONG_CACHE_TTL = 86400  # 24 hours
+
+# YT/Piped/Invidious URLs expire in ~6-12h, Saavn URLs are stable
+_VOLATILE_SOURCES = {'youtube', 'youtube-broad', 'piped', 'invidious', 'soundcloud'}
+_VOLATILE_CACHE_TTL = 21600  # 6 hours for volatile sources
+
+def _turso_cache_get(cache_key: str) -> dict | None:
+    try:
+        result = db_execute(
+            "SELECT url, quality, title, artist, image, source, cached_at FROM song_cache WHERE cache_key = ?",
+            [cache_key]
+        )
+        if not result.rows:
+            return None
+        cols = [c.name for c in result.columns]
+        row  = dict(zip(cols, result.rows[0]))
+        age  = int(time.time()) - int(row.get('cached_at', 0))
+        source = row.get('source', '')
+        ttl  = _VOLATILE_CACHE_TTL if source in _VOLATILE_SOURCES else _SONG_CACHE_TTL
+        if age > ttl:
+            _executor.submit(_bg_delete_cache, cache_key)
+            return None
+        # Quick HEAD check for volatile sources to verify URL still alive
+        if source in _VOLATILE_SOURCES:
+            try:
+                head = requests.head(row['url'], timeout=3, allow_redirects=True, headers={'User-Agent': 'Mozilla/5.0'})
+                if head.status_code >= 400:
+                    _executor.submit(_bg_delete_cache, cache_key)
+                    log.info(f'[TursoCache] Expired URL evicted: {source} key={cache_key[:30]}')
+                    return None
+            except Exception:
+                # Network issue — still return cached, let playback handle it
+                pass
+        return row
+    except Exception as e:
+        log.warning(f'[TursoCache] get error: {e}')
+        return None
+
+def _bg_delete_cache(cache_key: str):
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(_turso_execute(
+                "DELETE FROM song_cache WHERE cache_key = ?", [cache_key]
+            ))
+        finally:
+            loop.close()
+    except Exception:
+        pass
+
+def _turso_cache_set(cache_key: str, data: dict):
+    try:
+        # Each background thread gets its own event loop — no asyncio conflict
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(_turso_execute(
+                "INSERT INTO song_cache (cache_key, url, quality, title, artist, image, source) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(cache_key) DO UPDATE SET url=excluded.url, quality=excluded.quality, title=excluded.title, artist=excluded.artist, image=excluded.image, source=excluded.source, cached_at=strftime('%s','now')",
+                [cache_key, data.get('url',''), data.get('quality',''), data.get('title',''), data.get('artist',''), data.get('image',''), data.get('source','')]
+            ))
+        finally:
+            loop.close()
+    except Exception as e:
+        log.warning(f'[TursoCache] set error: {e}')
 
 # ═══════════════════════════════════════════════════════════════
 # SAAVN MIRRORS
@@ -274,14 +246,14 @@ def _health_record_fail(url: str):
 def _health_score(url: str) -> float:
     with _health_lock:
         h = _source_health.get(url, {})
-    fails   = h.get('fails', 0)
-    last_ok = h.get('last_ok', 0)
-    avg_ms  = h.get('avg_ms', 999)
-    age_ok  = time.time() - last_ok if last_ok else 9999
-    score   = 100.0
-    score  -= fails * 10
-    score  -= min(age_ok / 60, 50)
-    score  -= min(avg_ms / 100, 30)
+    fails    = h.get('fails', 0)
+    last_ok  = h.get('last_ok', 0)
+    avg_ms   = h.get('avg_ms', 999)
+    age_ok   = time.time() - last_ok if last_ok else 9999
+    score    = 100.0
+    score   -= fails * 10
+    score   -= min(age_ok / 60, 50)
+    score   -= min(avg_ms / 100, 30)
     return score
 
 def _is_source_alive(url: str) -> bool:
@@ -410,9 +382,9 @@ _BASE_PIPED = [
     'https://pipedapi.reallyaweso.me',
     'https://pipedapi.in.projectsegfau.lt',
 ]
-PIPED_INSTANCES = list(_BASE_PIPED)
-_piped_lock     = threading.Lock()
-_piped_known    = set(_BASE_PIPED)
+PIPED_INSTANCES     = list(_BASE_PIPED)
+_piped_lock         = threading.Lock()
+_piped_known        = set(_BASE_PIPED)
 
 def _test_piped_instance(url: str) -> bool:
     try:
@@ -608,8 +580,8 @@ def _master_heal_loop():
                 try: f.result()
                 except Exception as e: log.warning(f'[SelfHeal] Healer error: {e}')
 
-            with _mirror_lock:    sm = len(SAAVN_MIRRORS)
-            with _piped_lock:     pi = len(PIPED_INSTANCES)
+            with _mirror_lock:   sm = len(SAAVN_MIRRORS)
+            with _piped_lock:    pi = len(PIPED_INSTANCES)
             with _invidious_lock: iv = len(INVIDIOUS_INSTANCES)
             log.info(f'[SelfHeal] ✓ Cycle done — Saavn:{sm} Piped:{pi} Invidious:{iv}')
         except Exception as e:
@@ -673,6 +645,33 @@ NINETIES_TRIGGERS = [
     '90', 'purane', 'purana', 'purani', 'old', 'retro',
     'classic', 'nineties', 'throwback', 'evergreen', 'gaane',
 ]
+
+# ═══════════════════════════════════════════════════════════════
+# CACHE
+# ═══════════════════════════════════════════════════════════════
+_meta_cache     = {}
+META_CACHE_TTL  = 600
+_ytdlp_cache    = {}
+YTDLP_CACHE_TTL = 240
+
+def _cache_get(key, store=None):
+    store = store if store is not None else _meta_cache
+    entry = store.get(key)
+    if not entry:
+        return None
+    ts, data = entry
+    ttl = YTDLP_CACHE_TTL if store is _ytdlp_cache else META_CACHE_TTL
+    if time.time() - ts > ttl:
+        del store[key]
+        return None
+    return data
+
+def _cache_set(key, data, store=None):
+    store = store if store is not None else _meta_cache
+    store[key] = (time.time(), data)
+    if len(store) > 300:
+        oldest = min(store, key=lambda k: store[k][0])
+        del store[oldest]
 
 # ═══════════════════════════════════════════════════════════════
 # CORS
@@ -747,9 +746,6 @@ def build_query_variants(title, artist='', fallback=''):
         if v and v not in seen:
             seen.add(v); variants.append(v)
 
-    if artist_c:
-        add(f"{artist_c} {title_c}")
-
     add(title_c)
     if artist_first: add(f"{title_c} {artist_first}")
     if artist_c:     add(f"{title_c} {artist_c}")
@@ -770,6 +766,7 @@ def build_query_variants(title, artist='', fallback=''):
     if artist_first and len(words) > 1:
         add(f"{words[0]} {words[1]} {artist_first}")
 
+    # Hindi transliteration variants — extra queries, zero existing logic touched
     try:
         t_translit = _hindi_translit_normalize(title_c)
         if t_translit and t_translit != title_c:
@@ -781,14 +778,18 @@ def build_query_variants(title, artist='', fallback=''):
     return variants
 
 # ═══════════════════════════════════════════════════════════════
-# HINDI TRANSLITERATION
+# HINDI TRANSLITERATION — normalize variant spellings
 # ═══════════════════════════════════════════════════════════════
 _HINDI_TRANSLIT = [
+    # vowels
     ('aa', 'a'), ('ee', 'i'), ('oo', 'u'), ('ae', 'ai'),
+    # common substitutions
     ('ph', 'f'), ('bh', 'b'), ('gh', 'g'), ('kh', 'k'),
     ('th', 't'), ('dh', 'd'), ('sh', 's'), ('ch', 'c'),
+    # vowel alternates
     ('ie', 'i'), ('ey', 'ai'), ('ay', 'ai'), ('oi', 'oy'),
     ('ou', 'u'), ('ue', 'u'),
+    # common spelling variants
     ('hi', 'he'), ('he', 'hi'), ('ho', 'hu'), ('hu', 'ho'),
     ('ki', 'ke'), ('ke', 'ki'), ('ko', 'ku'),
     ('na', 'nah'), ('nah', 'na'),
@@ -804,7 +805,7 @@ def _hindi_translit_normalize(text: str) -> str:
     t = re.sub(r'[^a-z0-9\s]', '', t)
     t = re.sub(r'\s+', ' ', t).strip()
     for src, dst in _HINDI_TRANSLIT:
-        t = re.sub(r'' + src + r'', dst, t)
+        t = re.sub(r'' + src + r'', dst, t)
     return t
 
 def normalize(text):
@@ -916,8 +917,8 @@ def _safe_year(date_str):
 # ═══════════════════════════════════════════════════════════════
 # MIRROR HEALTH
 # ═══════════════════════════════════════════════════════════════
-_mirror_fail_count   = {}
-_mirror_fail_time    = {}
+_mirror_fail_count = {}
+_mirror_fail_time  = {}
 MIRROR_FAIL_COOLDOWN = 30
 
 def _mirror_ok(mirror):
@@ -987,28 +988,18 @@ def _normalize_saavn_songs(raw_songs):
         artist = song.get('primaryArtists') or song.get('primary_artists') or ''
         image  = pick_image(song)
         year   = str(song.get('year') or '0')[:4]
-        dur_s  = int(song.get('duration', 0) or 0)
-        dur_ms = dur_s * 1000
-
-        if dur_s > 1080:
-            continue
-
+        dur_ms = int(song.get('duration', 0) or 0) * 1000
         raw_urls = song.get('downloadUrl') or song.get('download_url') or []
         if isinstance(raw_urls, str):
             raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
         _, quality = pick_best_quality(raw_urls)
         if not quality: continue
-        play_url = (
-            f"/api/play?id={quote(song_id, safe='')}"
-            f"&title={quote(title, safe='')}"
-            f"&artist={quote(artist, safe='')}"
-        )
         normalized.append({
             'trackId':         song_id,
             'trackName':       title,
             'artistName':      artist,
             'artworkUrl100':   image.replace('500x500', '100x100') if image else '',
-            'previewUrl':      play_url,
+            'previewUrl':      f"/api/play?id={quote(song_id, safe='')}",
             'trackTimeMillis': dur_ms,
             'releaseDate':     f"{year}-01-01T00:00:00Z",
             '_saavnId':        song_id,
@@ -1263,7 +1254,144 @@ def _fetch_saavn_by_id(song_id: str) -> dict | None:
     return None
 
 # ═══════════════════════════════════════════════════════════════
-# fetch_from_mirror — duration penalty + artist bonus
+# /api/play
+# ═══════════════════════════════════════════════════════════════
+@app.route('/api/play')
+@limiter.limit("200 per minute")
+def play_song():
+    song_id = request.args.get('id', '').strip()
+    title   = request.args.get('title', '').strip()
+    artist  = request.args.get('artist', '').strip()
+
+    if not song_id and not title:
+        return jsonify({'error': 'Missing id or title'}), 400
+
+    # Turso cache check
+    _play_ck = f"play:{song_id or normalize(title)}:{normalize(artist)}"
+    _play_cached = _turso_cache_get(_play_ck)
+    if _play_cached and _play_cached.get('url'):
+        log.info(f"[TursoCache] HIT play: id={song_id} title='{title}'")
+        audio_url = _play_cached['url']
+        quality   = _play_cached.get('quality', 'unknown')
+        source    = _play_cached.get('source', 'unknown')
+        if not title:  title  = _play_cached.get('title', '')
+        if not artist: artist = _play_cached.get('artist', '')
+    else:
+        audio_url = None
+        quality   = 'unknown'
+        source    = 'unknown'
+
+    if not audio_url and song_id:
+        result = _fetch_saavn_by_id(song_id)
+        if result and result.get('url'):
+            audio_url = result['url']
+            quality   = result.get('quality', 'unknown')
+            source    = 'saavn'
+            if not title:  title  = result.get('title', '')
+            if not artist: artist = result.get('artist', '')
+            log.info(f"[Play] ✓ Saavn ID quality={quality}")
+
+    if not audio_url and song_id and not title:
+        title = song_id.replace('_', ' ').replace('-', ' ').strip()
+        log.info(f"[Play] ID→title rescue: '{title}'")
+
+    if not audio_url and title:
+        for query in build_query_variants(title, artist, ''):
+            result = fetch_saavn_parallel(query)
+            if result and result.get('url'):
+                audio_url = result['url']
+                quality   = result.get('quality', 'unknown')
+                source    = 'saavn'
+                log.info(f"[Play] ✓ Saavn title='{result['title']}' quality={quality}")
+                break
+
+    if not audio_url and title:
+        log.info(f"[Play] Saavn miss → parallel YT + SC + Piped + Invidious: '{title}'")
+        yt_future  = _executor.submit(fetch_from_ytdlp, title, artist)
+        sc_future  = _executor.submit(fetch_from_soundcloud, title, artist)
+        pip_future = _executor.submit(fetch_from_piped, title, title=title, artist=artist)
+        inv_future = _executor.submit(fetch_from_invidious, title, title=title, artist=artist)
+
+        for future in as_completed([yt_future, sc_future, pip_future, inv_future], timeout=30):
+            try:
+                res = future.result()
+                if res and res.get('url'):
+                    audio_url = res['url']
+                    quality   = res.get('quality', 'unknown')
+                    source    = res.get('source', 'unknown')
+                    log.info(f"[Play] ✓ {source} '{res.get('title')}' quality={quality}")
+                    yt_future.cancel(); sc_future.cancel()
+                    pip_future.cancel(); inv_future.cancel()
+                    break
+            except Exception:
+                pass
+
+    if not audio_url and title:
+        # Last resort — YT broad search with no artist filter, guaranteed attempt
+        log.info(f"[Play] All parallel failed → last resort yt-dlp broad: '{title}'")
+        for broad_query in [title, title.split()[0] if title.split() else title]:
+            broad = fetch_from_ytdlp(broad_query, '')
+            if broad and broad.get('url'):
+                audio_url = broad['url']
+                quality   = broad.get('quality', 'unknown')
+                source    = 'youtube-broad'
+                log.info(f"[Play] ✓ yt-dlp broad '{broad.get('title')}' quality={quality}")
+                break
+
+    if not audio_url:
+        log.warning(f"[Play] ✗ ALL sources failed id={song_id} title='{title}'")
+        return jsonify({'error': 'No audio source found'}), 404
+
+    # Save to Turso cache async
+    _executor.submit(_turso_cache_set, _play_ck, {
+        'url': audio_url, 'quality': quality, 'source': source,
+        'title': title, 'artist': artist, 'image': ''
+    })
+
+    try:
+        req_headers = {
+            'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'Accept':          'audio/mpeg,audio/webm,audio/ogg,audio/*;q=0.9,*/*;q=0.5',
+            'Accept-Encoding': 'identity',
+            'Connection':      'keep-alive',
+        }
+        range_header = request.headers.get('Range')
+        if range_header: req_headers['Range'] = range_header
+
+        upstream = requests.get(
+            audio_url, headers=req_headers, stream=True,
+            timeout=60, allow_redirects=True
+        )
+        excluded = {'content-encoding', 'transfer-encoding', 'connection'}
+        resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in excluded}
+        resp_headers.update({
+            'Access-Control-Allow-Origin': '*',
+            'Accept-Ranges':               'bytes',
+            'Cache-Control':               'no-store',
+            'X-Audio-Quality':             quality,
+            'X-Audio-Source':              source,
+        })
+        if 'content-type' not in {k.lower() for k in resp_headers}:
+            resp_headers['Content-Type'] = 'audio/mpeg'
+
+        def generate():
+            try:
+                for chunk in upstream.iter_content(chunk_size=65536):
+                    if chunk: yield chunk
+            finally: upstream.close()
+
+        return Response(
+            stream_with_context(generate()),
+            status=upstream.status_code,
+            headers=resp_headers,
+            direct_passthrough=True,
+        )
+    except Exception as e:
+        log.error(f"[Play] Stream error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# ═══════════════════════════════════════════════════════════════
+# FETCH FROM MIRROR
 # ═══════════════════════════════════════════════════════════════
 def fetch_from_mirror(mirror, query, min_score=0.4):
     if not _mirror_ok(mirror): return None
@@ -1282,41 +1410,14 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
                 data.get('songs', {}).get('results') or []
             )
             best_song, best_score, best_dur = None, -1, float('inf')
-            q_normalized = normalize(query)
-
             for song in results:
                 song_title  = song.get('name') or song.get('title', '')
                 song_artist = song.get('primaryArtists') or song.get('primary_artists') or ''
                 if not has_word_match(query, song_title): continue
-
                 score = title_score(query, song_title, song_artist)
                 dur   = int(song.get('duration', 999) or 999)
-
-                if dur > 600:
-                    score -= 0.6
-                if dur > 900:
-                    score -= 1.0
-
-                song_year = int(song.get('year') or 0)
-                if song_year >= 2010:
-                    score += 0.15
-                elif song_year > 0 and song_year < 2000:
-                    score -= 0.25
-
-                if song_artist:
-                    artist_norm  = normalize(song_artist)
-                    artist_words = [w for w in artist_norm.split() if len(w) >= 3]
-                    query_words  = [w for w in q_normalized.split() if len(w) >= 3]
-                    matching_artist_words = sum(
-                        1 for aw in artist_words
-                        if any(fuzzy_word_match(aw, qw) >= 0.80 for qw in query_words)
-                    )
-                    if artist_words and matching_artist_words >= 1:
-                        score += 0.5 * (matching_artist_words / max(len(artist_words), 1))
-
                 if score > best_score or (score == best_score and dur < best_dur):
                     best_score = score; best_song = song; best_dur = dur
-
             if not best_song or best_score < min_score: continue
             raw_urls = best_song.get('downloadUrl') or best_song.get('download_url') or []
             if isinstance(raw_urls, str):
@@ -1353,11 +1454,7 @@ def fetch_saavn_parallel(query):
             except Exception: pass
     except Exception: pass
     if not all_results: return None
-
-    all_results.sort(
-        key=lambda r: r.get('score', 0) + (0.05 if '320' in str(r.get('quality', '')) else 0),
-        reverse=True
-    )
+    all_results.sort(key=lambda r: r.get('score', 0) + (0.05 if '320' in str(r.get('quality', '')) else 0), reverse=True)
     best = all_results[0]
     log.info(f"[Parallel] ✓ '{best['title']}' score={best['score']} quality={best['quality']}")
     return best
@@ -1404,11 +1501,11 @@ def fetch_from_piped(query, title='', artist=''):
             bitrate = best_audio.get('bitrate', 0)
             _health_record_ok(instance, elapsed)
             return {
-                'url':    best_audio['url'],
+                'url': best_audio['url'],
                 'quality': f"{bitrate // 1000}kbps" if bitrate > 0 else 'unknown',
-                'title':  best.get('title', title),
+                'title': best.get('title', title),
                 'artist': best.get('uploaderName', artist),
-                'image':  best.get('thumbnail', ''),
+                'image': best.get('thumbnail', ''),
                 'source': 'piped'
             }
         except Exception as e:
@@ -1464,11 +1561,11 @@ def fetch_from_invidious(query, title='', artist=''):
             bitrate = best_fmt.get('bitrate', 0)
             _health_record_ok(instance, elapsed)
             return {
-                'url':    best_fmt['url'],
+                'url': best_fmt['url'],
                 'quality': f"{bitrate // 1000}kbps" if bitrate > 0 else 'unknown',
-                'title':  best.get('title', title),
+                'title': best.get('title', title),
                 'artist': best.get('author', artist),
-                'image':  f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg",
+                'image': f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg",
                 'source': 'invidious'
             }
         except Exception as e:
@@ -1478,166 +1575,6 @@ def fetch_from_invidious(query, title='', artist=''):
     if fail_count >= len(instances):
         _maybe_reactive_heal('invidious')
     return None
-
-# ═══════════════════════════════════════════════════════════════
-# OPT-6: /api/play — in-memory cache first, Turso removed from hot path
-#
-# Changes vs original:
-#  1. _turso_cache_get() call replaced with _cache_get(key, _song_cache)
-#     → 0 network round trips on cache hit
-#  2. _turso_cache_set() async submit replaced with _cache_set()
-#     → sync in-memory write, sub-microsecond
-#  3. HEAD validation on volatile URLs removed
-#     → saves up to 3s on every cached volatile URL hit
-#  4. All other logic (ID fetch, title search, fallback chain) unchanged
-# ═══════════════════════════════════════════════════════════════
-@app.route('/api/play')
-@limiter.limit("200 per minute")
-def play_song():
-    song_id = request.args.get('id', '').strip()
-    title   = request.args.get('title', '').strip()
-    artist  = request.args.get('artist', '').strip()
-
-    if not song_id and not title:
-        return jsonify({'error': 'Missing id or title'}), 400
-
-    # OPT-6a: In-memory cache check — zero latency hit
-    _play_ck     = f"play:{song_id or normalize(title)}:{normalize(artist)}"
-    _play_cached = _cache_get(_play_ck, _song_cache)
-    if _play_cached and _play_cached.get('url'):
-        log.info(f"[MemCache] HIT play: id={song_id} title='{title}'")
-        audio_url = _play_cached['url']
-        quality   = _play_cached.get('quality', 'unknown')
-        source    = _play_cached.get('source', 'unknown')
-        if not title:  title  = _play_cached.get('title', '')
-        if not artist: artist = _play_cached.get('artist', '')
-    else:
-        audio_url = None
-        quality   = 'unknown'
-        source    = 'unknown'
-
-    if not audio_url and song_id:
-        result = _fetch_saavn_by_id(song_id)
-        if result and result.get('url'):
-            fetched_artist  = normalize(result.get('artist', ''))
-            expected_artist = normalize(artist)
-            artist_ok = True
-            if expected_artist and fetched_artist:
-                ea_words = [w for w in expected_artist.split() if len(w) >= 3]
-                fa_words = [w for w in fetched_artist.split() if len(w) >= 3]
-                if ea_words and fa_words:
-                    match_count = sum(
-                        1 for ew in ea_words
-                        if any(fuzzy_word_match(ew, fw) >= 0.75 for fw in fa_words)
-                    )
-                    artist_ok = match_count >= 1
-            if artist_ok:
-                audio_url = result['url']
-                quality   = result.get('quality', 'unknown')
-                source    = 'saavn'
-                if not title:  title  = result.get('title', '')
-                if not artist: artist = result.get('artist', '')
-                log.info(f"[Play] ✓ Saavn ID quality={quality} artist_verified={artist_ok}")
-            else:
-                log.info(f"[Play] ID artist mismatch: expected='{artist}' got='{result.get('artist')}' — falling to title search")
-
-    if not audio_url and song_id and not title:
-        title = song_id.replace('_', ' ').replace('-', ' ').strip()
-        log.info(f"[Play] ID→title rescue: '{title}'")
-
-    if not audio_url and title:
-        for query in build_query_variants(title, artist, ''):
-            result = fetch_saavn_parallel(query)
-            if result and result.get('url'):
-                audio_url = result['url']
-                quality   = result.get('quality', 'unknown')
-                source    = 'saavn'
-                log.info(f"[Play] ✓ Saavn title='{result['title']}' quality={quality}")
-                break
-
-    if not audio_url and title:
-        log.info(f"[Play] Saavn miss → parallel YT + SC + Piped + Invidious: '{title}'")
-        yt_future  = _executor.submit(fetch_from_ytdlp, title, artist)
-        sc_future  = _executor.submit(fetch_from_soundcloud, title, artist)
-        pip_future = _executor.submit(fetch_from_piped, title, title=title, artist=artist)
-        inv_future = _executor.submit(fetch_from_invidious, title, title=title, artist=artist)
-
-        for future in as_completed([yt_future, sc_future, pip_future, inv_future], timeout=30):
-            try:
-                res = future.result()
-                if res and res.get('url'):
-                    audio_url = res['url']
-                    quality   = res.get('quality', 'unknown')
-                    source    = res.get('source', 'unknown')
-                    log.info(f"[Play] ✓ {source} '{res.get('title')}' quality={quality}")
-                    yt_future.cancel(); sc_future.cancel()
-                    pip_future.cancel(); inv_future.cancel()
-                    break
-            except Exception:
-                pass
-
-    if not audio_url and title:
-        log.info(f"[Play] All parallel failed → last resort yt-dlp broad: '{title}'")
-        for broad_query in [title, title.split()[0] if title.split() else title]:
-            broad = fetch_from_ytdlp(broad_query, '')
-            if broad and broad.get('url'):
-                audio_url = broad['url']
-                quality   = broad.get('quality', 'unknown')
-                source    = 'youtube-broad'
-                log.info(f"[Play] ✓ yt-dlp broad '{broad.get('title')}' quality={quality}")
-                break
-
-    if not audio_url:
-        log.warning(f"[Play] ✗ ALL sources failed id={song_id} title='{title}'")
-        return jsonify({'error': 'No audio source found'}), 404
-
-    # OPT-6b: In-memory cache write — instant, no thread overhead
-    _cache_set(_play_ck, {
-        'url': audio_url, 'quality': quality, 'source': source,
-        'title': title, 'artist': artist, 'image': ''
-    }, _song_cache)
-
-    try:
-        req_headers = {
-            'User-Agent':      'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-            'Accept':          'audio/mpeg,audio/webm,audio/ogg,audio/*;q=0.9,*/*;q=0.5',
-            'Accept-Encoding': 'identity',
-            'Connection':      'keep-alive',
-        }
-        range_header = request.headers.get('Range')
-        if range_header: req_headers['Range'] = range_header
-
-        upstream = requests.get(
-            audio_url, headers=req_headers, stream=True,
-            timeout=60, allow_redirects=True
-        )
-        excluded = {'content-encoding', 'transfer-encoding', 'connection'}
-        resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in excluded}
-        resp_headers.update({
-            'Access-Control-Allow-Origin': '*',
-            'Accept-Ranges':               'bytes',
-            'Cache-Control':               'no-store',
-            'X-Audio-Quality':             quality,
-            'X-Audio-Source':              source,
-        })
-        if 'content-type' not in {k.lower() for k in resp_headers}:
-            resp_headers['Content-Type'] = 'audio/mpeg'
-
-        def generate():
-            try:
-                for chunk in upstream.iter_content(chunk_size=65536):
-                    if chunk: yield chunk
-            finally: upstream.close()
-
-        return Response(
-            stream_with_context(generate()),
-            status=upstream.status_code,
-            headers=resp_headers,
-            direct_passthrough=True,
-        )
-    except Exception as e:
-        log.error(f"[Play] Stream error: {e}")
-        return jsonify({'error': str(e)}), 500
 
 # ═══════════════════════════════════════════════════════════════
 # /api/songs
@@ -1722,7 +1659,7 @@ def get_90s_songs():
         return jsonify({'results': [], 'error': str(e)})
 
 # ═══════════════════════════════════════════════════════════════
-# OPT-7: /api/saavn — Turso cache replaced with in-memory
+# /api/saavn
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/saavn')
 @limiter.limit("100 per minute")
@@ -1735,10 +1672,11 @@ def get_saavn_song():
     if not q:
         return jsonify({'success': False, 'url': None, 'token': token})
 
-    _ck     = f"saavn:{normalize(q)}:{normalize(artist)}"
-    _cached = _cache_get(_ck, _song_cache)
+    # Turso cache check
+    _ck = f"saavn:{normalize(q)}:{normalize(artist)}"
+    _cached = _turso_cache_get(_ck)
     if _cached and not low_quality:
-        log.info(f"[MemCache] HIT saavn: '{q}'")
+        log.info(f"[TursoCache] HIT saavn: '{q}'")
         return jsonify({'success': True, 'token': token, **_cached})
 
     for query in build_query_variants(q, artist, fallback):
@@ -1747,17 +1685,17 @@ def get_saavn_song():
             if low_quality:
                 low_url, low_q = _pick_low_quality(result.get('_raw_urls', []))
                 if low_url: result['url'] = low_url; result['quality'] = low_q
-            _cache_set(_ck, result, _song_cache)
+            _executor.submit(_turso_cache_set, _ck, result)
             return jsonify({'success': True, 'token': token, **result})
 
     yt = fetch_from_ytdlp(q, artist)
     if yt and yt.get('url'):
-        _cache_set(_ck, yt, _song_cache)
+        _executor.submit(_turso_cache_set, _ck, yt)
         return jsonify({'success': True, 'token': token, **yt})
 
     sc = fetch_from_soundcloud(q, artist)
     if sc and sc.get('url'):
-        _cache_set(_ck, sc, _song_cache)
+        _executor.submit(_turso_cache_set, _ck, sc)
         return jsonify({'success': True, 'token': token, **sc})
 
     return jsonify({'success': False, 'url': None, 'token': token})
@@ -1947,11 +1885,11 @@ def health_status():
             avg_ms  = h.get('avg_ms', 0)
             status  = 'ok' if fails < 5 else ('degraded' if fails < 10 else 'dead')
             result.append({
-                'url':     url,
-                'status':  status,
-                'fails':   fails,
-                'last_ok': round(time.time() - last_ok) if last_ok else None,
-                'avg_ms':  round(avg_ms),
+                'url':      url,
+                'status':   status,
+                'fails':    fails,
+                'last_ok':  round(time.time() - last_ok) if last_ok else None,
+                'avg_ms':   round(avg_ms),
             })
         result.sort(key=lambda x: x['fails'])
         return result
@@ -1959,17 +1897,11 @@ def health_status():
     with _sc_client_id_lock:
         sc_id = SOUNDCLOUD_CLIENT_ID
 
-    # OPT-8: Added cache stats to health endpoint for observability
     return jsonify({
         'saavn':      {'count': len(saavn_list),  'instances': summarize(saavn_list)},
         'piped':      {'count': len(piped_list),  'instances': summarize(piped_list)},
         'invidious':  {'count': len(inv_list),    'instances': summarize(inv_list)},
         'soundcloud': {'client_id_prefix': sc_id[:8] + '...' if sc_id else 'missing'},
-        'cache': {
-            'song_cache':  len(_song_cache),
-            'meta_cache':  len(_meta_cache),
-            'ytdlp_cache': len(_ytdlp_cache),
-        },
         'timestamp':  round(time.time()),
     })
 
@@ -2018,9 +1950,9 @@ def get_playback_state():
     if not sub: return jsonify({'error': 'Unauthorized'}), 401
     result = db_execute("SELECT * FROM playback_state WHERE google_sub = ?", [sub])
     if result.rows:
-        row  = result.rows[0]
+        row = result.rows[0]
         cols = [c.name for c in result.columns]
-        r    = dict(zip(cols, row))
+        r = dict(zip(cols, row))
         return jsonify({
             'success'   : True,
             'songId'    : r['song_id'],
@@ -2104,7 +2036,7 @@ def verify_ghost_pin():
     return jsonify({'success': False})
 
 # ═══════════════════════════════════════════════════════════════
-# ADMIN
+# ADMIN — View registered users
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/admin/users')
 @limiter.limit("10 per minute")
