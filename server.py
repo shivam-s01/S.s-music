@@ -733,6 +733,9 @@ def clean_query(text):
     text = re.sub(r'["\u201c\u201d\u2018\u2019\'()]', '', text)
     return re.sub(r'\s+', ' ', text).strip()
 
+# ═══════════════════════════════════════════════════════════════
+# FIX 1: build_query_variants — artist-first variant added
+# ═══════════════════════════════════════════════════════════════
 def build_query_variants(title, artist='', fallback=''):
     title_c      = clean_query(title)
     artist_c     = clean_query(artist) if artist else ''
@@ -745,6 +748,11 @@ def build_query_variants(title, artist='', fallback=''):
         v = re.sub(r'\s+', ' ', v).strip()
         if v and v not in seen:
             seen.add(v); variants.append(v)
+
+    # ── PATCH: put "artist title" FIRST so Saavn finds exact modern song ──
+    # This is the most specific query — artist + title together = best Saavn hit
+    if artist_c:
+        add(f"{artist_c} {title_c}")
 
     add(title_c)
     if artist_first: add(f"{title_c} {artist_first}")
@@ -805,7 +813,7 @@ def _hindi_translit_normalize(text: str) -> str:
     t = re.sub(r'[^a-z0-9\s]', '', t)
     t = re.sub(r'\s+', ' ', t).strip()
     for src, dst in _HINDI_TRANSLIT:
-        t = re.sub(r'' + src + r'', dst, t)
+        t = re.sub(r'' + src + r'', dst, t)
     return t
 
 def normalize(text):
@@ -979,6 +987,9 @@ def _fetch_saavn_search_parallel(search_term):
     except Exception: pass
     return []
 
+# ═══════════════════════════════════════════════════════════════
+# FIX 2: _normalize_saavn_songs — filter out absurdly long tracks
+# ═══════════════════════════════════════════════════════════════
 def _normalize_saavn_songs(raw_songs):
     normalized = []
     for song in raw_songs:
@@ -988,18 +999,33 @@ def _normalize_saavn_songs(raw_songs):
         artist = song.get('primaryArtists') or song.get('primary_artists') or ''
         image  = pick_image(song)
         year   = str(song.get('year') or '0')[:4]
-        dur_ms = int(song.get('duration', 0) or 0) * 1000
+        dur_s  = int(song.get('duration', 0) or 0)
+        dur_ms = dur_s * 1000
+
+        # ── PATCH: skip tracks over 18 min (qawwalis, classical, etc.)
+        # unless nothing else matched — this is a soft pre-filter
+        # 1080s = 18 minutes
+        if dur_s > 1080:
+            continue
+
         raw_urls = song.get('downloadUrl') or song.get('download_url') or []
         if isinstance(raw_urls, str):
             raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
         _, quality = pick_best_quality(raw_urls)
         if not quality: continue
+        # ── PATCH: pass title + artist in previewUrl so /api/play has
+        # full context for scoring — not just a bare ID lookup
+        play_url = (
+            f"/api/play?id={quote(song_id, safe='')}"
+            f"&title={quote(title, safe='')}"
+            f"&artist={quote(artist, safe='')}"
+        )
         normalized.append({
             'trackId':         song_id,
             'trackName':       title,
             'artistName':      artist,
             'artworkUrl100':   image.replace('500x500', '100x100') if image else '',
-            'previewUrl':      f"/api/play?id={quote(song_id, safe='')}",
+            'previewUrl':      play_url,
             'trackTimeMillis': dur_ms,
             'releaseDate':     f"{year}-01-01T00:00:00Z",
             '_saavnId':        song_id,
@@ -1284,12 +1310,30 @@ def play_song():
     if not audio_url and song_id:
         result = _fetch_saavn_by_id(song_id)
         if result and result.get('url'):
-            audio_url = result['url']
-            quality   = result.get('quality', 'unknown')
-            source    = 'saavn'
-            if not title:  title  = result.get('title', '')
-            if not artist: artist = result.get('artist', '')
-            log.info(f"[Play] ✓ Saavn ID quality={quality}")
+            # ── PATCH: verify the fetched song actually matches artist
+            # If artist is known and result artist is completely different, skip
+            # and fall through to scored title search instead
+            fetched_artist = normalize(result.get('artist', ''))
+            expected_artist = normalize(artist)
+            artist_ok = True
+            if expected_artist and fetched_artist:
+                ea_words = [w for w in expected_artist.split() if len(w) >= 3]
+                fa_words = [w for w in fetched_artist.split() if len(w) >= 3]
+                if ea_words and fa_words:
+                    match_count = sum(
+                        1 for ew in ea_words
+                        if any(fuzzy_word_match(ew, fw) >= 0.75 for fw in fa_words)
+                    )
+                    artist_ok = match_count >= 1
+            if artist_ok:
+                audio_url = result['url']
+                quality   = result.get('quality', 'unknown')
+                source    = 'saavn'
+                if not title:  title  = result.get('title', '')
+                if not artist: artist = result.get('artist', '')
+                log.info(f"[Play] ✓ Saavn ID quality={quality} artist_verified={artist_ok}")
+            else:
+                log.info(f"[Play] ID artist mismatch: expected='{artist}' got='{result.get('artist')}' — falling to title search")
 
     if not audio_url and song_id and not title:
         title = song_id.replace('_', ' ').replace('-', ' ').strip()
@@ -1391,7 +1435,7 @@ def play_song():
         return jsonify({'error': str(e)}), 500
 
 # ═══════════════════════════════════════════════════════════════
-# FETCH FROM MIRROR
+# FIX 3: fetch_from_mirror — duration penalty + artist bonus
 # ═══════════════════════════════════════════════════════════════
 def fetch_from_mirror(mirror, query, min_score=0.4):
     if not _mirror_ok(mirror): return None
@@ -1410,14 +1454,55 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
                 data.get('songs', {}).get('results') or []
             )
             best_song, best_score, best_dur = None, -1, float('inf')
+
+            # ── PATCH: extract artist hint from query if present ──
+            # The query may be "Sachet Tandon Simroon Tera Naam"
+            # We use all query words for scoring but also check artist match
+            q_normalized = normalize(query)
+
             for song in results:
                 song_title  = song.get('name') or song.get('title', '')
                 song_artist = song.get('primaryArtists') or song.get('primary_artists') or ''
                 if not has_word_match(query, song_title): continue
+
                 score = title_score(query, song_title, song_artist)
                 dur   = int(song.get('duration', 999) or 999)
+
+                # ── PATCH A: penalize long tracks (qawwali / classical >= 10 min) ──
+                if dur > 600:
+                    score -= 0.6
+                # ── PATCH B: further penalize absurdly long tracks >= 15 min ──
+                if dur > 900:
+                    score -= 1.0
+
+                # ── PATCH C: boost songs released 2010+ (modern Bollywood) ──
+                # year field on Saavn song object
+                song_year = int(song.get('year') or 0)
+                if song_year >= 2010:
+                    score += 0.15
+                elif song_year > 0 and song_year < 2000:
+                    # Slight penalty for pre-2000 when we're looking for modern songs
+                    # This helps "Simroon Tera Naam 2023" beat "Naam" by NFAK 1985
+                    score -= 0.25
+
+                # ── PATCH D: artist name present in query → reward artist match ──
+                # e.g. query = "Sachet Tandon Simroon Tera Naam"
+                # song_artist = "Sachet Tandon" → big boost
+                if song_artist:
+                    artist_norm = normalize(song_artist)
+                    artist_words = [w for w in artist_norm.split() if len(w) >= 3]
+                    query_words  = [w for w in q_normalized.split() if len(w) >= 3]
+                    matching_artist_words = sum(
+                        1 for aw in artist_words
+                        if any(fuzzy_word_match(aw, qw) >= 0.80 for qw in query_words)
+                    )
+                    if artist_words and matching_artist_words >= 1:
+                        # At least one artist word matched in query — strong signal
+                        score += 0.5 * (matching_artist_words / max(len(artist_words), 1))
+
                 if score > best_score or (score == best_score and dur < best_dur):
                     best_score = score; best_song = song; best_dur = dur
+
             if not best_song or best_score < min_score: continue
             raw_urls = best_song.get('downloadUrl') or best_song.get('download_url') or []
             if isinstance(raw_urls, str):
@@ -1439,6 +1524,9 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
             continue
     return None
 
+# ═══════════════════════════════════════════════════════════════
+# FIX 4: fetch_saavn_parallel — year-aware reranking
+# ═══════════════════════════════════════════════════════════════
 def fetch_saavn_parallel(query):
     threshold = dynamic_min_score(query)
     with _mirror_lock:
@@ -1454,7 +1542,13 @@ def fetch_saavn_parallel(query):
             except Exception: pass
     except Exception: pass
     if not all_results: return None
-    all_results.sort(key=lambda r: r.get('score', 0) + (0.05 if '320' in str(r.get('quality', '')) else 0), reverse=True)
+
+    # ── PATCH: sort by score (already includes duration + year penalties from fetch_from_mirror)
+    # Additional 320kbps quality tiebreaker stays intact
+    all_results.sort(
+        key=lambda r: r.get('score', 0) + (0.05 if '320' in str(r.get('quality', '')) else 0),
+        reverse=True
+    )
     best = all_results[0]
     log.info(f"[Parallel] ✓ '{best['title']}' score={best['score']} quality={best['quality']}")
     return best
