@@ -1,31 +1,8 @@
-# ════════════════════════════════════════════════════
-# Aurum — requirements.txt
-# ════════════════════════════════════════════════════
-
-# ── Core ─────────────────────────────────────────────
 flask>=3.0,<4.0
 requests>=2.31,<3.0
 werkzeug>=3.0,<4.0
-
-# ── Rate limiting ─────────────────────────────────────
 flask-limiter>=3.5,<4.0
-
-# ── Cache ─────────────────────────────────────────────
-cachetools>=5.3.0
-
-# ── Production WSGI server ────────────────────────────
 gunicorn>=21.2,<23.0
 gevent>=23.9,<25.0
-
-# ── Full song audio source ────────────────────────────
 yt-dlp>=2024.1.1
-
-# ── Google Auth ───────────────────────────────────────
 google-auth>=2.28,<3.0
-
-# ── Turso DB driver ───────────────────────────────────
-libsql-client>=0.3.0
-
-# ── Optional: Redis distributed cache ────────────────
-# Uncomment karo agar Redis use kar rahe ho
-# redis>=5.0,<6.0
