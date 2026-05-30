@@ -24,8 +24,6 @@ BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
 
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 ADMIN_KEY        = os.environ.get('ADMIN_KEY', '')
-TURSO_URL        = os.environ.get('TURSO_URL', '')
-TURSO_TOKEN      = os.environ.get('TURSO_TOKEN', '')
 
 if not GOOGLE_CLIENT_ID:
     raise RuntimeError('GOOGLE_CLIENT_ID env var is required')
@@ -79,51 +77,35 @@ def _extract_bearer_sub(auth_header: str) -> str | None:
     return payload.get('sub', '') or None
 
 # ═══════════════════════════════════════════════════════════════
-# DATABASE — TURSO (email/user save only)
+# DATABASE — SQLite (local, instant, email/user save only)
 # ═══════════════════════════════════════════════════════════════
-import asyncio
+import sqlite3
 
-def _run_async(coro):
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+DB_PATH = os.path.join(BASE_DIR, 'aurum_users.db')
 
-def _turso_available():
-    return bool(TURSO_URL and TURSO_TOKEN)
-
-async def _turso_execute(sql, args=None):
-    import libsql_client
-    async with libsql_client.create_client(url=TURSO_URL, auth_token=TURSO_TOKEN) as client:
-        if args:
-            return await client.execute(sql, args)
-        return await client.execute(sql)
-
-def db_execute(sql, args=None):
-    if not _turso_available():
-        return None
-    try:
-        return _run_async(_turso_execute(sql, args))
-    except Exception as e:
-        log.warning(f'[DB] execute error: {e}')
-        return None
+def get_db():
+    db = sqlite3.connect(DB_PATH)
+    db.row_factory = sqlite3.Row
+    return db
 
 def init_db():
-    if not _turso_available():
-        log.info('[DB] Turso not configured — skipping DB init')
-        return
     try:
-        db_execute(
-            "CREATE TABLE IF NOT EXISTS users (google_sub TEXT PRIMARY KEY, name TEXT, email TEXT, picture TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
-        )
-        log.info('[DB] Turso users table ready')
+        with get_db() as conn:
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    google_sub TEXT PRIMARY KEY,
+                    name       TEXT,
+                    email      TEXT,
+                    picture    TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            conn.commit()
+        log.info('[DB] SQLite users table ready')
     except Exception as e:
         log.warning(f'[DB] init error: {e}')
 
 init_db()
-
 # ═══════════════════════════════════════════════════════════════
 # SAAVN MIRRORS
 # ═══════════════════════════════════════════════════════════════
@@ -1917,10 +1899,15 @@ def handle_google_auth():
     if not profile: return jsonify({'error': 'Invalid credential'}), 401
     sub = profile.get('sub', '').strip()
     if not sub: return jsonify({'error': 'Missing sub'}), 400
-    db_execute(
-        "INSERT INTO users (google_sub, name, email, picture) VALUES (?, ?, ?, ?) ON CONFLICT(google_sub) DO UPDATE SET name=excluded.name, email=excluded.email, picture=excluded.picture",
-        [sub, profile.get('name',''), profile.get('email',''), profile.get('picture','')]
-    )
+    try:
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO users (google_sub, name, email, picture) VALUES (?, ?, ?, ?) ON CONFLICT(google_sub) DO UPDATE SET name=excluded.name, email=excluded.email, picture=excluded.picture",
+                [sub, profile.get('name',''), profile.get('email',''), profile.get('picture','')]
+            )
+            conn.commit()
+    except Exception as e:
+        log.warning(f'[Auth] DB save error: {e}')
     log.info(f"[Auth] User upserted: {profile.get('email', '')}")
     return jsonify({'success': True, 'sub': sub, 'name': profile.get('name','')})
 
@@ -1933,14 +1920,13 @@ def admin_users():
     secret = request.args.get('key', '')
     if not hmac.compare_digest(secret, ADMIN_KEY):
         return jsonify({'error': 'Unauthorized'}), 401
-    if not _turso_available():
-        return jsonify({'users': [], 'total': 0, 'note': 'Turso not configured'})
-    result = db_execute("SELECT name, email, picture, created_at FROM users ORDER BY created_at DESC")
-    if not result:
-        return jsonify({'users': [], 'total': 0})
-    cols   = [c.name for c in result.columns]
-    users  = [dict(zip(cols, row)) for row in result.rows]
-    return jsonify({'users': users, 'total': len(users)})
+    try:
+        with get_db() as conn:
+            rows = conn.execute("SELECT name, email, picture, created_at FROM users ORDER BY created_at DESC").fetchall()
+        users = [dict(r) for r in rows]
+        return jsonify({'users': users, 'total': len(users)})
+    except Exception as e:
+        return jsonify({'users': [], 'total': 0, 'error': str(e)})
 
 # ═══════════════════════════════════════════════════════════════
 # HEALTH
