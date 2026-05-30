@@ -89,14 +89,12 @@ def _extract_bearer_sub(auth_header: str) -> str | None:
 # DATABASE — TURSO
 # ═══════════════════════════════════════════════════════════════
 def _run_async(coro):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            raise RuntimeError
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    return loop.run_until_complete(coro)
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 async def _turso_execute(sql, args=None):
     async with libsql_client.create_client(url=TURSO_URL, auth_token=TURSO_TOKEN) as client:
@@ -119,10 +117,80 @@ def init_db():
         "CREATE TABLE IF NOT EXISTS users (google_sub TEXT PRIMARY KEY, name TEXT, email TEXT, picture TEXT, ghost_pin_hash TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS playback_state (google_sub TEXT PRIMARY KEY, song_id TEXT, song_title TEXT, artist TEXT, art_url TEXT, progress REAL DEFAULT 0, device TEXT DEFAULT 'mobile', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS tv_pairing (pairing_code TEXT PRIMARY KEY, tv_session_id TEXT, google_sub TEXT, expires_at TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS song_cache (cache_key TEXT PRIMARY KEY, url TEXT, quality TEXT, title TEXT, artist TEXT, image TEXT, source TEXT, cached_at INTEGER DEFAULT (strftime('%s','now')))",
     ])
     log.info('[DB] Turso tables initialized')
 
 init_db()
+
+# ═══════════════════════════════════════════════════════════════
+# TURSO SONG CACHE
+# ═══════════════════════════════════════════════════════════════
+_SONG_CACHE_TTL = 86400  # 24 hours
+
+# YT/Piped/Invidious URLs expire in ~6-12h, Saavn URLs are stable
+_VOLATILE_SOURCES = {'youtube', 'youtube-broad', 'piped', 'invidious', 'soundcloud'}
+_VOLATILE_CACHE_TTL = 21600  # 6 hours for volatile sources
+
+def _turso_cache_get(cache_key: str) -> dict | None:
+    try:
+        result = db_execute(
+            "SELECT url, quality, title, artist, image, source, cached_at FROM song_cache WHERE cache_key = ?",
+            [cache_key]
+        )
+        if not result.rows:
+            return None
+        cols = [c.name for c in result.columns]
+        row  = dict(zip(cols, result.rows[0]))
+        age  = int(time.time()) - int(row.get('cached_at', 0))
+        source = row.get('source', '')
+        ttl  = _VOLATILE_CACHE_TTL if source in _VOLATILE_SOURCES else _SONG_CACHE_TTL
+        if age > ttl:
+            _executor.submit(_bg_delete_cache, cache_key)
+            return None
+        # Quick HEAD check for volatile sources to verify URL still alive
+        if source in _VOLATILE_SOURCES:
+            try:
+                head = requests.head(row['url'], timeout=3, allow_redirects=True, headers={'User-Agent': 'Mozilla/5.0'})
+                if head.status_code >= 400:
+                    _executor.submit(_bg_delete_cache, cache_key)
+                    log.info(f'[TursoCache] Expired URL evicted: {source} key={cache_key[:30]}')
+                    return None
+            except Exception:
+                # Network issue — still return cached, let playback handle it
+                pass
+        return row
+    except Exception as e:
+        log.warning(f'[TursoCache] get error: {e}')
+        return None
+
+def _bg_delete_cache(cache_key: str):
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(_turso_execute(
+                "DELETE FROM song_cache WHERE cache_key = ?", [cache_key]
+            ))
+        finally:
+            loop.close()
+    except Exception:
+        pass
+
+def _turso_cache_set(cache_key: str, data: dict):
+    try:
+        # Each background thread gets its own event loop — no asyncio conflict
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(_turso_execute(
+                "INSERT INTO song_cache (cache_key, url, quality, title, artist, image, source) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(cache_key) DO UPDATE SET url=excluded.url, quality=excluded.quality, title=excluded.title, artist=excluded.artist, image=excluded.image, source=excluded.source, cached_at=strftime('%s','now')",
+                [cache_key, data.get('url',''), data.get('quality',''), data.get('title',''), data.get('artist',''), data.get('image',''), data.get('source','')]
+            ))
+        finally:
+            loop.close()
+    except Exception as e:
+        log.warning(f'[TursoCache] set error: {e}')
 
 # ═══════════════════════════════════════════════════════════════
 # SAAVN MIRRORS
@@ -698,7 +766,47 @@ def build_query_variants(title, artist='', fallback=''):
     if artist_first and len(words) > 1:
         add(f"{words[0]} {words[1]} {artist_first}")
 
+    # Hindi transliteration variants — extra queries, zero existing logic touched
+    try:
+        t_translit = _hindi_translit_normalize(title_c)
+        if t_translit and t_translit != title_c:
+            add(t_translit)
+            if artist_first: add(f"{t_translit} {artist_first}")
+    except Exception:
+        pass
+
     return variants
+
+# ═══════════════════════════════════════════════════════════════
+# HINDI TRANSLITERATION — normalize variant spellings
+# ═══════════════════════════════════════════════════════════════
+_HINDI_TRANSLIT = [
+    # vowels
+    ('aa', 'a'), ('ee', 'i'), ('oo', 'u'), ('ae', 'ai'),
+    # common substitutions
+    ('ph', 'f'), ('bh', 'b'), ('gh', 'g'), ('kh', 'k'),
+    ('th', 't'), ('dh', 'd'), ('sh', 's'), ('ch', 'c'),
+    # vowel alternates
+    ('ie', 'i'), ('ey', 'ai'), ('ay', 'ai'), ('oi', 'oy'),
+    ('ou', 'u'), ('ue', 'u'),
+    # common spelling variants
+    ('hi', 'he'), ('he', 'hi'), ('ho', 'hu'), ('hu', 'ho'),
+    ('ki', 'ke'), ('ke', 'ki'), ('ko', 'ku'),
+    ('na', 'nah'), ('nah', 'na'),
+    ('hai', 'he'), ('hain', 'he'), ('he', 'hai'),
+    ('tum', 'tum'), ('hum', 'hum'),
+    ('pyar', 'pyaar'), ('pyaar', 'pyar'),
+    ('dil', 'dill'), ('dill', 'dil'),
+    ('ishq', 'ishk'), ('ishk', 'ishq'),
+]
+
+def _hindi_translit_normalize(text: str) -> str:
+    t = text.lower().strip()
+    t = re.sub(r'[^a-z0-9\s]', '', t)
+    t = re.sub(r'\s+', ' ', t).strip()
+    for src, dst in _HINDI_TRANSLIT:
+        t = re.sub(r'' + src + r'', dst, t)
+    return t
 
 def normalize(text):
     text = text.lower()
@@ -1158,11 +1266,22 @@ def play_song():
     if not song_id and not title:
         return jsonify({'error': 'Missing id or title'}), 400
 
-    audio_url = None
-    quality   = 'unknown'
-    source    = 'unknown'
+    # Turso cache check
+    _play_ck = f"play:{song_id or normalize(title)}:{normalize(artist)}"
+    _play_cached = _turso_cache_get(_play_ck)
+    if _play_cached and _play_cached.get('url'):
+        log.info(f"[TursoCache] HIT play: id={song_id} title='{title}'")
+        audio_url = _play_cached['url']
+        quality   = _play_cached.get('quality', 'unknown')
+        source    = _play_cached.get('source', 'unknown')
+        if not title:  title  = _play_cached.get('title', '')
+        if not artist: artist = _play_cached.get('artist', '')
+    else:
+        audio_url = None
+        quality   = 'unknown'
+        source    = 'unknown'
 
-    if song_id:
+    if not audio_url and song_id:
         result = _fetch_saavn_by_id(song_id)
         if result and result.get('url'):
             audio_url = result['url']
@@ -1187,11 +1306,13 @@ def play_song():
                 break
 
     if not audio_url and title:
-        log.info(f"[Play] Saavn miss → parallel yt-dlp + SoundCloud: '{title}'")
-        yt_future = _executor.submit(fetch_from_ytdlp, title, artist)
-        sc_future = _executor.submit(fetch_from_soundcloud, title, artist)
+        log.info(f"[Play] Saavn miss → parallel YT + SC + Piped + Invidious: '{title}'")
+        yt_future  = _executor.submit(fetch_from_ytdlp, title, artist)
+        sc_future  = _executor.submit(fetch_from_soundcloud, title, artist)
+        pip_future = _executor.submit(fetch_from_piped, title, title=title, artist=artist)
+        inv_future = _executor.submit(fetch_from_invidious, title, title=title, artist=artist)
 
-        for future in as_completed([yt_future, sc_future], timeout=25):
+        for future in as_completed([yt_future, sc_future, pip_future, inv_future], timeout=30):
             try:
                 res = future.result()
                 if res and res.get('url'):
@@ -1199,40 +1320,33 @@ def play_song():
                     quality   = res.get('quality', 'unknown')
                     source    = res.get('source', 'unknown')
                     log.info(f"[Play] ✓ {source} '{res.get('title')}' quality={quality}")
-                    yt_future.cancel()
-                    sc_future.cancel()
+                    yt_future.cancel(); sc_future.cancel()
+                    pip_future.cancel(); inv_future.cancel()
                     break
             except Exception:
                 pass
 
     if not audio_url and title:
-        log.info(f"[Play] yt-dlp+SC miss → Piped: '{title}'")
-        piped = fetch_from_piped(title, title=title, artist=artist)
-        if piped and piped.get('url'):
-            audio_url = piped['url']
-            quality   = piped.get('quality', 'unknown')
-            source    = 'piped'
-
-    if not audio_url and title:
-        log.info(f"[Play] Piped miss → Invidious: '{title}'")
-        inv = fetch_from_invidious(title, title=title, artist=artist)
-        if inv and inv.get('url'):
-            audio_url = inv['url']
-            quality   = inv.get('quality', 'unknown')
-            source    = 'invidious'
-
-    if not audio_url and title:
-        log.info(f"[Play] All failed → last resort yt-dlp broad: '{title}'")
-        broad = fetch_from_ytdlp(title, '')
-        if broad and broad.get('url'):
-            audio_url = broad['url']
-            quality   = broad.get('quality', 'unknown')
-            source    = 'youtube-broad'
-            log.info(f"[Play] ✓ yt-dlp broad '{broad.get('title')}' quality={quality}")
+        # Last resort — YT broad search with no artist filter, guaranteed attempt
+        log.info(f"[Play] All parallel failed → last resort yt-dlp broad: '{title}'")
+        for broad_query in [title, title.split()[0] if title.split() else title]:
+            broad = fetch_from_ytdlp(broad_query, '')
+            if broad and broad.get('url'):
+                audio_url = broad['url']
+                quality   = broad.get('quality', 'unknown')
+                source    = 'youtube-broad'
+                log.info(f"[Play] ✓ yt-dlp broad '{broad.get('title')}' quality={quality}")
+                break
 
     if not audio_url:
         log.warning(f"[Play] ✗ ALL sources failed id={song_id} title='{title}'")
         return jsonify({'error': 'No audio source found'}), 404
+
+    # Save to Turso cache async
+    _executor.submit(_turso_cache_set, _play_ck, {
+        'url': audio_url, 'quality': quality, 'source': source,
+        'title': title, 'artist': artist, 'image': ''
+    })
 
     try:
         req_headers = {
@@ -1558,20 +1672,30 @@ def get_saavn_song():
     if not q:
         return jsonify({'success': False, 'url': None, 'token': token})
 
+    # Turso cache check
+    _ck = f"saavn:{normalize(q)}:{normalize(artist)}"
+    _cached = _turso_cache_get(_ck)
+    if _cached and not low_quality:
+        log.info(f"[TursoCache] HIT saavn: '{q}'")
+        return jsonify({'success': True, 'token': token, **_cached})
+
     for query in build_query_variants(q, artist, fallback):
         result = fetch_saavn_parallel(query)
         if result:
             if low_quality:
                 low_url, low_q = _pick_low_quality(result.get('_raw_urls', []))
                 if low_url: result['url'] = low_url; result['quality'] = low_q
+            _executor.submit(_turso_cache_set, _ck, result)
             return jsonify({'success': True, 'token': token, **result})
 
     yt = fetch_from_ytdlp(q, artist)
     if yt and yt.get('url'):
+        _executor.submit(_turso_cache_set, _ck, yt)
         return jsonify({'success': True, 'token': token, **yt})
 
     sc = fetch_from_soundcloud(q, artist)
     if sc and sc.get('url'):
+        _executor.submit(_turso_cache_set, _ck, sc)
         return jsonify({'success': True, 'token': token, **sc})
 
     return jsonify({'success': False, 'url': None, 'token': token})
