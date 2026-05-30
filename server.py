@@ -18,7 +18,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse, quote, urlencode
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
-import libsql_client
 
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
@@ -86,31 +85,91 @@ def _extract_bearer_sub(auth_header: str) -> str | None:
     return payload.get('sub', '') or None
 
 # ═══════════════════════════════════════════════════════════════
-# DATABASE — TURSO
+# DATABASE — TURSO HTTP REST API (no Rust driver needed)
 # ═══════════════════════════════════════════════════════════════
-def _run_async(coro):
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+def _turso_headers():
+    return {
+        'Authorization': f'Bearer {TURSO_TOKEN}',
+        'Content-Type': 'application/json',
+    }
+
+def _turso_url():
+    # TURSO_URL can be libsql:// or https:// — normalize to https://
+    url = TURSO_URL
+    if url.startswith('libsql://'):
+        url = 'https://' + url[len('libsql://'):]
+    url = url.rstrip('/')
+    return f"{url}/v2/pipeline"
+
+def _encode_arg(a):
+    if a is None:
+        return {'type': 'null'}
+    if isinstance(a, int):
+        return {'type': 'integer', 'value': str(a)}
+    if isinstance(a, float):
+        return {'type': 'float', 'value': str(a)}
+    return {'type': 'text', 'value': str(a)}
+
+class TursoResult:
+    """Mimics old libsql_client result shape so existing code works unchanged."""
+    def __init__(self, raw):
+        cols_raw   = raw.get('cols', [])
+        self.columns = [type('Col', (), {'name': c['name']})() for c in cols_raw]
+        raw_rows   = raw.get('rows', [])
+        self.rows  = []
+        for row in raw_rows:
+            parsed = []
+            for cell in row:
+                t = cell.get('type', 'null')
+                v = cell.get('value')
+                if t == 'null':
+                    parsed.append(None)
+                elif t == 'integer':
+                    parsed.append(int(v))
+                elif t == 'float':
+                    parsed.append(float(v))
+                else:
+                    parsed.append(v)
+            self.rows.append(parsed)
+
+def db_execute(sql: str, args=None) -> TursoResult:
+    stmt = {'sql': sql}
+    if args:
+        stmt['args'] = [_encode_arg(a) for a in args]
+    body = {
+        'requests': [
+            {'type': 'execute', 'stmt': stmt},
+            {'type': 'close'},
+        ]
+    }
     try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+        r = requests.post(_turso_url(), json=body, headers=_turso_headers(), timeout=10)
+        r.raise_for_status()
+        result = r.json()['results'][0]
+        if result.get('type') == 'error':
+            raise RuntimeError(f"Turso error: {result.get('error', {}).get('message', 'unknown')}")
+        return TursoResult(result.get('response', {}).get('result', {}))
+    except Exception as e:
+        log.error(f'[DB] execute error: {e}  sql={sql[:80]}')
+        raise
 
-async def _turso_execute(sql, args=None):
-    async with libsql_client.create_client(url=TURSO_URL, auth_token=TURSO_TOKEN) as client:
-        if args:
-            return await client.execute(sql, args)
-        return await client.execute(sql)
-
-async def _turso_batch(statements):
-    async with libsql_client.create_client(url=TURSO_URL, auth_token=TURSO_TOKEN) as client:
-        return await client.batch(statements)
-
-def db_execute(sql, args=None):
-    return _run_async(_turso_execute(sql, args))
-
-def db_batch(statements):
-    return _run_async(_turso_batch(statements))
+def db_batch(statements) -> list:
+    reqs = []
+    for s in statements:
+        if isinstance(s, str):
+            reqs.append({'type': 'execute', 'stmt': {'sql': s}})
+        else:
+            sql, args = s[0], s[1]
+            reqs.append({'type': 'execute', 'stmt': {'sql': sql, 'args': [_encode_arg(a) for a in args]}})
+    reqs.append({'type': 'close'})
+    body = {'requests': reqs}
+    try:
+        r = requests.post(_turso_url(), json=body, headers=_turso_headers(), timeout=15)
+        r.raise_for_status()
+        return r.json().get('results', [])
+    except Exception as e:
+        log.error(f'[DB] batch error: {e}')
+        raise
 
 def init_db():
     db_batch([
@@ -128,7 +187,6 @@ init_db()
 # ═══════════════════════════════════════════════════════════════
 _SONG_CACHE_TTL = 86400  # 24 hours
 
-# YT/Piped/Invidious URLs expire in ~6-12h, Saavn URLs are stable
 _VOLATILE_SOURCES = {'youtube', 'youtube-broad', 'piped', 'invidious', 'soundcloud'}
 _VOLATILE_CACHE_TTL = 21600  # 6 hours for volatile sources
 
@@ -148,7 +206,6 @@ def _turso_cache_get(cache_key: str) -> dict | None:
         if age > ttl:
             _executor.submit(_bg_delete_cache, cache_key)
             return None
-        # Quick HEAD check for volatile sources to verify URL still alive
         if source in _VOLATILE_SOURCES:
             try:
                 head = requests.head(row['url'], timeout=3, allow_redirects=True, headers={'User-Agent': 'Mozilla/5.0'})
@@ -157,7 +214,6 @@ def _turso_cache_get(cache_key: str) -> dict | None:
                     log.info(f'[TursoCache] Expired URL evicted: {source} key={cache_key[:30]}')
                     return None
             except Exception:
-                # Network issue — still return cached, let playback handle it
                 pass
         return row
     except Exception as e:
@@ -166,29 +222,16 @@ def _turso_cache_get(cache_key: str) -> dict | None:
 
 def _bg_delete_cache(cache_key: str):
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(_turso_execute(
-                "DELETE FROM song_cache WHERE cache_key = ?", [cache_key]
-            ))
-        finally:
-            loop.close()
+        db_execute("DELETE FROM song_cache WHERE cache_key = ?", [cache_key])
     except Exception:
         pass
 
 def _turso_cache_set(cache_key: str, data: dict):
     try:
-        # Each background thread gets its own event loop — no asyncio conflict
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(_turso_execute(
-                "INSERT INTO song_cache (cache_key, url, quality, title, artist, image, source) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(cache_key) DO UPDATE SET url=excluded.url, quality=excluded.quality, title=excluded.title, artist=excluded.artist, image=excluded.image, source=excluded.source, cached_at=strftime('%s','now')",
-                [cache_key, data.get('url',''), data.get('quality',''), data.get('title',''), data.get('artist',''), data.get('image',''), data.get('source','')]
-            ))
-        finally:
-            loop.close()
+        db_execute(
+            "INSERT INTO song_cache (cache_key, url, quality, title, artist, image, source) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(cache_key) DO UPDATE SET url=excluded.url, quality=excluded.quality, title=excluded.title, artist=excluded.artist, image=excluded.image, source=excluded.source, cached_at=strftime('%s','now')",
+            [cache_key, data.get('url',''), data.get('quality',''), data.get('title',''), data.get('artist',''), data.get('image',''), data.get('source','')]
+        )
     except Exception as e:
         log.warning(f'[TursoCache] set error: {e}')
 
@@ -733,9 +776,6 @@ def clean_query(text):
     text = re.sub(r'["\u201c\u201d\u2018\u2019\'()]', '', text)
     return re.sub(r'\s+', ' ', text).strip()
 
-# ═══════════════════════════════════════════════════════════════
-# FIX 1: build_query_variants — artist-first variant added
-# ═══════════════════════════════════════════════════════════════
 def build_query_variants(title, artist='', fallback=''):
     title_c      = clean_query(title)
     artist_c     = clean_query(artist) if artist else ''
@@ -749,8 +789,6 @@ def build_query_variants(title, artist='', fallback=''):
         if v and v not in seen:
             seen.add(v); variants.append(v)
 
-    # ── PATCH: put "artist title" FIRST so Saavn finds exact modern song ──
-    # This is the most specific query — artist + title together = best Saavn hit
     if artist_c:
         add(f"{artist_c} {title_c}")
 
@@ -774,7 +812,6 @@ def build_query_variants(title, artist='', fallback=''):
     if artist_first and len(words) > 1:
         add(f"{words[0]} {words[1]} {artist_first}")
 
-    # Hindi transliteration variants — extra queries, zero existing logic touched
     try:
         t_translit = _hindi_translit_normalize(title_c)
         if t_translit and t_translit != title_c:
@@ -785,19 +822,12 @@ def build_query_variants(title, artist='', fallback=''):
 
     return variants
 
-# ═══════════════════════════════════════════════════════════════
-# HINDI TRANSLITERATION — normalize variant spellings
-# ═══════════════════════════════════════════════════════════════
 _HINDI_TRANSLIT = [
-    # vowels
     ('aa', 'a'), ('ee', 'i'), ('oo', 'u'), ('ae', 'ai'),
-    # common substitutions
     ('ph', 'f'), ('bh', 'b'), ('gh', 'g'), ('kh', 'k'),
     ('th', 't'), ('dh', 'd'), ('sh', 's'), ('ch', 'c'),
-    # vowel alternates
     ('ie', 'i'), ('ey', 'ai'), ('ay', 'ai'), ('oi', 'oy'),
     ('ou', 'u'), ('ue', 'u'),
-    # common spelling variants
     ('hi', 'he'), ('he', 'hi'), ('ho', 'hu'), ('hu', 'ho'),
     ('ki', 'ke'), ('ke', 'ki'), ('ko', 'ku'),
     ('na', 'nah'), ('nah', 'na'),
@@ -987,9 +1017,6 @@ def _fetch_saavn_search_parallel(search_term):
     except Exception: pass
     return []
 
-# ═══════════════════════════════════════════════════════════════
-# FIX 2: _normalize_saavn_songs — filter out absurdly long tracks
-# ═══════════════════════════════════════════════════════════════
 def _normalize_saavn_songs(raw_songs):
     normalized = []
     for song in raw_songs:
@@ -1002,9 +1029,6 @@ def _normalize_saavn_songs(raw_songs):
         dur_s  = int(song.get('duration', 0) or 0)
         dur_ms = dur_s * 1000
 
-        # ── PATCH: skip tracks over 18 min (qawwalis, classical, etc.)
-        # unless nothing else matched — this is a soft pre-filter
-        # 1080s = 18 minutes
         if dur_s > 1080:
             continue
 
@@ -1013,8 +1037,6 @@ def _normalize_saavn_songs(raw_songs):
             raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
         _, quality = pick_best_quality(raw_urls)
         if not quality: continue
-        # ── PATCH: pass title + artist in previewUrl so /api/play has
-        # full context for scoring — not just a bare ID lookup
         play_url = (
             f"/api/play?id={quote(song_id, safe='')}"
             f"&title={quote(title, safe='')}"
@@ -1292,7 +1314,6 @@ def play_song():
     if not song_id and not title:
         return jsonify({'error': 'Missing id or title'}), 400
 
-    # Turso cache check
     _play_ck = f"play:{song_id or normalize(title)}:{normalize(artist)}"
     _play_cached = _turso_cache_get(_play_ck)
     if _play_cached and _play_cached.get('url'):
@@ -1310,10 +1331,7 @@ def play_song():
     if not audio_url and song_id:
         result = _fetch_saavn_by_id(song_id)
         if result and result.get('url'):
-            # ── PATCH: verify the fetched song actually matches artist
-            # If artist is known and result artist is completely different, skip
-            # and fall through to scored title search instead
-            fetched_artist = normalize(result.get('artist', ''))
+            fetched_artist  = normalize(result.get('artist', ''))
             expected_artist = normalize(artist)
             artist_ok = True
             if expected_artist and fetched_artist:
@@ -1337,7 +1355,6 @@ def play_song():
 
     if not audio_url and song_id and not title:
         title = song_id.replace('_', ' ').replace('-', ' ').strip()
-        log.info(f"[Play] ID→title rescue: '{title}'")
 
     if not audio_url and title:
         for query in build_query_variants(title, artist, ''):
@@ -1371,7 +1388,6 @@ def play_song():
                 pass
 
     if not audio_url and title:
-        # Last resort — YT broad search with no artist filter, guaranteed attempt
         log.info(f"[Play] All parallel failed → last resort yt-dlp broad: '{title}'")
         for broad_query in [title, title.split()[0] if title.split() else title]:
             broad = fetch_from_ytdlp(broad_query, '')
@@ -1386,7 +1402,6 @@ def play_song():
         log.warning(f"[Play] ✗ ALL sources failed id={song_id} title='{title}'")
         return jsonify({'error': 'No audio source found'}), 404
 
-    # Save to Turso cache async
     _executor.submit(_turso_cache_set, _play_ck, {
         'url': audio_url, 'quality': quality, 'source': source,
         'title': title, 'artist': artist, 'image': ''
@@ -1435,7 +1450,7 @@ def play_song():
         return jsonify({'error': str(e)}), 500
 
 # ═══════════════════════════════════════════════════════════════
-# FIX 3: fetch_from_mirror — duration penalty + artist bonus
+# fetch_from_mirror
 # ═══════════════════════════════════════════════════════════════
 def fetch_from_mirror(mirror, query, min_score=0.4):
     if not _mirror_ok(mirror): return None
@@ -1454,10 +1469,6 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
                 data.get('songs', {}).get('results') or []
             )
             best_song, best_score, best_dur = None, -1, float('inf')
-
-            # ── PATCH: extract artist hint from query if present ──
-            # The query may be "Sachet Tandon Simroon Tera Naam"
-            # We use all query words for scoring but also check artist match
             q_normalized = normalize(query)
 
             for song in results:
@@ -1468,28 +1479,19 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
                 score = title_score(query, song_title, song_artist)
                 dur   = int(song.get('duration', 999) or 999)
 
-                # ── PATCH A: penalize long tracks (qawwali / classical >= 10 min) ──
                 if dur > 600:
                     score -= 0.6
-                # ── PATCH B: further penalize absurdly long tracks >= 15 min ──
                 if dur > 900:
                     score -= 1.0
 
-                # ── PATCH C: boost songs released 2010+ (modern Bollywood) ──
-                # year field on Saavn song object
                 song_year = int(song.get('year') or 0)
                 if song_year >= 2010:
                     score += 0.15
                 elif song_year > 0 and song_year < 2000:
-                    # Slight penalty for pre-2000 when we're looking for modern songs
-                    # This helps "Simroon Tera Naam 2023" beat "Naam" by NFAK 1985
                     score -= 0.25
 
-                # ── PATCH D: artist name present in query → reward artist match ──
-                # e.g. query = "Sachet Tandon Simroon Tera Naam"
-                # song_artist = "Sachet Tandon" → big boost
                 if song_artist:
-                    artist_norm = normalize(song_artist)
+                    artist_norm  = normalize(song_artist)
                     artist_words = [w for w in artist_norm.split() if len(w) >= 3]
                     query_words  = [w for w in q_normalized.split() if len(w) >= 3]
                     matching_artist_words = sum(
@@ -1497,7 +1499,6 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
                         if any(fuzzy_word_match(aw, qw) >= 0.80 for qw in query_words)
                     )
                     if artist_words and matching_artist_words >= 1:
-                        # At least one artist word matched in query — strong signal
                         score += 0.5 * (matching_artist_words / max(len(artist_words), 1))
 
                 if score > best_score or (score == best_score and dur < best_dur):
@@ -1525,7 +1526,7 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
     return None
 
 # ═══════════════════════════════════════════════════════════════
-# FIX 4: fetch_saavn_parallel — year-aware reranking
+# fetch_saavn_parallel
 # ═══════════════════════════════════════════════════════════════
 def fetch_saavn_parallel(query):
     threshold = dynamic_min_score(query)
@@ -1543,8 +1544,6 @@ def fetch_saavn_parallel(query):
     except Exception: pass
     if not all_results: return None
 
-    # ── PATCH: sort by score (already includes duration + year penalties from fetch_from_mirror)
-    # Additional 320kbps quality tiebreaker stays intact
     all_results.sort(
         key=lambda r: r.get('score', 0) + (0.05 if '320' in str(r.get('quality', '')) else 0),
         reverse=True
@@ -1766,7 +1765,6 @@ def get_saavn_song():
     if not q:
         return jsonify({'success': False, 'url': None, 'token': token})
 
-    # Turso cache check
     _ck = f"saavn:{normalize(q)}:{normalize(artist)}"
     _cached = _turso_cache_get(_ck)
     if _cached and not low_quality:
@@ -2130,7 +2128,7 @@ def verify_ghost_pin():
     return jsonify({'success': False})
 
 # ═══════════════════════════════════════════════════════════════
-# ADMIN — View registered users
+# ADMIN
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/admin/users')
 @limiter.limit("10 per minute")
