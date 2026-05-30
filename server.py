@@ -1494,7 +1494,7 @@ def play_song():
         return jsonify({'error': str(e)}), 500
 
 # ═══════════════════════════════════════════════════════════════
-# /api/songs
+# /api/songs  ← REPLACED BLOCK
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/songs')
 @limiter.limit("60 per minute")
@@ -1509,36 +1509,77 @@ def get_songs():
     if cached is not None:
         return jsonify({'results': cached, '_cached': True})
 
-    raw = _fetch_saavn_search_parallel(search_term)
-    if raw:
-        normalized = _normalize_saavn_songs(raw)
-        if is_90s:
-            filtered   = [s for s in normalized if 1990 <= _safe_year(s.get('releaseDate')) <= 1999]
-            normalized = filtered if len(filtered) >= 5 else normalized
-            random.shuffle(normalized)
-        result = normalized[:30]
-        _cache_set(cache_key, result)
-        return jsonify({'results': result})
+    itunes_results = []
+    saavn_results  = []
 
-    try:
-        r = requests.get('https://itunes.apple.com/search',
-                         params={'term': search_term, 'media': 'music', 'entity': 'song',
-                                 'limit': 50, 'country': 'IN'}, timeout=15)
-        r.raise_for_status()
-        results = r.json().get('results', [])
-        if is_90s:
-            filtered = [s for s in results if s.get('previewUrl') and
-                        1990 <= _safe_year(s.get('releaseDate')) <= 1999]
-            if len(filtered) < 5: filtered = [s for s in results if s.get('previewUrl')]
-            random.shuffle(filtered)
-            result = filtered[:30]
-        else:
-            result = [s for s in results if s.get('previewUrl')]
-        _cache_set(cache_key, result)
-        return jsonify({'results': result})
-    except Exception as e:
-        return jsonify({'results': [], 'error': str(e)})
+    def fetch_itunes():
+        nonlocal itunes_results
+        try:
+            r = requests.get('https://itunes.apple.com/search',
+                             params={'term': search_term, 'media': 'music', 'entity': 'song',
+                                     'limit': 50, 'country': 'IN'}, timeout=12)
+            r.raise_for_status()
+            results = r.json().get('results', [])
+            if is_90s:
+                filtered = [s for s in results if s.get('previewUrl') and
+                            1990 <= _safe_year(s.get('releaseDate')) <= 1999]
+                if len(filtered) < 5:
+                    filtered = [s for s in results if s.get('previewUrl')]
+                random.shuffle(filtered)
+                itunes_results = filtered[:30]
+            else:
+                itunes_results = [s for s in results if s.get('previewUrl')][:30]
+            # Upgrade thumbnails to 600x600
+            for s in itunes_results:
+                if s.get('artworkUrl100'):
+                    s['artworkUrl100'] = s['artworkUrl100'].replace('100x100', '600x600')
+        except Exception:
+            pass
 
+    def fetch_saavn():
+        nonlocal saavn_results
+        try:
+            raw = _fetch_saavn_search_parallel(search_term)
+            if raw:
+                normalized = _normalize_saavn_songs(raw)
+                if is_90s:
+                    filtered = [s for s in normalized if 1990 <= _safe_year(s.get('releaseDate')) <= 1999]
+                    normalized = filtered if len(filtered) >= 5 else normalized
+                    random.shuffle(normalized)
+                saavn_results = normalized[:30]
+        except Exception:
+            pass
+
+    # Fetch both in parallel
+    t1 = threading.Thread(target=fetch_itunes)
+    t2 = threading.Thread(target=fetch_saavn)
+    t1.start(); t2.start()
+    t1.join(timeout=13)
+    t2.join(timeout=13)
+
+    # Merge: iTunes first, then add Saavn songs that aren't duplicates
+    def is_duplicate(song, existing):
+        name = normalize(song.get('trackName') or song.get('artistName') or '')
+        for e in existing:
+            e_name = normalize(e.get('trackName') or e.get('artistName') or '')
+            if name and e_name and (name in e_name or e_name in name):
+                return True
+        return False
+
+    merged = list(itunes_results)
+    for s in saavn_results:
+        if not is_duplicate(s, merged):
+            merged.append(s)
+
+    if merged:
+        _cache_set(cache_key, merged)
+        return jsonify({'results': merged})
+
+    return jsonify({'results': [], 'error': 'No results found'})
+
+# ═══════════════════════════════════════════════════════════════
+# /api/songs/90s
+# ═══════════════════════════════════════════════════════════════
 @app.route('/api/songs/90s')
 @limiter.limit("60 per minute")
 def get_90s_songs():
