@@ -20,6 +20,10 @@ gevent>=23.9,<25.0
 # ── Full song audio source ────────────────────────────
 yt-dlp>=2024.1.1
 
+libsql-experimental>=0.0.18
+
+google-auth>=2.28.0
+
 # ── Optional: Redis distributed cache ────────────────
 # Uncomment karo agar Redis use kar rahe ho
 # redis>=5.0,<6.0
