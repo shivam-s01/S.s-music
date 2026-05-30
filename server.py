@@ -11,12 +11,15 @@ import hmac
 import hashlib
 import time
 import threading
+import asyncio
 import yt_dlp
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlparse, quote, urlencode
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+import libsql_client
+
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
@@ -24,11 +27,17 @@ BASE_DIR  = os.path.dirname(os.path.abspath(__file__))
 
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 ADMIN_KEY        = os.environ.get('ADMIN_KEY', '')
+TURSO_URL        = os.environ.get('TURSO_URL', '')
+TURSO_TOKEN      = os.environ.get('TURSO_TOKEN', '')
 
 if not GOOGLE_CLIENT_ID:
     raise RuntimeError('GOOGLE_CLIENT_ID env var is required')
 if not ADMIN_KEY:
     raise RuntimeError('ADMIN_KEY env var is required')
+if not TURSO_URL:
+    raise RuntimeError('TURSO_URL env var is required')
+if not TURSO_TOKEN:
+    raise RuntimeError('TURSO_TOKEN env var is required')
 
 # ═══════════════════════════════════════════════════════════════
 # APP INIT
@@ -77,35 +86,112 @@ def _extract_bearer_sub(auth_header: str) -> str | None:
     return payload.get('sub', '') or None
 
 # ═══════════════════════════════════════════════════════════════
-# DATABASE — SQLite (local, instant, email/user save only)
+# DATABASE — TURSO
 # ═══════════════════════════════════════════════════════════════
-import sqlite3
+def _run_async(coro):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
-DB_PATH = os.path.join(BASE_DIR, 'aurum_users.db')
+async def _turso_execute(sql, args=None):
+    async with libsql_client.create_client(url=TURSO_URL, auth_token=TURSO_TOKEN) as client:
+        if args:
+            return await client.execute(sql, args)
+        return await client.execute(sql)
 
-def get_db():
-    db = sqlite3.connect(DB_PATH)
-    db.row_factory = sqlite3.Row
-    return db
+async def _turso_batch(statements):
+    async with libsql_client.create_client(url=TURSO_URL, auth_token=TURSO_TOKEN) as client:
+        return await client.batch(statements)
+
+def db_execute(sql, args=None):
+    return _run_async(_turso_execute(sql, args))
+
+def db_batch(statements):
+    return _run_async(_turso_batch(statements))
 
 def init_db():
-    try:
-        with get_db() as conn:
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    google_sub TEXT PRIMARY KEY,
-                    name       TEXT,
-                    email      TEXT,
-                    picture    TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            conn.commit()
-        log.info('[DB] SQLite users table ready')
-    except Exception as e:
-        log.warning(f'[DB] init error: {e}')
+    db_batch([
+        "CREATE TABLE IF NOT EXISTS users (google_sub TEXT PRIMARY KEY, name TEXT, email TEXT, picture TEXT, ghost_pin_hash TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS playback_state (google_sub TEXT PRIMARY KEY, song_id TEXT, song_title TEXT, artist TEXT, art_url TEXT, progress REAL DEFAULT 0, device TEXT DEFAULT 'mobile', updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS tv_pairing (pairing_code TEXT PRIMARY KEY, tv_session_id TEXT, google_sub TEXT, expires_at TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS song_cache (cache_key TEXT PRIMARY KEY, url TEXT, quality TEXT, title TEXT, artist TEXT, image TEXT, source TEXT, cached_at INTEGER DEFAULT (strftime('%s','now')))",
+    ])
+    log.info('[DB] Turso tables initialized')
 
 init_db()
+
+# ═══════════════════════════════════════════════════════════════
+# TURSO SONG CACHE
+# ═══════════════════════════════════════════════════════════════
+_SONG_CACHE_TTL = 86400  # 24 hours
+
+# YT/Piped/Invidious URLs expire in ~6-12h, Saavn URLs are stable
+_VOLATILE_SOURCES = {'youtube', 'youtube-broad', 'piped', 'invidious', 'soundcloud'}
+_VOLATILE_CACHE_TTL = 21600  # 6 hours for volatile sources
+
+def _turso_cache_get(cache_key: str) -> dict | None:
+    try:
+        result = db_execute(
+            "SELECT url, quality, title, artist, image, source, cached_at FROM song_cache WHERE cache_key = ?",
+            [cache_key]
+        )
+        if not result.rows:
+            return None
+        cols = [c.name for c in result.columns]
+        row  = dict(zip(cols, result.rows[0]))
+        age  = int(time.time()) - int(row.get('cached_at', 0))
+        source = row.get('source', '')
+        ttl  = _VOLATILE_CACHE_TTL if source in _VOLATILE_SOURCES else _SONG_CACHE_TTL
+        if age > ttl:
+            _executor.submit(_bg_delete_cache, cache_key)
+            return None
+        # Quick HEAD check for volatile sources to verify URL still alive
+        if source in _VOLATILE_SOURCES:
+            try:
+                head = requests.head(row['url'], timeout=3, allow_redirects=True, headers={'User-Agent': 'Mozilla/5.0'})
+                if head.status_code >= 400:
+                    _executor.submit(_bg_delete_cache, cache_key)
+                    log.info(f'[TursoCache] Expired URL evicted: {source} key={cache_key[:30]}')
+                    return None
+            except Exception:
+                # Network issue — still return cached, let playback handle it
+                pass
+        return row
+    except Exception as e:
+        log.warning(f'[TursoCache] get error: {e}')
+        return None
+
+def _bg_delete_cache(cache_key: str):
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(_turso_execute(
+                "DELETE FROM song_cache WHERE cache_key = ?", [cache_key]
+            ))
+        finally:
+            loop.close()
+    except Exception:
+        pass
+
+def _turso_cache_set(cache_key: str, data: dict):
+    try:
+        # Each background thread gets its own event loop — no asyncio conflict
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(_turso_execute(
+                "INSERT INTO song_cache (cache_key, url, quality, title, artist, image, source) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(cache_key) DO UPDATE SET url=excluded.url, quality=excluded.quality, title=excluded.title, artist=excluded.artist, image=excluded.image, source=excluded.source, cached_at=strftime('%s','now')",
+                [cache_key, data.get('url',''), data.get('quality',''), data.get('title',''), data.get('artist',''), data.get('image',''), data.get('source','')]
+            ))
+        finally:
+            loop.close()
+    except Exception as e:
+        log.warning(f'[TursoCache] set error: {e}')
+
 # ═══════════════════════════════════════════════════════════════
 # SAAVN MIRRORS
 # ═══════════════════════════════════════════════════════════════
@@ -927,19 +1013,12 @@ def _normalize_saavn_songs(raw_songs):
             raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
         _, quality = pick_best_quality(raw_urls)
         if not quality: continue
-        # ── PATCH: pass title + artist in previewUrl so /api/play has
-        # full context for scoring — not just a bare ID lookup
-        play_url = (
-            f"/api/play?id={quote(song_id, safe='')}"
-            f"&title={quote(title, safe='')}"
-            f"&artist={quote(artist, safe='')}"
-        )
         normalized.append({
             'trackId':         song_id,
             'trackName':       title,
             'artistName':      artist,
             'artworkUrl100':   image.replace('500x500', '100x100') if image else '',
-            'previewUrl':      play_url,
+            'previewUrl':      f"/api/play?id={quote(song_id, safe='')}",
             'trackTimeMillis': dur_ms,
             'releaseDate':     f"{year}-01-01T00:00:00Z",
             '_saavnId':        song_id,
@@ -1206,37 +1285,30 @@ def play_song():
     if not song_id and not title:
         return jsonify({'error': 'Missing id or title'}), 400
 
-    audio_url = None
-    quality   = 'unknown'
-    source    = 'unknown'
+    # Turso cache check
+    _play_ck = f"play:{song_id or normalize(title)}:{normalize(artist)}"
+    _play_cached = _turso_cache_get(_play_ck)
+    if _play_cached and _play_cached.get('url'):
+        log.info(f"[TursoCache] HIT play: id={song_id} title='{title}'")
+        audio_url = _play_cached['url']
+        quality   = _play_cached.get('quality', 'unknown')
+        source    = _play_cached.get('source', 'unknown')
+        if not title:  title  = _play_cached.get('title', '')
+        if not artist: artist = _play_cached.get('artist', '')
+    else:
+        audio_url = None
+        quality   = 'unknown'
+        source    = 'unknown'
 
     if not audio_url and song_id:
         result = _fetch_saavn_by_id(song_id)
         if result and result.get('url'):
-            # ── PATCH: verify the fetched song actually matches artist
-            # If artist is known and result artist is completely different, skip
-            # and fall through to scored title search instead
-            fetched_artist = normalize(result.get('artist', ''))
-            expected_artist = normalize(artist)
-            artist_ok = True
-            if expected_artist and fetched_artist:
-                ea_words = [w for w in expected_artist.split() if len(w) >= 3]
-                fa_words = [w for w in fetched_artist.split() if len(w) >= 3]
-                if ea_words and fa_words:
-                    match_count = sum(
-                        1 for ew in ea_words
-                        if any(fuzzy_word_match(ew, fw) >= 0.75 for fw in fa_words)
-                    )
-                    artist_ok = match_count >= 1
-            if artist_ok:
-                audio_url = result['url']
-                quality   = result.get('quality', 'unknown')
-                source    = 'saavn'
-                if not title:  title  = result.get('title', '')
-                if not artist: artist = result.get('artist', '')
-                log.info(f"[Play] ✓ Saavn ID quality={quality} artist_verified={artist_ok}")
-            else:
-                log.info(f"[Play] ID artist mismatch: expected='{artist}' got='{result.get('artist')}' — falling to title search")
+            audio_url = result['url']
+            quality   = result.get('quality', 'unknown')
+            source    = 'saavn'
+            if not title:  title  = result.get('title', '')
+            if not artist: artist = result.get('artist', '')
+            log.info(f"[Play] ✓ Saavn ID quality={quality}")
 
     if not audio_url and song_id and not title:
         title = song_id.replace('_', ' ').replace('-', ' ').strip()
@@ -1288,6 +1360,12 @@ def play_song():
     if not audio_url:
         log.warning(f"[Play] ✗ ALL sources failed id={song_id} title='{title}'")
         return jsonify({'error': 'No audio source found'}), 404
+
+    # Save to Turso cache async
+    _executor.submit(_turso_cache_set, _play_ck, {
+        'url': audio_url, 'quality': quality, 'source': source,
+        'title': title, 'artist': artist, 'image': ''
+    })
 
     try:
         req_headers = {
@@ -1663,20 +1741,30 @@ def get_saavn_song():
     if not q:
         return jsonify({'success': False, 'url': None, 'token': token})
 
+    # Turso cache check
+    _ck = f"saavn:{normalize(q)}:{normalize(artist)}"
+    _cached = _turso_cache_get(_ck)
+    if _cached and not low_quality:
+        log.info(f"[TursoCache] HIT saavn: '{q}'")
+        return jsonify({'success': True, 'token': token, **_cached})
+
     for query in build_query_variants(q, artist, fallback):
         result = fetch_saavn_parallel(query)
         if result:
             if low_quality:
                 low_url, low_q = _pick_low_quality(result.get('_raw_urls', []))
                 if low_url: result['url'] = low_url; result['quality'] = low_q
+            _executor.submit(_turso_cache_set, _ck, result)
             return jsonify({'success': True, 'token': token, **result})
 
     yt = fetch_from_ytdlp(q, artist)
     if yt and yt.get('url'):
+        _executor.submit(_turso_cache_set, _ck, yt)
         return jsonify({'success': True, 'token': token, **yt})
 
     sc = fetch_from_soundcloud(q, artist)
     if sc and sc.get('url'):
+        _executor.submit(_turso_cache_set, _ck, sc)
         return jsonify({'success': True, 'token': token, **sc})
 
     return jsonify({'success': False, 'url': None, 'token': token})
@@ -1899,17 +1987,122 @@ def handle_google_auth():
     if not profile: return jsonify({'error': 'Invalid credential'}), 401
     sub = profile.get('sub', '').strip()
     if not sub: return jsonify({'error': 'Missing sub'}), 400
-    try:
-        with get_db() as conn:
-            conn.execute(
-                "INSERT INTO users (google_sub, name, email, picture) VALUES (?, ?, ?, ?) ON CONFLICT(google_sub) DO UPDATE SET name=excluded.name, email=excluded.email, picture=excluded.picture",
-                [sub, profile.get('name',''), profile.get('email',''), profile.get('picture','')]
-            )
-            conn.commit()
-    except Exception as e:
-        log.warning(f'[Auth] DB save error: {e}')
+    db_execute(
+        "INSERT INTO users (google_sub, name, email, picture) VALUES (?, ?, ?, ?) ON CONFLICT(google_sub) DO UPDATE SET name=excluded.name, email=excluded.email, picture=excluded.picture",
+        [sub, profile.get('name',''), profile.get('email',''), profile.get('picture','')]
+    )
     log.info(f"[Auth] User upserted: {profile.get('email', '')}")
     return jsonify({'success': True, 'sub': sub, 'name': profile.get('name','')})
+
+@app.route('/api/sync/state', methods=['POST'])
+@limiter.limit("60 per minute")
+def save_playback_state():
+    sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
+    if not sub: return jsonify({'error': 'Unauthorized'}), 401
+    data    = request.get_json() or {}
+    song_id = (data.get('songId') or '').strip()
+    try: progress = max(0.0, min(float(data.get('progress', 0)), 3600.0))
+    except: progress = 0.0
+    device = data.get('device', 'mobile')
+    if device not in ('mobile', 'tv'): device = 'mobile'
+    if not song_id: return jsonify({'status': 'ignored'}), 200
+    db_execute(
+        "INSERT INTO playback_state (google_sub, song_id, song_title, artist, art_url, progress, device, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(google_sub) DO UPDATE SET song_id=excluded.song_id, song_title=excluded.song_title, artist=excluded.artist, art_url=excluded.art_url, progress=excluded.progress, device=excluded.device, updated_at=CURRENT_TIMESTAMP",
+        [sub, song_id, data.get('songTitle',''), data.get('artist',''), data.get('artUrl',''), progress, device]
+    )
+    return jsonify({'status': 'ok'})
+
+@app.route('/api/sync/state', methods=['GET'])
+@limiter.limit("60 per minute")
+def get_playback_state():
+    sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
+    if not sub: return jsonify({'error': 'Unauthorized'}), 401
+    result = db_execute("SELECT * FROM playback_state WHERE google_sub = ?", [sub])
+    if result.rows:
+        row = result.rows[0]
+        cols = [c.name for c in result.columns]
+        r = dict(zip(cols, row))
+        return jsonify({
+            'success'   : True,
+            'songId'    : r['song_id'],
+            'songTitle' : r['song_title'],
+            'artist'    : r['artist'],
+            'artUrl'    : r['art_url'],
+            'progress'  : r['progress'],
+            'device'    : r['device'],
+            'updatedAt' : r['updated_at'],
+        })
+    return jsonify({'success': False})
+
+# ═══════════════════════════════════════════════════════════════
+# TV PAIRING
+# ═══════════════════════════════════════════════════════════════
+@app.route('/api/auth/tv-generate-code', methods=['POST'])
+@limiter.limit("10 per minute")
+def generate_tv_code():
+    data       = request.get_json() or {}
+    session_id = data.get('sessionId') or secrets.token_hex(8)
+    code       = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
+    expiry     = (datetime.utcnow() + timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S')
+    db_execute("DELETE FROM tv_pairing WHERE tv_session_id = ?", [session_id])
+    db_execute("INSERT INTO tv_pairing (pairing_code, tv_session_id, expires_at) VALUES (?, ?, ?)", [code, session_id, expiry])
+    return jsonify({'code': code, 'sessionId': session_id, 'expiresIn': 300})
+
+@app.route('/api/auth/tv-poll')
+@limiter.limit("60 per minute")
+def poll_tv_pairing():
+    code    = request.args.get('code', '').strip().upper()
+    now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    if not code: return jsonify({'status': 'pending'}), 400
+    result = db_execute("SELECT * FROM tv_pairing WHERE pairing_code = ? AND expires_at > ?", [code, now_str])
+    if not result.rows: return jsonify({'status': 'expired'})
+    cols = [c.name for c in result.columns]
+    row  = dict(zip(cols, result.rows[0]))
+    if row.get('google_sub'):
+        user_result = db_execute("SELECT * FROM users WHERE google_sub = ?", [row['google_sub']])
+        db_execute("DELETE FROM tv_pairing WHERE pairing_code = ?", [code])
+        if user_result.rows:
+            ucols = [c.name for c in user_result.columns]
+            user  = dict(zip(ucols, user_result.rows[0]))
+            return jsonify({'status': 'authorized', 'user': {'sub': user['google_sub'], 'name': user['name'], 'email': user['email'], 'picture': user['picture']}})
+    return jsonify({'status': 'pending'})
+
+@app.route('/api/auth/tv-verify-mobile', methods=['POST'])
+@limiter.limit("20 per minute")
+def mobile_verify_tv():
+    sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
+    if not sub: return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+    data    = request.get_json() or {}
+    code    = data.get('code', '').strip().upper()
+    now_str = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    if not code: return jsonify({'success': False, 'error': 'Missing code'}), 400
+    result = db_execute("SELECT * FROM tv_pairing WHERE pairing_code = ? AND expires_at > ?", [code, now_str])
+    if not result.rows: return jsonify({'success': False, 'error': 'Invalid or expired code'}), 404
+    db_execute("UPDATE tv_pairing SET google_sub = ? WHERE pairing_code = ?", [sub, code])
+    return jsonify({'success': True})
+
+# ═══════════════════════════════════════════════════════════════
+# GHOST PIN
+# ═══════════════════════════════════════════════════════════════
+@app.route('/api/auth/verify-ghost-pin', methods=['POST'])
+@limiter.limit("10 per minute")
+def verify_ghost_pin():
+    sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
+    if not sub: return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+    data = request.get_json() or {}
+    pin  = data.get('pin', '').strip()
+    if not pin: return jsonify({'success': False}), 400
+    h_input = hashlib.sha256(pin.encode('utf-8')).hexdigest()
+    result = db_execute("SELECT ghost_pin_hash FROM users WHERE google_sub = ?", [sub])
+    if not result.rows: return jsonify({'success': False}), 404
+    cols = [c.name for c in result.columns]
+    user = dict(zip(cols, result.rows[0]))
+    if not user.get('ghost_pin_hash'):
+        db_execute("UPDATE users SET ghost_pin_hash = ? WHERE google_sub = ?", [h_input, sub])
+        return jsonify({'success': True})
+    if hmac.compare_digest(user['ghost_pin_hash'], h_input):
+        return jsonify({'success': True})
+    return jsonify({'success': False})
 
 # ═══════════════════════════════════════════════════════════════
 # ADMIN — View registered users
@@ -1920,13 +2113,10 @@ def admin_users():
     secret = request.args.get('key', '')
     if not hmac.compare_digest(secret, ADMIN_KEY):
         return jsonify({'error': 'Unauthorized'}), 401
-    try:
-        with get_db() as conn:
-            rows = conn.execute("SELECT name, email, picture, created_at FROM users ORDER BY created_at DESC").fetchall()
-        users = [dict(r) for r in rows]
-        return jsonify({'users': users, 'total': len(users)})
-    except Exception as e:
-        return jsonify({'users': [], 'total': 0, 'error': str(e)})
+    result = db_execute("SELECT name, email, picture, created_at FROM users ORDER BY created_at DESC")
+    cols   = [c.name for c in result.columns]
+    users  = [dict(zip(cols, row)) for row in result.rows]
+    return jsonify({'users': users, 'total': len(users)})
 
 # ═══════════════════════════════════════════════════════════════
 # HEALTH
