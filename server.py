@@ -70,7 +70,6 @@ def _sb_headers():
     }
 
 def sb_select(table, filters=None, columns='*'):
-    """SELECT from Supabase table. filters = dict of col:val"""
     url = f"{SUPABASE_URL}/rest/v1/{table}?select={columns}"
     if filters:
         for k, v in filters.items():
@@ -85,7 +84,6 @@ def sb_select(table, filters=None, columns='*'):
     return []
 
 def sb_upsert(table, data, on_conflict=None):
-    """UPSERT into Supabase table."""
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     headers = _sb_headers()
     if on_conflict:
@@ -101,7 +99,6 @@ def sb_upsert(table, data, on_conflict=None):
     return None
 
 def sb_update(table, data, filters):
-    """UPDATE rows in Supabase table."""
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     if filters:
         params = '&'.join(f"{k}=eq.{quote(str(v), safe='')}" for k, v in filters.items())
@@ -116,7 +113,6 @@ def sb_update(table, data, filters):
     return False
 
 def sb_delete(table, filters):
-    """DELETE rows from Supabase table."""
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     if filters:
         params = '&'.join(f"{k}=eq.{quote(str(v), safe='')}" for k, v in filters.items())
@@ -131,9 +127,6 @@ def sb_delete(table, filters):
     return False
 
 def init_db():
-    """
-    Tables are created via Supabase SQL editor.
-    """
     log.info('[DB] Supabase ready — tables managed via Supabase SQL editor')
 
 init_db()
@@ -167,9 +160,9 @@ def _extract_bearer_sub(auth_header: str) -> str | None:
 # ═══════════════════════════════════════════════════════════════
 # SUPABASE SONG CACHE
 # ═══════════════════════════════════════════════════════════════
-_SONG_CACHE_TTL    = 86400   # 24 hours
+_SONG_CACHE_TTL    = 86400   
 _VOLATILE_SOURCES  = {'youtube', 'youtube-broad', 'piped', 'invidious', 'soundcloud'}
-_VOLATILE_CACHE_TTL = 21600  # 6 hours
+_VOLATILE_CACHE_TTL = 21600  
 
 def _supabase_cache_get(cache_key: str) -> dict | None:
     try:
@@ -187,7 +180,6 @@ def _supabase_cache_get(cache_key: str) -> dict | None:
             try:
                 head = requests.head(row['url'], timeout=3, allow_redirects=True,
                                      headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-                # Bypassing 403 blocks to prevent aggressive deletion of working YouTube content streams
                 if head.status_code >= 400 and head.status_code != 403:
                     _executor.submit(sb_delete, 'song_cache', {'cache_key': cache_key})
                     return None
@@ -891,7 +883,6 @@ def _normalize_saavn_songs(songs_raw):
         artist = song.get('primaryArtists') or song.get('primary_artists') or song.get('singers') or 'Unknown Artist'
         image  = pick_image(song)
         
-        # Internal proxy application for Saavn items
         proxied_image = f"/api/proxy-image?url={quote(image)}" if image else ""
 
         dur_sec = int(song.get('duration') or 0)
@@ -988,7 +979,6 @@ def fetch_from_ytdlp(title, artist=''):
                     if score > best_score: best_score = score; best_result = entry
                 if not best_result or best_score < 0.3: continue
                 
-                # Fetch concrete formats
                 res_info = ydl.extract_info(best_result['url'], download=False)
                 formats = res_info.get('formats', [])
                 audio_fmts = [f for f in formats if f.get('vcodec') == 'none' and f.get('acodec') != 'none']
@@ -1094,7 +1084,6 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
             data = r.json()
             results = (data.get('data', {}).get('results') or data.get('results') or data.get('songs', {}).get('results') or [])
             best_song, best_score, best_dur = None, -1, float('inf')
-            q_normalized = normalize(query)
             for song in results:
                 song_title = song.get('name') or song.get('title') or ''
                 song_artist = song.get('primaryArtists') or song.get('primary_artists') or ''
@@ -1107,7 +1096,7 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
             
             raw_urls = best_song.get('downloadUrl') or best_song.get('download_url') or []
             if isinstance(raw_urls, str):
-                raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
+                raw_urls = [{'url': raw_urls}]
             best_url, quality = pick_best_quality(raw_urls)
             if not best_url: continue
             
@@ -1248,7 +1237,7 @@ def fetch_from_invidious(query, title='', artist=''):
     return None
 
 # ═══════════════════════════════════════════════════════════════
-# /api/play (Robust Chunked Range Response)
+# /api/play
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/play')
 @limiter.limit("200 per minute")
@@ -1264,6 +1253,7 @@ def play_song():
     if cached and cached.get('url'):
         audio_url = cached['url']
         quality   = cached.get('quality', 'unknown')
+        source    = cached.get('source', 'unknown')
         log.info(f"[Play] ✓ Cache hit id={song_id} source={cached.get('source')}")
     else:
         audio_url, quality, source = None, 'unknown', 'unknown'
@@ -1357,7 +1347,7 @@ def play_song():
 
         def generate():
             try:
-                for chunk in upstream.iter_content(chunk_size=131072): # 128k chunks for continuous fast stream buffering
+                for chunk in upstream.iter_content(chunk_size=131072): 
                     if chunk: yield chunk
             except Exception as stream_err:
                 log.error(f"Streaming error inside generator: {stream_err}")
@@ -1465,7 +1455,7 @@ def get_90s_songs():
     return jsonify({'results': [], 'seed': seed})
 
 # ═══════════════════════════════════════════════════════════════
-# /api/stream (CORS & Streaming Optimization Fix)
+# /api/stream
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/stream')
 @limiter.limit("300 per minute")
@@ -1562,7 +1552,7 @@ def download_song():
             filename_base = f"{pip['title']} - {pip['artist']}".strip(' -')
             
     if not stream_url:
-        return jsonify({'error': 'No downloadable source found'}), 0
+        return jsonify({'error': 'No downloadable source found'}), 404
         
     try:
         r = requests.get(stream_url, headers={'User-Agent': 'Mozilla/5.0'}, stream=True, timeout=30)
@@ -1704,7 +1694,7 @@ def poll_tv_pairing():
     url = f"{SUPABASE_URL}/rest/v1/tv_pairing?pairing_code=eq.{quote(code, safe='')}&expires_at=gt.{quote(now_str, safe='')}"
     try:
         r = requests.get(url, headers=_sb_headers(), timeout=10)
-        rows = r.json() if r.status_code == 200 else []
+        rows = r.json() if r.status_code == 200_code else []
     except Exception:
         rows = []
     if not rows: return jsonify({'status': 'expired'})
@@ -1789,5 +1779,4 @@ def health():
     return jsonify({'status': 'healthy', 'timestamp': int(time.time())})
 
 if __name__ == '__main__':
-    # Standard development setup
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
