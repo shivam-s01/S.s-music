@@ -1,5 +1,5 @@
 // ─── AURUM SERVICE WORKER v3.0 · SHIVAM EDITION ──────────────────────────────
-const CACHE_NAME = 'aurum-v3-final'; // Version badal diya taaki purana cache clear ho jaye
+const CACHE_NAME = 'aurum-v3-20250531'; // Version badal diya taaki purana cache clear ho jaye
 
 // In files ka naam GitHub pe bilkul yahi hona chahiye (no brackets/spaces)
 const ASSETS_TO_CACHE = [
