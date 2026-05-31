@@ -370,7 +370,7 @@ def _discover_mirrors():
     new_found = []
     futures   = {_executor.submit(_test_mirror_working, url): url for url in candidates}
     try:
-        for future in as_completed(futures, timeout=60):
+        for future in as_completed(futures, timeout=30):
             url = futures[future]
             try:
                 if future.result():
@@ -612,7 +612,7 @@ def _master_heal_loop():
             log.info(f'[SelfHeal] ✓ Done — Saavn:{sm} Piped:{pi} Invidious:{iv}')
         except Exception as e:
             log.error(f'[SelfHeal] Master loop error: {e}')
-        time.sleep(1800)
+        time.sleep(7200)
 
 threading.Thread(target=_master_heal_loop, daemon=True).start()
 log.info('[SelfHeal] Master heal loop started')
@@ -841,10 +841,10 @@ def title_score(query, song_title, song_artist=''):
 
 def dynamic_min_score(query):
     length = len(normalize(query).replace(' ', ''))
-    if length <= 2:    return 0.10
-    elif length <= 5:  return 0.20
-    elif length <= 10: return 0.35
-    else:              return 0.45
+    if length <= 2:    return 0.20
+    elif length <= 5:  return 0.40
+    elif length <= 10: return 0.55
+    else:              return 0.65
 
 def has_word_match(query, song_title):
     q_words = normalize(query).split()
@@ -984,7 +984,7 @@ def _normalize_saavn_songs(raw_songs):
             'trackId':         song_id,
             'trackName':       title,
             'artistName':      artist,
-            'artworkUrl100':   image.replace('500x500', '100x100') if image else '',
+            'artworkUrl100':   image if image else '',
             'previewUrl':      f"/api/play?id={quote(song_id, safe='')}",
             'trackTimeMillis': dur_ms,
             'releaseDate':     f"{year}-01-01T00:00:00Z",
@@ -993,6 +993,195 @@ def _normalize_saavn_songs(raw_songs):
             '_source':         'saavn',
         })
     return normalized
+
+# ═══════════════════════════════════════════════════════════════
+# YOUTUBE MUSIC (InnerTube API — fast search + yt-dlp stream)
+# ═══════════════════════════════════════════════════════════════
+_YTM_SEARCH_URL  = 'https://music.youtube.com/youtubei/v1/search'
+_YTM_API_KEY     = 'AIzaSyC9XL3ZjWddXya6X74dJoCTL-NKNELL6imp'
+_YTM_CONTEXT     = {
+    'client': {
+        'clientName':    'WEB_REMIX',
+        'clientVersion': '1.20250101.01.00',
+        'hl':            'en',
+        'gl':            'IN',
+        'userAgent':     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    }
+}
+
+def _ytm_search(query: str, limit: int = 8) -> list:
+    try:
+        body = {
+            'context': _YTM_CONTEXT,
+            'query':   query,
+            'params':  'EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D',
+        }
+        r = requests.post(
+            _YTM_SEARCH_URL,
+            params={'key': _YTM_API_KEY, 'prettyPrint': 'false'},
+            json=body,
+            headers={
+                'Content-Type':  'application/json',
+                'X-YouTube-Client-Name':    '67',
+                'X-YouTube-Client-Version': '1.20250101.01.00',
+                'Origin':   'https://music.youtube.com',
+                'Referer':  'https://music.youtube.com/',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            },
+            timeout=8,
+        )
+        if r.status_code != 200:
+            return []
+        data    = r.json()
+        results = []
+        tabs = (data.get('contents', {})
+                    .get('tabbedSearchResultsRenderer', {})
+                    .get('tabs', []))
+        for tab in tabs:
+            section_list = (tab.get('tabRenderer', {})
+                               .get('content', {})
+                               .get('sectionListRenderer', {})
+                               .get('contents', []))
+            for section in section_list:
+                items = (section.get('musicShelfRenderer', {})
+                                .get('contents', []))
+                for item in items:
+                    renderer = item.get('musicResponsiveListItemRenderer', {})
+                    if not renderer:
+                        continue
+                    overlay = renderer.get('overlay', {})
+                    vid_id  = (overlay.get('musicItemThumbnailOverlayRenderer', {})
+                                      .get('content', {})
+                                      .get('musicPlayButtonRenderer', {})
+                                      .get('playNavigationEndpoint', {})
+                                      .get('watchEndpoint', {})
+                                      .get('videoId', ''))
+                    if not vid_id:
+                        for col in renderer.get('flexColumns', []):
+                            runs = (col.get('musicResponsiveListItemFlexColumnRenderer', {})
+                                       .get('text', {})
+                                       .get('runs', []))
+                            for run in runs:
+                                ep = run.get('navigationEndpoint', {}).get('watchEndpoint', {})
+                                if ep.get('videoId'):
+                                    vid_id = ep['videoId']
+                                    break
+                            if vid_id:
+                                break
+                    if not vid_id:
+                        continue
+                    cols     = renderer.get('flexColumns', [])
+                    title_t  = ''
+                    artist_t = ''
+                    for i, col in enumerate(cols):
+                        runs = (col.get('musicResponsiveListItemFlexColumnRenderer', {})
+                                   .get('text', {})
+                                   .get('runs', []))
+                        text = ' '.join(r.get('text', '') for r in runs).strip()
+                        if i == 0:
+                            title_t = text
+                        elif i == 1:
+                            artist_t = text.split('\u2022')[0].strip()
+                    thumbs = (renderer.get('thumbnail', {})
+                                      .get('musicThumbnailRenderer', {})
+                                      .get('thumbnail', {})
+                                      .get('thumbnails', []))
+                    thumb  = thumbs[-1]['url'] if thumbs else ''
+                    if thumb:
+                        thumb = re.sub(r'=w\d+-h\d+', '=w500-h500', thumb)
+                    results.append({
+                        'videoId':   vid_id,
+                        'title':     title_t,
+                        'artist':    artist_t,
+                        'thumbnail': thumb,
+                    })
+                    if len(results) >= limit:
+                        return results
+        return results
+    except Exception as e:
+        log.warning(f'[YTMusic] search error: {e}')
+        return []
+
+def _ytm_get_stream_url(video_id: str):
+    cache_key = f"ytm_stream:{video_id}"
+    cached = _cache_get(cache_key, _ytdlp_cache)
+    if cached:
+        return cached.get('url'), cached.get('quality')
+    ydl_opts = {
+        'format':         'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+        'quiet':          True,
+        'no_warnings':    True,
+        'socket_timeout': 12,
+        'extract_flat':   False,
+        'noplaylist':     True,
+        'http_headers':   {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'},
+    }
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(
+                f'https://music.youtube.com/watch?v={video_id}',
+                download=False
+            )
+            if not info:
+                return None, None
+            formats = info.get('formats', [])
+            audio_formats = [
+                f for f in formats
+                if f.get('acodec') not in ('none', None, '')
+                and f.get('url')
+                and f.get('vcodec') in ('none', None, '')
+            ]
+            if not audio_formats:
+                audio_formats = [f for f in formats if f.get('acodec') not in ('none', None, '') and f.get('url')]
+            if not audio_formats:
+                return None, None
+            best    = max(audio_formats, key=lambda f: f.get('abr') or f.get('tbr') or 0)
+            abr     = best.get('abr') or best.get('tbr') or 0
+            quality = f"{int(abr)}kbps" if abr else 'unknown'
+            url     = best['url']
+            _cache_set(cache_key, {'url': url, 'quality': quality}, _ytdlp_cache)
+            return url, quality
+    except Exception as e:
+        log.warning(f'[YTMusic] stream extract error {video_id}: {e}')
+        return None, None
+
+def fetch_from_ytmusic(title: str, artist: str = ''):
+    cache_key = f"ytmusic:{normalize(title)}:{normalize(artist)}"
+    cached = _cache_get(cache_key, _ytdlp_cache)
+    if cached:
+        return cached
+    clean_title  = re.sub(r'\(.*?\)|\[.*?\]', '', title).strip()
+    clean_artist = artist.split(',')[0].split('&')[0].strip() if artist else ''
+    query = f"{clean_artist} {clean_title}".strip() if clean_artist else clean_title
+    results = _ytm_search(query, limit=8)
+    if not results:
+        results = _ytm_search(clean_title, limit=5)
+    if not results:
+        return None
+    best       = None
+    best_score = -1
+    for item in results:
+        score = title_score(title, item.get('title', ''), item.get('artist', ''))
+        if score > best_score:
+            best_score = score
+            best = item
+    if not best or best_score < 0.25:
+        return None
+    video_id = best['videoId']
+    url, quality = _ytm_get_stream_url(video_id)
+    if not url:
+        return None
+    result = {
+        'url':     url,
+        'quality': quality,
+        'title':   best.get('title', title),
+        'artist':  best.get('artist', artist),
+        'image':   best.get('thumbnail', ''),
+        'source':  'ytmusic',
+    }
+    _cache_set(cache_key, result, _ytdlp_cache)
+    log.info(f"[YTMusic] SUCCESS: '{best['title']}' score={best_score:.2f} quality={quality}")
+    return result
 
 # ═══════════════════════════════════════════════════════════════
 # YT-DLP
@@ -1188,7 +1377,7 @@ def _fetch_saavn_by_id(song_id: str) -> dict | None:
 
     futures = {_executor.submit(try_mirror, m): m for m in mirrors}
     try:
-        for future in as_completed(futures, timeout=12):
+        for future in as_completed(futures, timeout=6):
             try:
                 result = future.result()
                 if result:
@@ -1207,7 +1396,7 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
         try:
             r = requests.get(f'{mirror}{endpoint}',
                              params={'query': query, 'q': query, 'limit': 10},
-                             timeout=8, headers={'User-Agent': 'Mozilla/5.0'})
+                             timeout=3, headers={'User-Agent': 'Mozilla/5.0'})
             if r.status_code != 200: continue
             data    = r.json()
             results = (data.get('data', {}).get('results') or data.get('results') or
@@ -1223,6 +1412,9 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
                 dur   = int(song.get('duration', 999) or 999)
                 if dur > 600:  score -= 0.6
                 if dur > 900:  score -= 1.0
+                song_name_lower = (song.get('name') or song.get('title') or '').lower()
+                if any(w in song_name_lower for w in ['dj ', 'remix', 'mashup', 'club mix', 'dance mix']):
+                    score -= 0.8
                 song_year = int(song.get('year') or 0)
                 if song_year >= 2010:              score += 0.15
                 elif song_year > 0 and song_year < 2000: score -= 0.25
@@ -1263,7 +1455,7 @@ def fetch_saavn_parallel(query):
     futures     = {_executor.submit(fetch_from_mirror, m, query, threshold): m for m in mirrors}
     all_results = []
     try:
-        for future in as_completed(futures, timeout=12):
+        for future in as_completed(futures, timeout=6):
             try:
                 result = future.result()
                 if result: all_results.append(result)
@@ -1428,18 +1620,19 @@ def play_song():
 
     if not audio_url and title:
         log.info(f"[Play] Saavn miss → parallel fallbacks: '{title}'")
+        ytm_future = _executor.submit(fetch_from_ytmusic, title, artist)
         yt_future  = _executor.submit(fetch_from_ytdlp, title, artist)
         sc_future  = _executor.submit(fetch_from_soundcloud, title, artist)
         pip_future = _executor.submit(fetch_from_piped, title, title=title, artist=artist)
         inv_future = _executor.submit(fetch_from_invidious, title, title=title, artist=artist)
-        for future in as_completed([yt_future, sc_future, pip_future, inv_future], timeout=30):
+        for future in as_completed([ytm_future, yt_future, sc_future, pip_future, inv_future], timeout=30):
             try:
                 res = future.result()
                 if res and res.get('url'):
                     audio_url = res['url']; quality = res.get('quality', 'unknown')
                     source    = res.get('source', 'unknown')
                     log.info(f"[Play] ✓ {source} '{res.get('title')}' quality={quality}")
-                    yt_future.cancel(); sc_future.cancel(); pip_future.cancel(); inv_future.cancel()
+                    ytm_future.cancel(); yt_future.cancel(); sc_future.cancel(); pip_future.cancel(); inv_future.cancel()
                     break
             except Exception:
                 pass
@@ -1521,16 +1714,25 @@ def get_songs():
             r.raise_for_status()
             results = r.json().get('results', [])
             if is_90s:
-                filtered = [s for s in results if s.get('previewUrl') and
+                filtered = [s for s in results if s.get('trackName') and
                             1990 <= _safe_year(s.get('releaseDate')) <= 1999]
                 if len(filtered) < 5:
-                    filtered = [s for s in results if s.get('previewUrl')]
+                    filtered = [s for s in results if s.get('trackName')]
                 random.shuffle(filtered)
                 itunes_results = filtered[:30]
             else:
-                itunes_results = [s for s in results if s.get('previewUrl')][:30]
-            # Upgrade thumbnails to 600x600
+                itunes_results = [s for s in results if s.get('trackName')][:30]
+            # Fix each iTunes song:
+            # 1. Replace previewUrl with /api/play for full song
+            # 2. Upgrade thumbnail to 600x600
             for s in itunes_results:
+                title  = s.get('trackName', '')
+                artist = s.get('artistName', '')
+                if title:
+                    s['previewUrl'] = (
+                        f"/api/play?title={quote(title, safe='')}"
+                        f"&artist={quote(artist, safe='')}"
+                    )
                 if s.get('artworkUrl100'):
                     s['artworkUrl100'] = s['artworkUrl100'].replace('100x100', '600x600')
         except Exception:
@@ -1554,8 +1756,8 @@ def get_songs():
     t1 = threading.Thread(target=fetch_itunes)
     t2 = threading.Thread(target=fetch_saavn)
     t1.start(); t2.start()
-    t1.join(timeout=13)
-    t2.join(timeout=13)
+    t1.join(timeout=1.5)
+    t2.join(timeout=4)
 
     # Merge: iTunes first, then add Saavn songs that aren't duplicates
     def is_duplicate(song, existing):
@@ -1604,11 +1806,21 @@ def get_90s_songs():
                                  'limit': 50, 'country': 'IN'}, timeout=15)
         r.raise_for_status()
         results  = r.json().get('results', [])
-        filtered = [s for s in results if s.get('previewUrl') and
+        filtered = [s for s in results if s.get('trackName') and
                     1990 <= _safe_year(s.get('releaseDate')) <= 1999]
-        if len(filtered) < 5: filtered = [s for s in results if s.get('previewUrl')]
+        if len(filtered) < 5: filtered = [s for s in results if s.get('trackName')]
         random.shuffle(filtered)
         result = filtered[:30]
+        for s in result:
+            title  = s.get('trackName', '')
+            artist = s.get('artistName', '')
+            if title:
+                s['previewUrl'] = (
+                    f"/api/play?title={quote(title, safe='')}"
+                    f"&artist={quote(artist, safe='')}"
+                )
+            if s.get('artworkUrl100'):
+                s['artworkUrl100'] = s['artworkUrl100'].replace('100x100', '600x600')
         _cache_set(cache_key, result)
         return jsonify({'results': result, 'seed': seed})
     except Exception as e:
@@ -1642,6 +1854,11 @@ def get_saavn_song():
                 if low_url: result['url'] = low_url; result['quality'] = low_q
             _executor.submit(_supabase_cache_set, _ck, result)
             return jsonify({'success': True, 'token': token, **result})
+
+    ytm = fetch_from_ytmusic(q, artist)
+    if ytm and ytm.get('url'):
+        _executor.submit(_supabase_cache_set, _ck, ytm)
+        return jsonify({'success': True, 'token': token, **ytm})
 
     yt = fetch_from_ytdlp(q, artist)
     if yt and yt.get('url'):
@@ -1677,6 +1894,13 @@ def resolve_song():
                 'quality': result['quality'], 'title': result['title'],
                 'artist': result['artist'], 'image': result.get('image', ''), 'source': 'saavn'
             })
+
+    ytm = fetch_from_ytmusic(q, artist)
+    if ytm and ytm.get('url'):
+        return jsonify({'success': True, 'token': token,
+                        'url': f"/api/stream?url={quote(ytm['url'], safe='')}",
+                        'quality': ytm['quality'], 'title': ytm['title'],
+                        'artist': ytm['artist'], 'image': ytm.get('image', ''), 'source': 'ytmusic'})
 
     yt = fetch_from_ytdlp(q, artist)
     if yt and yt.get('url'):
