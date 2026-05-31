@@ -27,7 +27,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 GOOGLE_CLIENT_ID  = os.environ.get('GOOGLE_CLIENT_ID', '')
 ADMIN_KEY         = os.environ.get('ADMIN_KEY', '')
 SUPABASE_URL      = os.environ.get('SUPABASE_URL', '').rstrip('/')
-SUPABASE_KEY      = os.environ.get('SUPABASE_KEY', '')  # secret key (service_role)
+SUPABASE_KEY      = os.environ.get('SUPABASE_KEY', '')
 
 if not GOOGLE_CLIENT_ID:
     raise RuntimeError('GOOGLE_CLIENT_ID env var is required')
@@ -70,7 +70,6 @@ def _sb_headers():
     }
 
 def sb_select(table, filters=None, columns='*'):
-    """SELECT from Supabase table. filters = dict of col:val"""
     url = f"{SUPABASE_URL}/rest/v1/{table}?select={columns}"
     if filters:
         for k, v in filters.items():
@@ -85,7 +84,6 @@ def sb_select(table, filters=None, columns='*'):
     return []
 
 def sb_upsert(table, data, on_conflict=None):
-    """UPSERT into Supabase table."""
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     headers = _sb_headers()
     if on_conflict:
@@ -101,7 +99,6 @@ def sb_upsert(table, data, on_conflict=None):
     return None
 
 def sb_update(table, data, filters):
-    """UPDATE rows in Supabase table."""
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     if filters:
         params = '&'.join(f"{k}=eq.{quote(str(v), safe='')}" for k, v in filters.items())
@@ -116,7 +113,6 @@ def sb_update(table, data, filters):
     return False
 
 def sb_delete(table, filters):
-    """DELETE rows from Supabase table."""
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     if filters:
         params = '&'.join(f"{k}=eq.{quote(str(v), safe='')}" for k, v in filters.items())
@@ -131,48 +127,6 @@ def sb_delete(table, filters):
     return False
 
 def init_db():
-    """
-    Tables are created via Supabase SQL editor.
-    Run this SQL once in your Supabase project:
-
-    CREATE TABLE IF NOT EXISTS users (
-        google_sub TEXT PRIMARY KEY,
-        name TEXT,
-        email TEXT,
-        picture TEXT,
-        ghost_pin_hash TEXT,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-    );
-
-    CREATE TABLE IF NOT EXISTS playback_state (
-        google_sub TEXT PRIMARY KEY,
-        song_id TEXT,
-        song_title TEXT,
-        artist TEXT,
-        art_url TEXT,
-        progress REAL DEFAULT 0,
-        device TEXT DEFAULT 'mobile',
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-    );
-
-    CREATE TABLE IF NOT EXISTS tv_pairing (
-        pairing_code TEXT PRIMARY KEY,
-        tv_session_id TEXT,
-        google_sub TEXT,
-        expires_at TIMESTAMPTZ
-    );
-
-    CREATE TABLE IF NOT EXISTS song_cache (
-        cache_key TEXT PRIMARY KEY,
-        url TEXT,
-        quality TEXT,
-        title TEXT,
-        artist TEXT,
-        image TEXT,
-        source TEXT,
-        cached_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT
-    );
-    """
     log.info('[DB] Supabase ready — tables managed via Supabase SQL editor')
 
 init_db()
@@ -206,9 +160,9 @@ def _extract_bearer_sub(auth_header: str) -> str | None:
 # ═══════════════════════════════════════════════════════════════
 # SUPABASE SONG CACHE
 # ═══════════════════════════════════════════════════════════════
-_SONG_CACHE_TTL    = 86400   # 24 hours
+_SONG_CACHE_TTL    = 86400
 _VOLATILE_SOURCES  = {'youtube', 'youtube-broad', 'piped', 'invidious', 'soundcloud'}
-_VOLATILE_CACHE_TTL = 21600  # 6 hours
+_VOLATILE_CACHE_TTL = 21600
 
 def _supabase_cache_get(cache_key: str) -> dict | None:
     try:
@@ -622,7 +576,7 @@ threading.Thread(target=_master_heal_loop, daemon=True).start()
 log.info('[SelfHeal] Master heal loop started')
 
 # ═══════════════════════════════════════════════════════════════
-# KEEPALIVE PING — Render cold start avoid karo
+# KEEPALIVE PING
 # ═══════════════════════════════════════════════════════════════
 _KEEPALIVE_URLS = [
     'https://jiosavan.onrender.com/song/?query=test',
@@ -634,7 +588,7 @@ _KEEPALIVE_URLS = [
 def _keepalive_ping():
     while True:
         try:
-            time.sleep(600)  # har 10 min
+            time.sleep(600)
             for url in _KEEPALIVE_URLS:
                 try:
                     requests.get(url, timeout=8, headers={'User-Agent': 'Mozilla/5.0'})
@@ -646,8 +600,6 @@ def _keepalive_ping():
 
 threading.Thread(target=_keepalive_ping, daemon=True).start()
 log.info('[Keepalive] Ping loop started')
-
-
 
 # ═══════════════════════════════════════════════════════════════
 # ALLOWED STREAM DOMAINS
@@ -1017,6 +969,7 @@ def _normalize_saavn_songs(raw_songs):
             'trackName':       title,
             'artistName':      artist,
             'artworkUrl100':   image if image else '',
+            # ── FIX: always use Saavn ID so play resolves the exact song ──
             'previewUrl':      f"/api/play?id={quote(song_id, safe='')}",
             'trackTimeMillis': dur_ms,
             'releaseDate':     f"{year}-01-01T00:00:00Z",
@@ -1027,7 +980,103 @@ def _normalize_saavn_songs(raw_songs):
     return normalized
 
 # ═══════════════════════════════════════════════════════════════
-# YOUTUBE MUSIC (InnerTube API — fast search + yt-dlp stream)
+# RESOLVE ITUNES SONG → EXACT SAAVN ID
+# ─────────────────────────────────────────────────────────────
+# Called at search-time so the previewUrl carries the real ID.
+# Returns the song dict with previewUrl patched, or None on miss.
+# ═══════════════════════════════════════════════════════════════
+def _resolve_itunes_to_saavn(itunes_song: dict) -> dict | None:
+    title  = itunes_song.get('trackName', '').strip()
+    artist = itunes_song.get('artistName', '').strip()
+    if not title:
+        return None
+
+    # upgrade artwork while we're here
+    if itunes_song.get('artworkUrl100'):
+        itunes_song['artworkUrl100'] = itunes_song['artworkUrl100'].replace('100x100', '600x600')
+
+    with _mirror_lock:
+        mirrors = [m for m in SAAVN_MIRRORS if _mirror_ok(m)]
+    if not mirrors:
+        mirrors = list(SAAVN_MIRRORS)
+
+    for query in build_query_variants(title, artist, ''):
+        for mirror in mirrors[:6]:
+            for endpoint in ['/api/search/songs', '/api/search', '/search/songs']:
+                try:
+                    resp = requests.get(
+                        f'{mirror}{endpoint}',
+                        params={'query': query, 'q': query, 'limit': 5},
+                        timeout=4,
+                        headers={'User-Agent': 'Mozilla/5.0'},
+                    )
+                    if resp.status_code != 200:
+                        continue
+                    data = resp.json()
+                    raw  = (data.get('data', {}).get('results') or
+                            data.get('results') or
+                            data.get('songs', {}).get('results') or [])
+                    if not raw:
+                        continue
+
+                    best = None
+                    best_score = -1
+                    for song in raw:
+                        song_title  = song.get('name') or song.get('title', '')
+                        song_artist = (song.get('primaryArtists') or
+                                       song.get('primary_artists') or '')
+                        # DJ/remix songs — skip
+                        if any(w in song_title.lower()
+                               for w in ['dj ', 'remix', 'mashup', 'club mix']):
+                            continue
+                        score = title_score(title, song_title, song_artist)
+                        if score > best_score:
+                            best_score = score
+                            best = song
+
+                    # require a strong match (≥ 0.65) so we never bind wrong song
+                    if not best or best_score < 0.65:
+                        continue
+
+                    saavn_id = (best.get('id') or '').strip()
+                    raw_urls = best.get('downloadUrl') or best.get('download_url') or []
+                    if isinstance(raw_urls, str):
+                        raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
+                    _, quality = pick_best_quality(raw_urls)
+
+                    if not saavn_id or not quality:
+                        continue
+
+                    # patch the iTunes song in-place
+                    itunes_song['previewUrl']      = f"/api/play?id={quote(saavn_id, safe='')}"
+                    itunes_song['_saavnId']        = saavn_id
+                    itunes_song['_resolvedTitle']  = (best.get('name') or
+                                                      best.get('title', title))
+                    itunes_song['_resolvedArtist'] = (best.get('primaryArtists') or
+                                                      best.get('primary_artists') or artist)
+                    log.info(
+                        f"[Resolve] ✓ '{title}' → saavn_id={saavn_id} "
+                        f"score={best_score:.2f} quality={quality}"
+                    )
+                    return itunes_song
+
+                except Exception:
+                    continue
+            # tried all endpoints for this mirror, move to next mirror
+        # tried all mirrors for this query variant, try next variant
+
+    # No strong Saavn match found — fall back to title-based play
+    # (this will only happen for very obscure / non-Indian tracks)
+    itunes_song['previewUrl'] = (
+        f"/api/play?title={quote(title, safe='')}"
+        f"&artist={quote(artist, safe='')}"
+    )
+    log.info(f"[Resolve] ✗ No Saavn match for '{title}' — using title fallback")
+    return itunes_song
+
+
+# ═══════════════════════════════════════════════════════════════
+# YOUTUBE MUSIC (InnerTube API)
 # ═══════════════════════════════════════════════════════════════
 _YTM_SEARCH_URL  = 'https://music.youtube.com/youtubei/v1/search'
 _YTM_API_KEY     = 'AIzaSyC9XL3ZjWddXya6X74dJoCTL-NKNELL6imp'
@@ -1606,9 +1655,8 @@ def fetch_from_invidious(query, title='', artist=''):
     if fail_count >= len(instances): _maybe_reactive_heal('invidious')
     return None
 
-
 # ═══════════════════════════════════════════════════════════════
-# JIOSAVAN — Apna API (Primary Source)
+# JIOSAVAN — Primary Source
 # ═══════════════════════════════════════════════════════════════
 _JIOSAVAN_BASE = 'https://jiosavan.onrender.com'
 
@@ -1642,7 +1690,6 @@ def fetch_from_jiosavan(title: str, artist: str = '') -> dict | None:
             song_title  = song.get('song') or song.get('title') or song.get('name', '')
             song_artist = song.get('primary_artists') or song.get('singers') or song.get('artist', '')
             score = title_score(title, song_title, song_artist)
-            # DJ/remix penalty
             if any(w in song_title.lower() for w in ['dj ', 'remix', 'mashup', 'club mix']):
                 score -= 0.8
             if score > best_score:
@@ -1652,7 +1699,6 @@ def fetch_from_jiosavan(title: str, artist: str = '') -> dict | None:
         if not best or best_score < 0.4:
             return None
 
-        # Get download URL
         media_url = (best.get('media_url') or best.get('encrypted_media_url') or
                      best.get('download_url') or '')
         if not media_url:
@@ -1680,9 +1726,8 @@ def fetch_from_jiosavan(title: str, artist: str = '') -> dict | None:
         _health_record_fail(_JIOSAVAN_BASE)
         return None
 
-
 # ═══════════════════════════════════════════════════════════════
-# /api/play
+# /api/play  — FIXED: song_id present → ID-only, no title drift
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/play')
 @limiter.limit("200 per minute")
@@ -1694,6 +1739,11 @@ def play_song():
     if not song_id and not title:
         return jsonify({'error': 'Missing id or title'}), 400
 
+    audio_url = None
+    quality   = 'unknown'
+    source    = 'unknown'
+
+    # ── 1. Check Supabase play-cache ──────────────────────────
     _play_ck     = f"play:{song_id or normalize(title)}:{normalize(artist)}"
     _play_cached = _supabase_cache_get(_play_ck)
     if _play_cached and _play_cached.get('url'):
@@ -1703,28 +1753,41 @@ def play_song():
         source    = _play_cached.get('source', 'unknown')
         if not title:  title  = _play_cached.get('title', '')
         if not artist: artist = _play_cached.get('artist', '')
-    else:
-        audio_url = None; quality = 'unknown'; source = 'unknown'
 
+    # ── 2. song_id path: ONLY ID-based fetch, no title search ─
     if not audio_url and song_id:
         result = _fetch_saavn_by_id(song_id)
         if result and result.get('url'):
-            audio_url = result['url']; quality = result.get('quality', 'unknown'); source = 'saavn'
+            audio_url = result['url']
+            quality   = result.get('quality', 'unknown')
+            source    = 'saavn'
             if not title:  title  = result.get('title', '')
             if not artist: artist = result.get('artist', '')
-            log.info(f"[Play] ✓ Saavn ID quality={quality}")
+            log.info(f"[Play] ✓ Saavn ID={song_id} quality={quality}")
+        else:
+            # ID fetch failed (mirror down etc.) — only try title if title param was also given
+            if title:
+                for query in build_query_variants(title, artist, ''):
+                    result = fetch_saavn_parallel(query)
+                    if result and result.get('url'):
+                        audio_url = result['url']
+                        quality   = result.get('quality', 'unknown')
+                        source    = 'saavn'
+                        log.info(f"[Play] ✓ Saavn title fallback '{result['title']}' quality={quality}")
+                        break
 
-    if not audio_url and song_id and not title:
-        title = song_id.replace('_', ' ').replace('-', ' ').strip()
-
-    if not audio_url and title:
+    # ── 3. title-only path (no id param at all) ───────────────
+    elif not audio_url and title:
         for query in build_query_variants(title, artist, ''):
             result = fetch_saavn_parallel(query)
             if result and result.get('url'):
-                audio_url = result['url']; quality = result.get('quality', 'unknown'); source = 'saavn'
+                audio_url = result['url']
+                quality   = result.get('quality', 'unknown')
+                source    = 'saavn'
                 log.info(f"[Play] ✓ Saavn title='{result['title']}' quality={quality}")
                 break
 
+    # ── 4. All Saavn paths failed → parallel fallbacks ────────
     if not audio_url and title:
         log.info(f"[Play] Saavn miss → parallel fallbacks: '{title}'")
         ytm_future = _executor.submit(fetch_from_ytmusic, title, artist)
@@ -1732,23 +1795,29 @@ def play_song():
         sc_future  = _executor.submit(fetch_from_soundcloud, title, artist)
         pip_future = _executor.submit(fetch_from_piped, title, title=title, artist=artist)
         inv_future = _executor.submit(fetch_from_invidious, title, title=title, artist=artist)
-        for future in as_completed([ytm_future, yt_future, sc_future, pip_future, inv_future], timeout=30):
+        for future in as_completed(
+            [ytm_future, yt_future, sc_future, pip_future, inv_future], timeout=30
+        ):
             try:
                 res = future.result()
                 if res and res.get('url'):
-                    audio_url = res['url']; quality = res.get('quality', 'unknown')
+                    audio_url = res['url']
+                    quality   = res.get('quality', 'unknown')
                     source    = res.get('source', 'unknown')
                     log.info(f"[Play] ✓ {source} '{res.get('title')}' quality={quality}")
-                    ytm_future.cancel(); yt_future.cancel(); sc_future.cancel(); pip_future.cancel(); inv_future.cancel()
+                    ytm_future.cancel(); yt_future.cancel()
+                    sc_future.cancel();  pip_future.cancel(); inv_future.cancel()
                     break
             except Exception:
                 pass
 
+    # ── 5. Broad YouTube last-resort (title only) ─────────────
     if not audio_url and title:
         for broad_query in [title, title.split()[0] if title.split() else title]:
             broad = fetch_from_ytdlp(broad_query, '')
             if broad and broad.get('url'):
-                audio_url = broad['url']; quality = broad.get('quality', 'unknown')
+                audio_url = broad['url']
+                quality   = broad.get('quality', 'unknown')
                 source    = 'youtube-broad'
                 break
 
@@ -1756,11 +1825,13 @@ def play_song():
         log.warning(f"[Play] ✗ ALL sources failed id={song_id} title='{title}'")
         return jsonify({'error': 'No audio source found'}), 404
 
+    # ── 6. Cache result async ─────────────────────────────────
     _executor.submit(_supabase_cache_set, _play_ck, {
         'url': audio_url, 'quality': quality, 'source': source,
         'title': title, 'artist': artist, 'image': ''
     })
 
+    # ── 7. Stream to client ───────────────────────────────────
     try:
         req_headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
@@ -1793,8 +1864,9 @@ def play_song():
         log.error(f"[Play] Stream error: {e}")
         return jsonify({'error': str(e)}), 500
 
+
 # ═══════════════════════════════════════════════════════════════
-# /api/songs  ← REPLACED BLOCK
+# /api/songs  — FIXED: iTunes songs resolved to Saavn ID at search time
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/songs')
 @limiter.limit("60 per minute")
@@ -1826,22 +1898,27 @@ def get_songs():
                 if len(filtered) < 5:
                     filtered = [s for s in results if s.get('trackName')]
                 random.shuffle(filtered)
-                itunes_results = filtered[:30]
+                candidates = filtered[:30]
             else:
-                itunes_results = [s for s in results if s.get('trackName')][:30]
-            # Fix each iTunes song:
-            # 1. Replace previewUrl with /api/play for full song
-            # 2. Upgrade thumbnail to 600x600
-            for s in itunes_results:
-                title  = s.get('trackName', '')
-                artist = s.get('artistName', '')
-                if title:
-                    s['previewUrl'] = (
-                        f"/api/play?title={quote(title, safe='')}"
-                        f"&artist={quote(artist, safe='')}"
-                    )
-                if s.get('artworkUrl100'):
-                    s['artworkUrl100'] = s['artworkUrl100'].replace('100x100', '600x600')
+                candidates = [s for s in results if s.get('trackName')][:30]
+
+            # ── FIXED: resolve each iTunes song to exact Saavn ID in parallel ──
+            resolve_futures = {
+                _executor.submit(_resolve_itunes_to_saavn, s): s
+                for s in candidates
+            }
+            resolved = []
+            try:
+                for future in as_completed(resolve_futures, timeout=10):
+                    try:
+                        res = future.result()
+                        if res:
+                            resolved.append(res)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            itunes_results = resolved[:30]
         except Exception:
             pass
 
@@ -1859,14 +1936,12 @@ def get_songs():
         except Exception:
             pass
 
-    # Fetch both in parallel
     t1 = threading.Thread(target=fetch_itunes)
     t2 = threading.Thread(target=fetch_saavn)
     t1.start(); t2.start()
-    t1.join(timeout=1.5)
+    t1.join(timeout=15)   # increased to allow Saavn ID resolution
     t2.join(timeout=4)
 
-    # Merge: iTunes first, then add Saavn songs that aren't duplicates
     def is_duplicate(song, existing):
         name = normalize(song.get('trackName') or song.get('artistName') or '')
         for e in existing:
@@ -1885,6 +1960,7 @@ def get_songs():
         return jsonify({'results': merged})
 
     return jsonify({'results': [], 'error': 'No results found'})
+
 
 # ═══════════════════════════════════════════════════════════════
 # /api/songs/90s
@@ -1917,17 +1993,26 @@ def get_90s_songs():
                     1990 <= _safe_year(s.get('releaseDate')) <= 1999]
         if len(filtered) < 5: filtered = [s for s in results if s.get('trackName')]
         random.shuffle(filtered)
-        result = filtered[:30]
-        for s in result:
-            title  = s.get('trackName', '')
-            artist = s.get('artistName', '')
-            if title:
-                s['previewUrl'] = (
-                    f"/api/play?title={quote(title, safe='')}"
-                    f"&artist={quote(artist, safe='')}"
-                )
-            if s.get('artworkUrl100'):
-                s['artworkUrl100'] = s['artworkUrl100'].replace('100x100', '600x600')
+        candidates = filtered[:30]
+
+        # resolve to Saavn IDs
+        resolve_futures = {
+            _executor.submit(_resolve_itunes_to_saavn, s): s
+            for s in candidates
+        }
+        resolved = []
+        try:
+            for future in as_completed(resolve_futures, timeout=10):
+                try:
+                    res = future.result()
+                    if res:
+                        resolved.append(res)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        result = resolved[:30]
         _cache_set(cache_key, result)
         return jsonify({'results': result, 'seed': seed})
     except Exception as e:
@@ -2182,7 +2267,7 @@ def health_status():
     })
 
 # ═══════════════════════════════════════════════════════════════
-# AUTH — Google Login + Save User to Supabase
+# AUTH — Google Login
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/auth/google', methods=['POST'])
 @limiter.limit("20 per minute")
@@ -2197,7 +2282,6 @@ def handle_google_auth():
     sub = profile.get('sub', '').strip()
     if not sub: return jsonify({'error': 'Missing sub'}), 400
 
-    # Save/update user in Supabase — email, name, profile picture all saved
     sb_upsert('users', {
         'google_sub': sub,
         'name':       profile.get('name', ''),
@@ -2290,7 +2374,6 @@ def poll_tv_pairing():
     now_str = datetime.utcnow().isoformat()
     if not code: return jsonify({'status': 'pending'}), 400
 
-    # Supabase REST filter: expires_at > now
     url = f"{SUPABASE_URL}/rest/v1/tv_pairing?pairing_code=eq.{quote(code, safe='')}&expires_at=gt.{quote(now_str, safe='')}"
     try:
         r    = requests.get(url, headers=_sb_headers(), timeout=10)
@@ -2361,7 +2444,7 @@ def verify_ghost_pin():
     return jsonify({'success': False})
 
 # ═══════════════════════════════════════════════════════════════
-# ADMIN — View registered users
+# ADMIN
 # ═══════════════════════════════════════════════════════════════
 @app.route('/api/admin/users')
 @limiter.limit("10 per minute")
