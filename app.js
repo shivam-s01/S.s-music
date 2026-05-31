@@ -298,119 +298,137 @@ async function _autoFetchFullSong(song, autoplay = true) {
   const ctrl = new AbortController();
   _fullSongAbort = ctrl;
   const requested = song;
+
   try {
-    const rawTitle   = song.trackName  || '';
-    const rawArtist  = song.artistName || '';
-    const movieMatch = rawTitle.match(/\(From\s+[\u201c\u201d""]?(.+?)[\u201c\u201d""]?\)/i);
-    const movieName  = movieMatch ? movieMatch[1].trim() : '';
-    const cleanTitle  = rawTitle.replace(/\(.*?\)|\[.*?\]/g, '').trim();
-    const cleanArtist = rawArtist.split(/[&,]|feat\.|ft\./i)[0].trim();
-    const primaryQ  = encodeURIComponent(movieName ? `${cleanTitle} ${movieName}` : `${cleanTitle} ${cleanArtist}`);
-    const fallbackQ = encodeURIComponent(`${cleanTitle} ${cleanArtist}`);
-    const artistQ   = encodeURIComponent(cleanArtist);
+    // ── FIX 1: Saavn-sourced song → direct ID play, NO search at all ──
+    if (song._source === 'saavn' && song._saavnId) {
+      const proxyUrl = `/api/play?id=${encodeURIComponent(song._saavnId)}`;
+      await _upgradeAudio(proxyUrl, null, song, autoplay, ctrl, requested);
+      return;
+    }
+
+    // ── FIX 2: Single API call only — removed duplicate /api/resolve ──
+    const cleanTitle  = (song.trackName  || '').replace(/\(.*?\)|\[.*?\]/g, '').trim();
+    const cleanArtist = (song.artistName || '').split(/[&,]|feat\.|ft\./i)[0].trim();
+    const movieMatch  = (song.trackName  || '').match(/\(From\s+[\u201c\u201d""]?(.+?)[\u201c\u201d""]?\)/i);
+    const movieName   = movieMatch ? movieMatch[1].trim() : '';
+    const primaryQ    = encodeURIComponent(movieName ? `${cleanTitle} ${movieName}` : `${cleanTitle} ${cleanArtist}`);
+    const fallbackQ   = encodeURIComponent(`${cleanTitle} ${cleanArtist}`);
+    const artistQ     = encodeURIComponent(cleanArtist);
 
     let d = null, proxyUrl = null;
 
-const [r1, r2] = await Promise.allSettled([
-  fetch(`/api/saavn?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`, { signal: ctrl.signal }),
-  fetch(`/api/resolve?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`, { signal: ctrl.signal })
-]);
-
-if (r1.status === 'fulfilled' && r1.value.ok) {
-  const j1 = await r1.value.json();
-  if (j1.success && j1.url) {
-    if (j1.source !== 'saavn' || _titleMatches(j1.title, requested.trackName)) {
-      d = j1; proxyUrl = `/api/stream?url=${encodeURIComponent(j1.url)}`;
+    // FIX: sirf EK call — /api/saavn hi kaafi hai
+    try {
+      const r = await fetch(
+        `/api/saavn?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`,
+        { signal: ctrl.signal }
+      );
+      if (r.ok) {
+        const j = await r.json();
+        if (j.success && j.url) {
+          // Saavn source ke liye title match strict nahi — ID se aaya hai
+          if (j.source === 'saavn' || _titleMatches(j.title, requested.trackName)) {
+            d = j;
+            proxyUrl = j.source === 'saavn'
+              ? `/api/play?id=${encodeURIComponent(j._saavnId || '')}`
+              : `/api/stream?url=${encodeURIComponent(j.url)}`;
+            // Fallback agar saavnId nahi mila
+            if (j.source === 'saavn' && !j._saavnId) {
+              proxyUrl = `/api/stream?url=${encodeURIComponent(j.url)}`;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      if (e.name === 'AbortError') return;
     }
-  }
-}
-if (!proxyUrl && r2.status === 'fulfilled' && r2.value.ok) {
-  const j2 = await r2.value.json();
-  if (j2.success && j2.url) { d = j2; proxyUrl = j2.url; }
-}
 
     if (ctrl.signal.aborted) return;
     if (currentTrack?.trackId !== requested.trackId) return;
 
     if (!d || !proxyUrl) {
-      // Saavn song with no audio found — show error state
-      if (song._source === 'saavn') {
-        currentQuality = 'preview';
-        updateQualityLabel();
-        showToast('Song unavailable — try another');
-      } else {
-        console.info('[AutoFetch] No source found — staying on preview');
-      }
+      if (song._source === 'saavn') showToast('Song unavailable — try another');
       return;
     }
 
-    _currentSaavnUrl = proxyUrl;
-    _currentSaavnQuality = d.quality || 'unknown';
-    _updateDlSheetQuality(d.quality);
+    await _upgradeAudio(proxyUrl, d, song, autoplay, ctrl, requested);
 
-    const preAudio = new Audio();
-    preAudio.preload = 'auto';
-    preAudio.crossOrigin = 'anonymous';
+  } catch (e) {
+    if (e.name !== 'AbortError') console.info('[AutoFetch] Error:', e.message);
+  }
+}
 
-    const _cleanupPreAudio = () => { try { preAudio.src = ''; } catch(e) {} };
+// ── Helper: preload + swap audio ─────────────────────────────────────────────
+async function _upgradeAudio(proxyUrl, d, song, autoplay, ctrl, requested) {
+  _currentSaavnUrl     = proxyUrl;
+  _currentSaavnQuality = d?.quality || 'unknown';
+  if (d?.quality) _updateDlSheetQuality(d.quality);
 
-    try {
-      await new Promise((res, rej) => {
-        const to = setTimeout(() => { _cleanupPreAudio(); rej(new Error('preload-timeout')); }, 14000);
-        preAudio.addEventListener('canplay', () => { clearTimeout(to); res(); }, { once: true });
-        preAudio.addEventListener('error',   () => { clearTimeout(to); rej(new Error('preload-error')); }, { once: true });
-        preAudio.src = proxyUrl;
-        preAudio.load();
-      });
-    } catch(preErr) {
-      _cleanupPreAudio();
-      if (preErr.name !== 'AbortError') console.info('[AutoFetch] Preload failed:', preErr.message);
-      if (song._source === 'saavn') showToast('Stream failed — try another song');
-      return;
+  // FIX 3: preload timeout 6s (was 14s)
+  const preAudio = new Audio();
+  preAudio.preload     = 'auto';
+  preAudio.crossOrigin = 'anonymous';
+
+  const _cleanupPre = () => { try { preAudio.src = ''; } catch(e) {} };
+
+  try {
+    await new Promise((res, rej) => {
+      const to = setTimeout(() => { _cleanupPre(); rej(new Error('preload-timeout')); }, 6000);
+      preAudio.addEventListener('canplay', () => { clearTimeout(to); res(); }, { once: true });
+      preAudio.addEventListener('error',   () => { clearTimeout(to); rej(new Error('preload-error')); }, { once: true });
+      preAudio.src = proxyUrl;
+      preAudio.load();
+    });
+  } catch (preErr) {
+    _cleanupPre();
+    if (song._source === 'saavn') showToast('Stream failed — try another song');
+    return;
+  }
+
+  if (ctrl.signal.aborted || currentTrack?.trackId !== requested.trackId) {
+    _cleanupPre(); return;
+  }
+
+  const wasPlaying = song._source === 'saavn' ? autoplay : isPlaying;
+  const pos = audio.currentTime;
+
+  audio.addEventListener('loadedmetadata', () => {
+    if (isFinite(pos) && pos > 0 && isFinite(audio.duration) && pos < audio.duration) {
+      audio.currentTime = pos;
     }
+  }, { once: true });
 
-    if (ctrl.signal.aborted || currentTrack?.trackId !== requested.trackId) { _cleanupPreAudio(); return; }
+  audio.src = proxyUrl;
+  const sbEl = document.getElementById('fp-seekbar');
+  if (sbEl) sbEl.classList.add('full-active');
+  _cleanupPre();
 
-    const wasPlaying = song._source === 'saavn' ? autoplay : isPlaying;
-    const pos = audio.currentTime;
-
-    audio.addEventListener('loadedmetadata', () => {
-      if (isFinite(pos) && pos > 0 && isFinite(audio.duration) && pos < audio.duration) {
-        audio.currentTime = pos;
-      }
-    }, { once: true });
-
-    audio.src = proxyUrl;
-    const sbEl = document.getElementById('fp-seekbar');
-    if (sbEl) sbEl.classList.add('full-active');
-    _cleanupPreAudio();
-
-    // Update player metadata from Saavn response
+  // Metadata update from response
+  if (d) {
     if (d.title  && d.title  !== 'Unknown') currentTrack.trackName  = d.title;
     if (d.artist && d.artist !== 'Unknown') currentTrack.artistName = d.artist;
     if (d.image  && d.image.startsWith('http')) {
       currentTrack.artworkUrl100 = d.image.replace('500x500', '100x100');
     }
+  }
 
-    if (wasPlaying) {
-      const pp = audio.play();
-      if (pp?.then) pp.then(() => {
-        if (ctrl.signal.aborted || currentTrack?.trackId !== requested.trackId) { audio.pause(); return; }
-        isPlaying = true; currentQuality = 'full'; _fullSongAbort = null;
-        updateQualityLabel(); updatePlayerUI();
-      }).catch(() => {
-        if (!ctrl.signal.aborted) {
-          // Saavn song has no preview fallback
-          if (song._source !== 'saavn') _fallbackToPreview(requested);
-          else showToast('Playback failed');
-        }
-      });
-    } else {
-      currentQuality = 'full'; _fullSongAbort = null;
+  if (wasPlaying) {
+    const pp = audio.play();
+    if (pp?.then) pp.then(() => {
+      if (ctrl.signal.aborted || currentTrack?.trackId !== requested.trackId) {
+        audio.pause(); return;
+      }
+      isPlaying = true; currentQuality = 'full'; _fullSongAbort = null;
       updateQualityLabel(); updatePlayerUI();
-    }
-  } catch(e) {
-    if (e.name !== 'AbortError') console.info('[AutoFetch] Staying on preview:', e.message);
+    }).catch(() => {
+      if (!ctrl.signal.aborted && song._source !== 'saavn') {
+        _fallbackToPreview(requested);
+      }
+    });
+  } else {
+    currentQuality = 'full'; _fullSongAbort = null;
+    updateQualityLabel(); updatePlayerUI();
   }
 }
 
