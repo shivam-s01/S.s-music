@@ -995,195 +995,6 @@ def _normalize_saavn_songs(raw_songs):
     return normalized
 
 # ═══════════════════════════════════════════════════════════════
-# YOUTUBE MUSIC (InnerTube API — fast search + yt-dlp stream)
-# ═══════════════════════════════════════════════════════════════
-_YTM_SEARCH_URL  = 'https://music.youtube.com/youtubei/v1/search'
-_YTM_API_KEY     = 'AIzaSyC9XL3ZjWddXya6X74dJoCTL-NKNELL6imp'
-_YTM_CONTEXT     = {
-    'client': {
-        'clientName':    'WEB_REMIX',
-        'clientVersion': '1.20250101.01.00',
-        'hl':            'en',
-        'gl':            'IN',
-        'userAgent':     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    }
-}
-
-def _ytm_search(query: str, limit: int = 8) -> list:
-    try:
-        body = {
-            'context': _YTM_CONTEXT,
-            'query':   query,
-            'params':  'EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D',
-        }
-        r = requests.post(
-            _YTM_SEARCH_URL,
-            params={'key': _YTM_API_KEY, 'prettyPrint': 'false'},
-            json=body,
-            headers={
-                'Content-Type':  'application/json',
-                'X-YouTube-Client-Name':    '67',
-                'X-YouTube-Client-Version': '1.20250101.01.00',
-                'Origin':   'https://music.youtube.com',
-                'Referer':  'https://music.youtube.com/',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-            },
-            timeout=8,
-        )
-        if r.status_code != 200:
-            return []
-        data    = r.json()
-        results = []
-        tabs = (data.get('contents', {})
-                    .get('tabbedSearchResultsRenderer', {})
-                    .get('tabs', []))
-        for tab in tabs:
-            section_list = (tab.get('tabRenderer', {})
-                               .get('content', {})
-                               .get('sectionListRenderer', {})
-                               .get('contents', []))
-            for section in section_list:
-                items = (section.get('musicShelfRenderer', {})
-                                .get('contents', []))
-                for item in items:
-                    renderer = item.get('musicResponsiveListItemRenderer', {})
-                    if not renderer:
-                        continue
-                    overlay = renderer.get('overlay', {})
-                    vid_id  = (overlay.get('musicItemThumbnailOverlayRenderer', {})
-                                      .get('content', {})
-                                      .get('musicPlayButtonRenderer', {})
-                                      .get('playNavigationEndpoint', {})
-                                      .get('watchEndpoint', {})
-                                      .get('videoId', ''))
-                    if not vid_id:
-                        for col in renderer.get('flexColumns', []):
-                            runs = (col.get('musicResponsiveListItemFlexColumnRenderer', {})
-                                       .get('text', {})
-                                       .get('runs', []))
-                            for run in runs:
-                                ep = run.get('navigationEndpoint', {}).get('watchEndpoint', {})
-                                if ep.get('videoId'):
-                                    vid_id = ep['videoId']
-                                    break
-                            if vid_id:
-                                break
-                    if not vid_id:
-                        continue
-                    cols     = renderer.get('flexColumns', [])
-                    title_t  = ''
-                    artist_t = ''
-                    for i, col in enumerate(cols):
-                        runs = (col.get('musicResponsiveListItemFlexColumnRenderer', {})
-                                   .get('text', {})
-                                   .get('runs', []))
-                        text = ' '.join(r.get('text', '') for r in runs).strip()
-                        if i == 0:
-                            title_t = text
-                        elif i == 1:
-                            artist_t = text.split('\u2022')[0].strip()
-                    thumbs = (renderer.get('thumbnail', {})
-                                      .get('musicThumbnailRenderer', {})
-                                      .get('thumbnail', {})
-                                      .get('thumbnails', []))
-                    thumb  = thumbs[-1]['url'] if thumbs else ''
-                    if thumb:
-                        thumb = re.sub(r'=w\d+-h\d+', '=w500-h500', thumb)
-                    results.append({
-                        'videoId':   vid_id,
-                        'title':     title_t,
-                        'artist':    artist_t,
-                        'thumbnail': thumb,
-                    })
-                    if len(results) >= limit:
-                        return results
-        return results
-    except Exception as e:
-        log.warning(f'[YTMusic] search error: {e}')
-        return []
-
-def _ytm_get_stream_url(video_id: str):
-    cache_key = f"ytm_stream:{video_id}"
-    cached = _cache_get(cache_key, _ytdlp_cache)
-    if cached:
-        return cached.get('url'), cached.get('quality')
-    ydl_opts = {
-        'format':         'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
-        'quiet':          True,
-        'no_warnings':    True,
-        'socket_timeout': 12,
-        'extract_flat':   False,
-        'noplaylist':     True,
-        'http_headers':   {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'},
-    }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(
-                f'https://music.youtube.com/watch?v={video_id}',
-                download=False
-            )
-            if not info:
-                return None, None
-            formats = info.get('formats', [])
-            audio_formats = [
-                f for f in formats
-                if f.get('acodec') not in ('none', None, '')
-                and f.get('url')
-                and f.get('vcodec') in ('none', None, '')
-            ]
-            if not audio_formats:
-                audio_formats = [f for f in formats if f.get('acodec') not in ('none', None, '') and f.get('url')]
-            if not audio_formats:
-                return None, None
-            best    = max(audio_formats, key=lambda f: f.get('abr') or f.get('tbr') or 0)
-            abr     = best.get('abr') or best.get('tbr') or 0
-            quality = f"{int(abr)}kbps" if abr else 'unknown'
-            url     = best['url']
-            _cache_set(cache_key, {'url': url, 'quality': quality}, _ytdlp_cache)
-            return url, quality
-    except Exception as e:
-        log.warning(f'[YTMusic] stream extract error {video_id}: {e}')
-        return None, None
-
-def fetch_from_ytmusic(title: str, artist: str = ''):
-    cache_key = f"ytmusic:{normalize(title)}:{normalize(artist)}"
-    cached = _cache_get(cache_key, _ytdlp_cache)
-    if cached:
-        return cached
-    clean_title  = re.sub(r'\(.*?\)|\[.*?\]', '', title).strip()
-    clean_artist = artist.split(',')[0].split('&')[0].strip() if artist else ''
-    query = f"{clean_artist} {clean_title}".strip() if clean_artist else clean_title
-    results = _ytm_search(query, limit=8)
-    if not results:
-        results = _ytm_search(clean_title, limit=5)
-    if not results:
-        return None
-    best       = None
-    best_score = -1
-    for item in results:
-        score = title_score(title, item.get('title', ''), item.get('artist', ''))
-        if score > best_score:
-            best_score = score
-            best = item
-    if not best or best_score < 0.25:
-        return None
-    video_id = best['videoId']
-    url, quality = _ytm_get_stream_url(video_id)
-    if not url:
-        return None
-    result = {
-        'url':     url,
-        'quality': quality,
-        'title':   best.get('title', title),
-        'artist':  best.get('artist', artist),
-        'image':   best.get('thumbnail', ''),
-        'source':  'ytmusic',
-    }
-    _cache_set(cache_key, result, _ytdlp_cache)
-    log.info(f"[YTMusic] SUCCESS: '{best['title']}' score={best_score:.2f} quality={quality}")
-    return result
-
-# ═══════════════════════════════════════════════════════════════
 # YT-DLP
 # ═══════════════════════════════════════════════════════════════
 def fetch_from_ytdlp(title, artist=''):
@@ -1621,7 +1432,7 @@ def play_song():
         sc_future  = _executor.submit(fetch_from_soundcloud, title, artist)
         pip_future = _executor.submit(fetch_from_piped, title, title=title, artist=artist)
         inv_future = _executor.submit(fetch_from_invidious, title, title=title, artist=artist)
-        for future in as_completed([yt_future, sc_future, pip_future, inv_future], timeout=25):
+        for future in as_completed([yt_future, sc_future, pip_future, inv_future], timeout=30):
             try:
                 res = future.result()
                 if res and res.get('url'):
@@ -1710,25 +1521,16 @@ def get_songs():
             r.raise_for_status()
             results = r.json().get('results', [])
             if is_90s:
-                filtered = [s for s in results if s.get('trackName') and
+                filtered = [s for s in results if s.get('previewUrl') and
                             1990 <= _safe_year(s.get('releaseDate')) <= 1999]
                 if len(filtered) < 5:
-                    filtered = [s for s in results if s.get('trackName')]
+                    filtered = [s for s in results if s.get('previewUrl')]
                 random.shuffle(filtered)
                 itunes_results = filtered[:30]
             else:
-                itunes_results = [s for s in results if s.get('trackName')][:30]
-            # Fix each iTunes song:
-            # 1. Replace previewUrl with /api/play for full song
-            # 2. Upgrade thumbnail to 600x600
+                itunes_results = [s for s in results if s.get('previewUrl')][:30]
+            # Upgrade thumbnails to 600x600
             for s in itunes_results:
-                title  = s.get('trackName', '')
-                artist = s.get('artistName', '')
-                if title:
-                    s['previewUrl'] = (
-                        f"/api/play?title={quote(title, safe='')}"
-                        f"&artist={quote(artist, safe='')}"
-                    )
                 if s.get('artworkUrl100'):
                     s['artworkUrl100'] = s['artworkUrl100'].replace('100x100', '600x600')
         except Exception:
@@ -1748,23 +1550,14 @@ def get_songs():
         except Exception:
             pass
 
-    # iTunes fast hai — 3 sec mein return karo
-    # Saavn background mein chalta rahe
+    # Fetch both in parallel
     t1 = threading.Thread(target=fetch_itunes)
-    t2 = threading.Thread(target=fetch_saavn, daemon=True)
+    t2 = threading.Thread(target=fetch_saavn)
     t1.start(); t2.start()
+    t1.join(timeout=13)
+    t2.join(timeout=13)
 
-    # Sirf iTunes ka wait karo — max 4 sec
-    t1.join(timeout=4)
-
-    # Agar iTunes aa gaya — turant return karo
-    if itunes_results:
-        _cache_set(cache_key, itunes_results)
-        return jsonify({'results': itunes_results, '_source': 'itunes_fast'})
-
-    # iTunes nahi aaya — Saavn ka thoda aur wait karo
-    t2.join(timeout=9)
-
+    # Merge: iTunes first, then add Saavn songs that aren't duplicates
     def is_duplicate(song, existing):
         name = normalize(song.get('trackName') or song.get('artistName') or '')
         for e in existing:
@@ -1811,21 +1604,11 @@ def get_90s_songs():
                                  'limit': 50, 'country': 'IN'}, timeout=15)
         r.raise_for_status()
         results  = r.json().get('results', [])
-        filtered = [s for s in results if s.get('trackName') and
+        filtered = [s for s in results if s.get('previewUrl') and
                     1990 <= _safe_year(s.get('releaseDate')) <= 1999]
-        if len(filtered) < 5: filtered = [s for s in results if s.get('trackName')]
+        if len(filtered) < 5: filtered = [s for s in results if s.get('previewUrl')]
         random.shuffle(filtered)
         result = filtered[:30]
-        for s in result:
-            title  = s.get('trackName', '')
-            artist = s.get('artistName', '')
-            if title:
-                s['previewUrl'] = (
-                    f"/api/play?title={quote(title, safe='')}"
-                    f"&artist={quote(artist, safe='')}"
-                )
-            if s.get('artworkUrl100'):
-                s['artworkUrl100'] = s['artworkUrl100'].replace('100x100', '600x600')
         _cache_set(cache_key, result)
         return jsonify({'results': result, 'seed': seed})
     except Exception as e:
