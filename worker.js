@@ -1,6 +1,6 @@
 const ORIGINS = [
-  'https://s-s-music-0uxa.onrender.com',
-  'https://aurum-waves.up.railway.app',
+  'https://aurum-waves.up.railway.app',   // PRIMARY - Railway
+  'https://s-s-music-0uxa.onrender.com',  // FALLBACK - Render
 ];
 
 const CACHE_TTL = {
@@ -63,7 +63,7 @@ export default {
         headers.delete('CF-Visitor');
 
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 30000);
+        const timer = setTimeout(() => controller.abort(), 8000);
 
         const resp = await fetch(new Request(url.toString(), {
           method: request.method,
