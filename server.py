@@ -255,6 +255,10 @@ def _supabase_cache_set(cache_key: str, data: dict):
 # SAAVN MIRRORS
 # ═══════════════════════════════════════════════════════════════
 _BASE_MIRRORS = [
+    'https://jio-saavn-api.onrender.com',
+    'https://my-jiosaavn-api.onrender.com',
+    'https://saavn-backend.onrender.com',
+    'https://jiosaavn-api-node.onrender.com',
     'https://saavn.dev',
     'https://jiosaavn-api-privatecvc2.vercel.app',
     'https://saavn-api-sigma.vercel.app',
@@ -616,6 +620,34 @@ def _master_heal_loop():
 
 threading.Thread(target=_master_heal_loop, daemon=True).start()
 log.info('[SelfHeal] Master heal loop started')
+
+# ═══════════════════════════════════════════════════════════════
+# KEEPALIVE PING — Render cold start avoid karo
+# ═══════════════════════════════════════════════════════════════
+_KEEPALIVE_URLS = [
+    'https://jiosavan.onrender.com/song/?query=test',
+    'https://jio-saavn-api.onrender.com/api/search/songs?query=test',
+    'https://my-jiosaavn-api.onrender.com/api/search/songs?query=test',
+    'https://saavn-backend.onrender.com/api/search/songs?query=test',
+]
+
+def _keepalive_ping():
+    while True:
+        try:
+            time.sleep(600)  # har 10 min
+            for url in _KEEPALIVE_URLS:
+                try:
+                    requests.get(url, timeout=8, headers={'User-Agent': 'Mozilla/5.0'})
+                    log.info(f'[Keepalive] Pinged: {url[:40]}')
+                except Exception:
+                    pass
+        except Exception as e:
+            log.warning(f'[Keepalive] Error: {e}')
+
+threading.Thread(target=_keepalive_ping, daemon=True).start()
+log.info('[Keepalive] Ping loop started')
+
+
 
 # ═══════════════════════════════════════════════════════════════
 # ALLOWED STREAM DOMAINS
@@ -1573,6 +1605,81 @@ def fetch_from_invidious(query, title='', artist=''):
             log.warning(f"[Invidious {instance}] {e}"); continue
     if fail_count >= len(instances): _maybe_reactive_heal('invidious')
     return None
+
+
+# ═══════════════════════════════════════════════════════════════
+# JIOSAVAN — Apna API (Primary Source)
+# ═══════════════════════════════════════════════════════════════
+_JIOSAVAN_BASE = 'https://jiosavan.onrender.com'
+
+def fetch_from_jiosavan(title: str, artist: str = '') -> dict | None:
+    cache_key = f"jiosavan:{normalize(title)}:{normalize(artist)}"
+    cached = _cache_get(cache_key)
+    if cached: return cached
+
+    clean_title  = re.sub(r'\(.*?\)|\[.*?\]', '', title).strip()
+    clean_artist = artist.split(',')[0].split('&')[0].strip() if artist else ''
+    query        = f"{clean_artist} {clean_title}".strip() if clean_artist else clean_title
+
+    try:
+        t0 = time.time()
+        r  = requests.get(
+            f'{_JIOSAVAN_BASE}/song/',
+            params={'query': query, 'songdata': 'true'},
+            timeout=5,
+            headers={'User-Agent': 'Mozilla/5.0'}
+        )
+        elapsed = (time.time() - t0) * 1000
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        songs = data if isinstance(data, list) else data.get('songs', []) or data.get('results', [])
+        if not songs:
+            return None
+
+        best = None; best_score = -1
+        for song in songs[:5]:
+            song_title  = song.get('song') or song.get('title') or song.get('name', '')
+            song_artist = song.get('primary_artists') or song.get('singers') or song.get('artist', '')
+            score = title_score(title, song_title, song_artist)
+            # DJ/remix penalty
+            if any(w in song_title.lower() for w in ['dj ', 'remix', 'mashup', 'club mix']):
+                score -= 0.8
+            if score > best_score:
+                best_score = score
+                best = song
+
+        if not best or best_score < 0.4:
+            return None
+
+        # Get download URL
+        media_url = (best.get('media_url') or best.get('encrypted_media_url') or
+                     best.get('download_url') or '')
+        if not media_url:
+            return None
+
+        image = best.get('image', '')
+        if image:
+            image = image.replace('150x150', '500x500').replace('50x50', '500x500')
+
+        result = {
+            'url':     media_url,
+            'quality': '320kbps',
+            'title':   best.get('song') or best.get('title', title),
+            'artist':  best.get('primary_artists') or best.get('singers', artist),
+            'image':   image,
+            'source':  'jiosavan',
+            'score':   round(best_score, 3),
+        }
+        _cache_set(cache_key, result)
+        _health_record_ok(_JIOSAVAN_BASE, elapsed)
+        log.info(f"[JioSavan] ✓ '{result['title']}' score={best_score:.2f}")
+        return result
+    except Exception as e:
+        log.warning(f"[JioSavan] '{title}' → {e}")
+        _health_record_fail(_JIOSAVAN_BASE)
+        return None
+
 
 # ═══════════════════════════════════════════════════════════════
 # /api/play
