@@ -1617,19 +1617,18 @@ def play_song():
 
     if not audio_url and title:
         log.info(f"[Play] Saavn miss → parallel fallbacks: '{title}'")
-        ytm_future = _executor.submit(fetch_from_ytmusic, title, artist)
         yt_future  = _executor.submit(fetch_from_ytdlp, title, artist)
         sc_future  = _executor.submit(fetch_from_soundcloud, title, artist)
         pip_future = _executor.submit(fetch_from_piped, title, title=title, artist=artist)
         inv_future = _executor.submit(fetch_from_invidious, title, title=title, artist=artist)
-        for future in as_completed([ytm_future, yt_future, sc_future, pip_future, inv_future], timeout=30):
+        for future in as_completed([yt_future, sc_future, pip_future, inv_future], timeout=25):
             try:
                 res = future.result()
                 if res and res.get('url'):
                     audio_url = res['url']; quality = res.get('quality', 'unknown')
                     source    = res.get('source', 'unknown')
                     log.info(f"[Play] ✓ {source} '{res.get('title')}' quality={quality}")
-                    ytm_future.cancel(); yt_future.cancel(); sc_future.cancel(); pip_future.cancel(); inv_future.cancel()
+                    yt_future.cancel(); sc_future.cancel(); pip_future.cancel(); inv_future.cancel()
                     break
             except Exception:
                 pass
@@ -1749,14 +1748,23 @@ def get_songs():
         except Exception:
             pass
 
-    # Fetch both in parallel
+    # iTunes fast hai — 3 sec mein return karo
+    # Saavn background mein chalta rahe
     t1 = threading.Thread(target=fetch_itunes)
-    t2 = threading.Thread(target=fetch_saavn)
+    t2 = threading.Thread(target=fetch_saavn, daemon=True)
     t1.start(); t2.start()
-    t1.join(timeout=13)
-    t2.join(timeout=13)
 
-    # Merge: iTunes first, then add Saavn songs that aren't duplicates
+    # Sirf iTunes ka wait karo — max 4 sec
+    t1.join(timeout=4)
+
+    # Agar iTunes aa gaya — turant return karo
+    if itunes_results:
+        _cache_set(cache_key, itunes_results)
+        return jsonify({'results': itunes_results, '_source': 'itunes_fast'})
+
+    # iTunes nahi aaya — Saavn ka thoda aur wait karo
+    t2.join(timeout=9)
+
     def is_duplicate(song, existing):
         name = normalize(song.get('trackName') or song.get('artistName') or '')
         for e in existing:
@@ -1852,11 +1860,6 @@ def get_saavn_song():
             _executor.submit(_supabase_cache_set, _ck, result)
             return jsonify({'success': True, 'token': token, **result})
 
-    ytm = fetch_from_ytmusic(q, artist)
-    if ytm and ytm.get('url'):
-        _executor.submit(_supabase_cache_set, _ck, ytm)
-        return jsonify({'success': True, 'token': token, **ytm})
-
     yt = fetch_from_ytdlp(q, artist)
     if yt and yt.get('url'):
         _executor.submit(_supabase_cache_set, _ck, yt)
@@ -1891,13 +1894,6 @@ def resolve_song():
                 'quality': result['quality'], 'title': result['title'],
                 'artist': result['artist'], 'image': result.get('image', ''), 'source': 'saavn'
             })
-
-    ytm = fetch_from_ytmusic(q, artist)
-    if ytm and ytm.get('url'):
-        return jsonify({'success': True, 'token': token,
-                        'url': f"/api/stream?url={quote(ytm['url'], safe='')}",
-                        'quality': ytm['quality'], 'title': ytm['title'],
-                        'artist': ytm['artist'], 'image': ytm.get('image', ''), 'source': 'ytmusic'})
 
     yt = fetch_from_ytdlp(q, artist)
     if yt and yt.get('url'):
