@@ -125,7 +125,7 @@ function getArtUrl(song, size) {
   const base = song?.artworkUrl100 || '';
   if (!base) return '';
   // Replace any size pattern with target
-  return base.replace(/\d+x\d+/, target);
+  return base.replace(/\d{2,4}x\d{2,4}/, target);
 }
 
 document.querySelectorAll('img').forEach(img => setupImg(img));
@@ -230,7 +230,7 @@ function _titleMatches(saavnTitle, trackName) {
     if (iw.some(iword => iword === w || (w.length > 3 && iword.length > 3 && (iword.startsWith(w) || w.startsWith(iword))))) matched++;
   }
   const total = Math.max(sw.length, iw.length);
-  const threshold = total <= 2 ? 1.0 : total <= 3 ? 0.67 : 0.55;
+  const threshold = total <= 2 ? 0.85 : total <= 3 ? 0.60 : 0.50;
   return matched / total >= threshold;
 }
 
@@ -311,32 +311,23 @@ async function _autoFetchFullSong(song, autoplay = true) {
 
     let d = null, proxyUrl = null;
 
-    try {
-      const r1 = await fetch(`/api/saavn?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`, { signal: ctrl.signal });
-      if (r1.ok) {
-        const j1 = await r1.json();
-        if (j1.success && j1.url) {
-          if (j1.source === 'saavn' && !_titleMatches(j1.title, requested.trackName)) {
-            console.warn(`[Mismatch/Saavn] Asked="${requested.trackName}" Got="${j1.title}"`);
-          } else {
-            d = j1; proxyUrl = `/api/stream?url=${encodeURIComponent(j1.url)}`;
-          }
-        }
-      }
-    } catch(e1) { if (e1.name !== 'AbortError') console.info('[AutoFetch] Saavn failed:', e1.message); }
+const [r1, r2] = await Promise.allSettled([
+  fetch(`/api/saavn?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`, { signal: ctrl.signal }),
+  fetch(`/api/resolve?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`, { signal: ctrl.signal })
+]);
 
-    if (ctrl.signal.aborted) return;
-    if (currentTrack?.trackId !== requested.trackId) return;
-
-    if (!proxyUrl) {
-      try {
-        const r2 = await fetch(`/api/resolve?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`, { signal: ctrl.signal });
-        if (r2.ok) {
-          const j2 = await r2.json();
-          if (j2.success && j2.url) { d = j2; proxyUrl = j2.url; }
-        }
-      } catch(e2) { if (e2.name !== 'AbortError') console.info('[AutoFetch] Resolve failed:', e2.message); }
+if (r1.status === 'fulfilled' && r1.value.ok) {
+  const j1 = await r1.value.json();
+  if (j1.success && j1.url) {
+    if (j1.source !== 'saavn' || _titleMatches(j1.title, requested.trackName)) {
+      d = j1; proxyUrl = `/api/stream?url=${encodeURIComponent(j1.url)}`;
     }
+  }
+}
+if (!proxyUrl && r2.status === 'fulfilled' && r2.value.ok) {
+  const j2 = await r2.value.json();
+  if (j2.success && j2.url) { d = j2; proxyUrl = j2.url; }
+}
 
     if (ctrl.signal.aborted) return;
     if (currentTrack?.trackId !== requested.trackId) return;
