@@ -251,6 +251,30 @@ def _get_artwork(title: str, artist: str = '') -> str:
         return hit.get('url', '')
     return ''
 
+def _verified_key(song_id: str = '', title: str = '', artist: str = '') -> str:
+    if song_id:
+        return f"verified:id:{song_id}"
+    return f"verified:{normalize(title)}:{normalize(artist)}"
+
+def _store_verified(song_id: str, title: str, artist: str, data: dict, confidence: float):
+    """Store in verified cache only if conf ≥ 0.85 (high-confidence results only)."""
+    if confidence < 0.85:
+        return
+    if song_id:
+        _l1_verified.set(_verified_key(song_id=song_id), data)
+    if title:
+        _l1_verified.set(_verified_key(title=title, artist=artist), data)
+
+def _get_verified(song_id: str = '', title: str = '', artist: str = '') -> Optional[dict]:
+    if song_id:
+        hit = _l1_verified.get(_verified_key(song_id=song_id))
+        if hit:
+            return hit
+    if title:
+        return _l1_verified.get(_verified_key(title=title, artist=artist))
+    return None
+
+
 # backward-compat aliases used by existing code paths
 _meta_cache     = {}   # kept for legacy _cache_get/_cache_set
 _ytdlp_cache    = {}
@@ -418,6 +442,33 @@ _SOURCE_CONFIDENCE = {
     'youtube-broad': 0.40,
 }
 
+_USER_VERSION_KEYWORDS = {
+    'lofi', 'lo-fi', 'dj', 'remix', 'slowed', 'nightcore', 'cover', 'live',
+    'reverb', 'bass boosted', 'instrumental', 'acoustic', 'unplugged', 'sped up',
+    'speed up', '8d', 'mashup', 'karaoke',
+}
+
+def _query_requests_version(query: str) -> bool:
+    """True if user's query explicitly contains a version keyword."""
+    q = query.lower()
+    return any(kw in q for kw in _USER_VERSION_KEYWORDS)
+
+def _normalize_artist(text: str) -> str:
+    """
+    Strip feat/ft/featuring/&/x/, collaborators so artist cores can be matched.
+    'Arijit Singh feat. Shreya Ghoshal' → 'arijit singh'
+    'Arijit'                            → 'arijit'
+    """
+    if not text:
+        return ''
+    t = text.lower()
+    # Remove feat/ft/featuring and everything after
+    t = re.sub(r'\s*(feat\.?|ft\.?|featuring)\s+.*', '', t, flags=re.IGNORECASE)
+    # Split on & / x / , and take first token group
+    t = re.split(r'\s*[&,]\s*|\s+x\s+', t)[0]
+    t = re.sub(r'[^a-z0-9\s]', '', t)
+    return re.sub(r'\s+', ' ', t).strip()
+
 def _normalize_text(text: str) -> str:
     t = text.lower()
     t = re.sub(r'[^a-z0-9\s]', '', t)
@@ -464,7 +515,7 @@ def compute_confidence(
     rt = _normalize_text(result_title)
     ra = _normalize_text(result_artist)
 
-    # ── Title similarity (40% weight) ─────────────────────────────────────────
+    # ── Title similarity (50% weight) ─────────────────────────────────────────
     t_seq  = _seq_ratio(qt, rt)
     t_word = _word_overlap(qt, rt)
     t_sim  = (t_seq * 0.6 + t_word * 0.4)
@@ -473,53 +524,63 @@ def compute_confidence(
     if rt.startswith(qt) or qt.startswith(rt):
         t_sim = min(1.0, t_sim + 0.15)
 
-    # ── Artist similarity (25% weight) ────────────────────────────────────────
+    # ── Artist similarity (35% weight) ────────────────────────────────────────
+    # Normalize artists before comparing: strip feat/ft/featuring/&/x/,
+    qa_norm = _normalize_artist(qa)
+    ra_norm = _normalize_artist(ra)
     a_sim = 0.0
-    if qa and ra:
-        a_seq  = _seq_ratio(qa, ra)
-        a_word = _word_overlap(qa, ra)
+    if qa_norm and ra_norm:
+        a_seq  = _seq_ratio(qa_norm, ra_norm)
+        a_word = _word_overlap(qa_norm, ra_norm)
         a_sim  = a_seq * 0.5 + a_word * 0.5
         # partial artist: first token match
-        qa_first = qa.split()[0] if qa.split() else ''
-        ra_first = ra.split()[0] if ra.split() else ''
+        qa_first = qa_norm.split()[0] if qa_norm.split() else ''
+        ra_first = ra_norm.split()[0] if ra_norm.split() else ''
         if qa_first and ra_first and _seq_ratio(qa_first, ra_first) >= 0.80:
             a_sim = min(1.0, a_sim + 0.10)
-    elif not qa:
+    elif not qa_norm:
         a_sim = 0.5  # neutral when query has no artist
 
-    # ── Duration similarity (15% weight) ──────────────────────────────────────
+    # ── Duration similarity (10% weight) ──────────────────────────────────────
     d_sim = 0.5  # neutral default
     if query_duration_s > 0 and result_duration_s > 0:
         delta = abs(query_duration_s - result_duration_s)
         # Exponential decay: ±5s → ~0.85, ±15s → ~0.60, ±30s → ~0.37, ±60s → 0.13
         d_sim = max(0.0, 1.0 - (delta / 45.0) ** 0.8)
 
-    # ── Source confidence (10% weight) ────────────────────────────────────────
+    # ── Source confidence (5% weight) ─────────────────────────────────────────
     s_conf = _SOURCE_CONFIDENCE.get(source, 0.60)
 
     # ── Weighted sum (weights sum to 1.0) ─────────────────────────────────────
-    conf = (t_sim * 0.45) + (a_sim * 0.30) + (d_sim * 0.15) + (s_conf * 0.10)
+    conf = (t_sim * 0.50) + (a_sim * 0.35) + (d_sim * 0.10) + (s_conf * 0.05)
+
+    # ── Hard artist mismatch rejection ────────────────────────────────────────
+    # Reject: artist_sim < 0.50 AND title_sim < 0.95 (spec: mismatch > 50% + title_sim < 95%)
+    if qa_norm and ra_norm and a_sim < 0.50 and t_sim < 0.95:
+        return 0.0
 
     # ── Bonus: exact title ────────────────────────────────────────────────────
     if qt and rt and qt == rt:
         conf = min(1.0, conf + 0.15)
 
-    # ── Remix / slowed / cover / live penalties ───────────────────────────────
-    query_is_remix  = _is_remix_or_cover(query_title)
-    result_is_remix = _is_remix_or_cover(result_title)
-    query_is_live   = _is_live_version(query_title)
-    result_is_live  = _is_live_version(result_title)
-    query_is_slowed = _is_slowed_reverb(query_title)
+    # ── Remix / slowed / cover / live penalties (exempt when user requested) ──
+    user_wants_version = _query_requests_version(query_title)
+    query_is_remix   = _is_remix_or_cover(query_title)
+    result_is_remix  = _is_remix_or_cover(result_title)
+    query_is_live    = _is_live_version(query_title)
+    result_is_live   = _is_live_version(result_title)
+    query_is_slowed  = _is_slowed_reverb(query_title)
     result_is_slowed = _is_slowed_reverb(result_title)
 
-    if result_is_slowed and not query_is_slowed:
-        conf -= 0.30   # harshest penalty: slowed/reverb never wanted accidentally
-    elif result_is_live and not query_is_live:
-        conf -= 0.20   # live versions are unexpected unless requested
-    elif result_is_remix and not query_is_remix:
-        conf -= 0.22   # penalize unexpected remixes heavily
-    elif not result_is_remix and query_is_remix:
-        conf -= 0.10   # slightly penalize if user wanted remix but got original
+    if not user_wants_version:
+        if result_is_slowed and not query_is_slowed:
+            conf -= 0.30   # harshest penalty: slowed/reverb never wanted accidentally
+        elif result_is_live and not query_is_live:
+            conf -= 0.20   # live versions are unexpected unless requested
+        elif result_is_remix and not query_is_remix:
+            conf -= 0.22   # penalize unexpected remixes heavily
+        elif not result_is_remix and query_is_remix:
+            conf -= 0.10   # slightly penalize if user wanted remix but got original
 
     return max(0.0, min(1.0, conf))
 
@@ -635,11 +696,7 @@ def fuzzy_word_match(qw, tw):
 def title_score(query, song_title, song_artist=''):
     q, t, a = normalize(query), normalize(song_title), normalize(song_artist)
     if not q: return 0.0
-    # Exact match bonus reduced 3.0→2.0 so duration_bonus and compute_confidence
-    # can tiebreak between multiple songs with identical titles (e.g. "Ram Jane"
-    # by 5 different artists). 3.0 was too dominant — compute_confidence had
-    # zero influence when exact match dominated at 65% weight.
-    if q == t: return 2.0
+    if q == t: return 3.0
     q_words = q.split(); t_words = t.split(); a_words = a.split() if a else []
     score = 0.0
     if t.startswith(q): score += 2.0
@@ -656,26 +713,6 @@ def dynamic_min_score(query):
     elif length <= 5:  return 0.40
     elif length <= 10: return 0.55
     else:              return 0.65
-
-def _duration_bonus(dur_s: int) -> float:
-    """
-    Bonus/penalty based on track duration.
-    Rationale: songs < 2:30 are almost always snippets, short covers, or
-    low-quality uploads. Real songs are 3:00-7:00. This tiebreaks between
-    e.g. "Luv Latter" (1:59 snippet) vs "Luv Letter" (4:31 real song)
-    when both match the typo query equally.
-
-    < 2:30  → -1.5  (almost certainly not the intended song)
-    2:30-3:00 → -0.3  (slightly short)
-    3:00-7:00 → +0.2  (normal song length)
-    > 7:00  →  0.0  (long but neutral)
-    unknown →  0.0  (no duration data — neutral)
-    """
-    if dur_s <= 0:   return 0.0
-    if dur_s < 150:  return -1.5
-    if dur_s < 180:  return -0.3
-    if dur_s <= 420: return 0.2
-    return 0.0
 
 def has_word_match(query, song_title):
     q_words = normalize(query).split()
@@ -2019,7 +2056,7 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
     return None
 
 
-def fetch_saavn_parallel(query):
+def fetch_saavn_parallel(query, title: str = '', artist: str = ''):
     # Check L1 first
     l1_key = f"saavn_q:{normalize(query)}"
     cached = _l1_saavn.get(l1_key)
@@ -2039,12 +2076,14 @@ def fetch_saavn_parallel(query):
 
     if not all_results: return None
 
-    # Blend mirror score with confidence engine for better ranking
+    # Blend mirror score with confidence engine; use title+artist if provided
+    _conf_title  = title or query
+    _conf_artist = artist or ''
     all_results.sort(
         key=lambda r: (
             r.get('score', 0) * 0.5 +
             compute_confidence(
-                query, '',
+                _conf_title, _conf_artist,
                 r.get('title', ''), r.get('artist', ''),
                 source=r.get('source', 'saavn'),
             ) * 0.5 +
@@ -2277,6 +2316,17 @@ def play_song():
 
     _play_ck = f"play:{song_id or normalize(title)}:{normalize(artist)}"
 
+    # ── 0. Verified cache — highest confidence results, fastest path ──────────
+    _verified_hit = _get_verified(song_id=song_id, title=title, artist=artist)
+    if _verified_hit and _verified_hit.get('url'):
+        audio_url  = _verified_hit['url']
+        quality    = _verified_hit.get('quality', 'unknown')
+        source     = _verified_hit.get('source', 'unknown')
+        confidence = float(_verified_hit.get('confidence', 0.90))
+        if not title:  title  = _verified_hit.get('title', '')
+        if not artist: artist = _verified_hit.get('artist', '')
+        log.info(f"[Cache:Verified] HIT play key={_play_ck}")
+
     # ── 1. L1 cache (< 1ms) ──────────────────────────────────────────────────
     l1_hit = _l1_saavn.get(_play_ck)
     if l1_hit and l1_hit.get('url'):
@@ -2317,7 +2367,7 @@ def play_song():
             # ID fetch failed — only use title if provided
             if title:
                 for query_var in build_query_variants(title, artist, ''):
-                    result = fetch_saavn_parallel(query_var)
+                    result = fetch_saavn_parallel(query_var, title=title, artist=artist)
                     if result and result.get('url'):
                         audio_url  = result['url']
                         quality    = result.get('quality', 'unknown')
@@ -2329,7 +2379,7 @@ def play_song():
     # ── 4. Title-only path ────────────────────────────────────────────────────
     elif not audio_url and title:
         for query_var in build_query_variants(title, artist, ''):
-            result = fetch_saavn_parallel(query_var)
+            result = fetch_saavn_parallel(query_var, title=title, artist=artist)
             if result and result.get('url'):
                 audio_url  = result['url']
                 quality    = result.get('quality', 'unknown')
@@ -2338,73 +2388,102 @@ def play_song():
                 log.info(f"[Play] ✓ Saavn title='{result['title']}' q={quality}")
                 break
 
-    # ── 5. SMART PARALLEL FALLBACKS ──────────────────────────────────────────
-    # Progressive strategy: launch fastest sources first, cancel on win
+    # ── 5. SCORED PARALLEL FALLBACKS ─────────────────────────────────────────
+    # All sources launched at once. Collect for up to 600ms window.
+    # Winner selection: highest confidence candidate.
+    # Tie-break (confidence diff < 5%): use fastest responder.
     if not audio_url and title:
-        log.info(f"[Play] Saavn miss → smart parallel fallbacks: '{title}'")
+        log.info(f"[Play] Saavn miss → scored parallel fallbacks: '{title}'")
 
-        # Tier 1: YTMusic + JioSavan (fastest, highest quality)
-        t1_futures = {
-            _executor.submit(fetch_from_ytmusic, title, artist): 'ytmusic',
-            _executor.submit(fetch_from_jiosavan, title, artist): 'jiosavan',
+        _COLLECT_WINDOW  = 0.600   # 600ms collection window
+        _CONF_DIFF_FLOOR = 0.05    # use fastest if confidence gap < 5%
+
+        _all_fb_futures = {
+            _executor.submit(fetch_from_ytmusic,   title, artist):                   'ytmusic',
+            _executor.submit(fetch_from_jiosavan,  title, artist):                   'jiosavan',
+            _executor.submit(fetch_from_ytdlp,     title, artist):                   'youtube',
+            _executor.submit(fetch_from_soundcloud,title, artist):                   'soundcloud',
+            _executor.submit(fetch_from_piped,     title, title=title, artist=artist): 'piped',
+            _executor.submit(fetch_from_invidious, title, title=title, artist=artist): 'invidious',
         }
-        for future in as_completed(t1_futures, timeout=8):
+
+        # Collect candidates within the window; record arrival order for tie-break
+        _fb_candidates  = []   # list of (confidence, arrival_index, res, source_name)
+        _arrival_idx    = 0
+        _deadline       = time.time() + _COLLECT_WINDOW
+
+        try:
+            remaining_timeout = max(0.05, _deadline - time.time())
+            for future in as_completed(_all_fb_futures, timeout=remaining_timeout):
+                try:
+                    res = future.result()
+                    if res and res.get('url'):
+                        src_name = _all_fb_futures[future]
+                        conf     = float(res.get('_confidence', 0.50))
+                        _fb_candidates.append((_arrival_idx, conf, res, src_name))
+                        _arrival_idx += 1
+                except Exception:
+                    pass
+                if time.time() >= _deadline:
+                    break   # window closed — stop collecting, score what we have
+        except Exception:
+            pass
+
+        # If we have candidates from the window, pick winner now.
+        # Otherwise wait for the remaining fast sources up to their natural timeout.
+        if not _fb_candidates:
+            # Window produced nothing — extend to 8s for at least one result
             try:
-                res = future.result()
-                if res and res.get('url'):
-                    audio_url  = res['url']
-                    quality    = res.get('quality', 'unknown')
-                    source     = res.get('source', t1_futures[future])
-                    confidence = float(res.get('_confidence', 0.6))
-                    if not title:  title  = res.get('title', title)
-                    if not artist: artist = res.get('artist', artist)
-                    # Prefer cached Saavn/iTunes artwork over source artwork
-                    _best_fallback_art = _get_artwork(title, artist) or res.get('image', '')
-                    log.info(f"[Play] ✓ Tier1:{source} '{res.get('title')}' q={quality}")
-                    for f in t1_futures: f.cancel()
-                    break
+                for future in as_completed(_all_fb_futures, timeout=8):
+                    try:
+                        res = future.result()
+                        if res and res.get('url'):
+                            src_name = _all_fb_futures[future]
+                            conf     = float(res.get('_confidence', 0.50))
+                            _fb_candidates.append((_arrival_idx, conf, res, src_name))
+                            _arrival_idx += 1
+                            break   # first result after window = uncontested winner
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
-        # Tier 2: yt-dlp + SoundCloud (medium speed)
-        if not audio_url:
-            t2_futures = {
-                _executor.submit(fetch_from_ytdlp, title, artist): 'youtube',
-                _executor.submit(fetch_from_soundcloud, title, artist): 'soundcloud',
-            }
-            for future in as_completed(t2_futures, timeout=15):
-                try:
-                    res = future.result()
-                    if res and res.get('url'):
-                        audio_url  = res['url']
-                        quality    = res.get('quality', 'unknown')
-                        source     = res.get('source', t2_futures[future])
-                        confidence = float(res.get('_confidence', 0.5))
-                        log.info(f"[Play] ✓ Tier2:{source} '{res.get('title')}' q={quality}")
-                        for f in t2_futures: f.cancel()
-                        break
-                except Exception:
-                    pass
+        if _fb_candidates:
+            # Sort by confidence desc, then arrival_index asc (fastest first on tie)
+            _fb_candidates.sort(key=lambda x: (-x[1], x[0]))
+            _best_conf  = _fb_candidates[0][1]
+            _worst_conf = _fb_candidates[-1][1]
 
-        # Tier 3: Piped + Invidious (slowest, last resort before broad)
-        if not audio_url:
-            t3_futures = {
-                _executor.submit(fetch_from_piped, title, title=title, artist=artist): 'piped',
-                _executor.submit(fetch_from_invidious, title, title=title, artist=artist): 'invidious',
-            }
-            for future in as_completed(t3_futures, timeout=15):
-                try:
-                    res = future.result()
-                    if res and res.get('url'):
-                        audio_url  = res['url']
-                        quality    = res.get('quality', 'unknown')
-                        source     = res.get('source', t3_futures[future])
-                        confidence = float(res.get('_confidence', 0.45))
-                        log.info(f"[Play] ✓ Tier3:{source} '{res.get('title')}' q={quality}")
-                        for f in t3_futures: f.cancel()
-                        break
-                except Exception:
-                    pass
+            # If top candidate is within 5% of a faster one, prefer faster
+            _winner_idx, _winner_conf, _winner_res, _winner_src = _fb_candidates[0]
+            for _arr, _c, _r, _s in _fb_candidates:
+                if _arr < _winner_idx and (_best_conf - _c) < _CONF_DIFF_FLOOR:
+                    # This candidate arrived earlier and confidence is close enough
+                    _winner_idx  = _arr
+                    _winner_conf = _c
+                    _winner_res  = _r
+                    _winner_src  = _s
+                    break
+
+            # Cancel all remaining (still pending) futures
+            for f in _all_fb_futures:
+                f.cancel()
+
+            audio_url  = _winner_res['url']
+            quality    = _winner_res.get('quality', 'unknown')
+            source     = _winner_res.get('source', _winner_src)
+            confidence = _winner_conf
+            if not title:  title  = _winner_res.get('title', title)
+            if not artist: artist = _winner_res.get('artist', artist)
+            if _winner_res.get('image') and title:
+                _store_artwork(title, artist, _winner_res['image'],
+                               1 if source in ('saavn', 'jiosavan') else
+                               2 if source == 'itunes' else 4)
+            log.info(
+                f"[Play] ✓ Fallback winner: {source} conf={_winner_conf:.3f} "
+                f"arrival={_winner_idx} candidates={len(_fb_candidates)} "
+                f"title='{_winner_res.get('title')}' q={quality}"
+            )
 
     # ── 6. Broad YouTube last-resort ─────────────────────────────────────────
     if not audio_url and title:
@@ -2432,6 +2511,12 @@ def play_song():
     _executor.submit(_supabase_cache_set, _play_ck, {
         'url': audio_url, 'quality': quality, 'source': source,
         'title': title, 'artist': artist, 'image': _best_art,
+    }, confidence)
+    # Write to verified cache if confidence is high (≥ 0.85)
+    _store_verified(song_id, title, artist, {
+        'url': audio_url, 'quality': quality, 'source': source,
+        'title': title, 'artist': artist, 'confidence': confidence,
+        'image': _best_art,
     }, confidence)
 
     # ── 8. Stream to client ──────────────────────────────────────────────────
@@ -2477,112 +2562,35 @@ def play_song():
 # ═══════════════════════════════════════════════════════════════════════════════
 # /api/songs  — Parallel fetch with confidence-filtered deduplication
 # ═══════════════════════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════════════════════
-# /api/songs  — FIXED: Relevance-ranked, cache-poison-proof, mismatch-immune
-# ═══════════════════════════════════════════════════════════════════════════════
-#
-# ROOT CAUSES OF MISMATCH (ALL FIXED HERE):
-#
-# BUG-1  No relevance sort after merge
-#        merged = itunes + saavn was returned in raw API order.
-#        iTunes popularity order ≠ query relevance order.
-#        "Choliye" → "Coolie Disco" because Saavn's API returned it first.
-#        FIX: final merged list sorted by hybrid score (title_score + confidence).
-#
-# BUG-2  Saavn direct results had zero relevance filtering
-#        _normalize_saavn_songs() preserved raw Saavn API order.
-#        FIX: every saavn result scored against query; below 0.30 discarded.
-#
-# BUG-3  iTunes resolved results kept iTunes popularity order
-#        After _resolve_itunes_to_saavn(), results weren't re-ranked by query.
-#        FIX: resolved itunes list sorted by title_score before merging.
-#
-# BUG-4  Wrong results got cached and poisoned next 600s of responses
-#        If top result had low confidence, it still got cached.
-#        FIX: cache only when top result confidence >= 0.42 for real searches.
-#
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _search_score(query: str, song: dict) -> float:
-    """
-    Hybrid relevance score:
-      title_score  (exact/prefix/word match, 0.65 weight)
-      compute_confidence (remix/live penalties, artist sim, 0.35 weight)
-      _duration_bonus (penalizes snippets < 2:30, tiebreaks equal titles)
-    """
-    title  = song.get('trackName') or song.get('title', '')
-    artist = (song.get('artistName') or song.get('artist', '')
-              or song.get('_resolvedArtist', ''))
-    dur_ms = int(song.get('trackTimeMillis', 0) or 0)
-    dur_s  = dur_ms // 1000
-
-    ts = title_score(query, title, artist)
-    cc = compute_confidence(
-        query_title=query,
-        query_artist='',
-        result_title=title,
-        result_artist=artist,
-        query_duration_s=0,
-        result_duration_s=dur_s,
-        source=song.get('_source', 'saavn'),
-    )
-    db = _duration_bonus(dur_s)
-    return ts * 0.65 + cc * 2.0 * 0.35 + db
-
-
-def _filter_and_rank(query: str, songs: list, min_conf: float = 0.0) -> list:
-    """
-    Score every song against query, drop below min_conf, return sorted best-first.
-    min_conf=0.0 means no filtering (used for home/90s/generic queries).
-    """
-    scored = [(s, _search_score(query, s)) for s in songs]
-    if min_conf > 0:
-        scored = [(s, sc) for s, sc in scored if sc >= min_conf]
-    scored.sort(key=lambda x: x[1], reverse=True)
-    return [s for s, _ in scored]
-
-
 @app.route('/api/songs')
 @limiter.limit("60 per minute")
 def get_songs():
-    q   = request.args.get('q', '').strip()
-    era = request.args.get('era', '').strip()
-
-    # Distinguish real search from home/browse mode
-    is_real_search = bool(q) and q.lower() not in ('top bollywood songs',)
-    if not q:
-        q = 'top bollywood songs'
-
-    is_90s      = (era == '90s') or any(t in q.lower() for t in NINETIES_TRIGGERS)
+    q       = request.args.get('q', 'top bollywood songs').strip()
+    era     = request.args.get('era', '').strip()
+    is_90s  = (era == '90s') or any(t in q.lower() for t in NINETIES_TRIGGERS)
     search_term = random.choice(NINETIES_SEEDS) if is_90s else q
 
     cache_key = f"songs:{search_term.lower()}"
-
-    # ── L1 cache ──────────────────────────────────────────────────────────────
-    cached = _l1_meta.get(cache_key)
+    cached    = _l1_meta.get(cache_key)
     if cached is not None:
         return jsonify({'results': cached, '_cached': True})
 
-    legacy = _cache_get(cache_key)
-    if legacy is not None:
-        return jsonify({'results': legacy, '_cached': True})
+    # fallback to legacy cache
+    legacy_cached = _cache_get(cache_key)
+    if legacy_cached is not None:
+        return jsonify({'results': legacy_cached, '_cached': True})
 
-    itunes_results: list = []
-    saavn_results:  list = []
+    itunes_results = []
+    saavn_results  = []
 
-    # ── iTunes fetch + Saavn resolve ──────────────────────────────────────────
     def fetch_itunes():
         nonlocal itunes_results
         try:
-            r = requests.get(
-                'https://itunes.apple.com/search',
-                params={'term': search_term, 'media': 'music',
-                        'entity': 'song', 'limit': 50, 'country': 'IN'},
-                timeout=12,
-            )
+            r = requests.get('https://itunes.apple.com/search',
+                             params={'term': search_term, 'media': 'music', 'entity': 'song',
+                                     'limit': 50, 'country': 'IN'}, timeout=12)
             r.raise_for_status()
             results = r.json().get('results', [])
-
             if is_90s:
                 filtered = [s for s in results if s.get('trackName') and
                             1990 <= _safe_year(s.get('releaseDate')) <= 1999]
@@ -2593,47 +2601,34 @@ def get_songs():
             else:
                 candidates = [s for s in results if s.get('trackName')][:30]
 
-            resolve_futures = {_executor.submit(_resolve_itunes_to_saavn, s): s
-                               for s in candidates}
+            resolve_futures = {
+                _executor.submit(_resolve_itunes_to_saavn, s): s
+                for s in candidates
+            }
             resolved = []
             try:
-                for fut in as_completed(resolve_futures, timeout=10):
+                for future in as_completed(resolve_futures, timeout=10):
                     try:
-                        res = fut.result()
+                        res = future.result()
                         if res: resolved.append(res)
-                    except Exception: pass
-            except Exception: pass
-
-            # BUG-3 FIX: re-rank resolved results by query relevance,
-            # not by iTunes popularity. Only for real searches (not 90s/home).
-            if is_real_search and not is_90s:
-                resolved = _filter_and_rank(search_term, resolved, min_conf=0.0)
-
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             itunes_results = resolved[:30]
         except Exception:
             pass
 
-    # ── Saavn direct fetch ────────────────────────────────────────────────────
     def fetch_saavn():
         nonlocal saavn_results
         try:
             raw = _fetch_saavn_search_parallel(search_term)
-            if not raw:
-                return
-            normalized = _normalize_saavn_songs(raw)
-
-            if is_90s:
-                filtered = [s for s in normalized if
-                            1990 <= _safe_year(s.get('releaseDate')) <= 1999]
-                normalized = filtered if len(filtered) >= 5 else normalized
-                random.shuffle(normalized)
-                saavn_results = normalized[:30]
-            else:
-                if is_real_search:
-                    # BUG-2 FIX: score + filter Saavn direct results.
-                    # min_conf=0.30 removes completely unrelated results
-                    # while keeping partial/translit matches.
-                    normalized = _filter_and_rank(search_term, normalized, min_conf=0.30)
+            if raw:
+                normalized = _normalize_saavn_songs(raw)
+                if is_90s:
+                    filtered = [s for s in normalized if 1990 <= _safe_year(s.get('releaseDate')) <= 1999]
+                    normalized = filtered if len(filtered) >= 5 else normalized
+                    random.shuffle(normalized)
                 saavn_results = normalized[:30]
         except Exception:
             pass
@@ -2644,39 +2639,17 @@ def get_songs():
     t1.join(timeout=15)
     t2.join(timeout=4)
 
-    # ── Merge + dedup ─────────────────────────────────────────────────────────
     merged = list(itunes_results)
     for s in saavn_results:
         if not any(is_likely_duplicate(s, e) for e in merged):
             merged.append(s)
 
-    if not merged:
-        return jsonify({'results': [], 'error': 'No results found'})
-
-    # BUG-1 FIX: sort the full merged list by relevance for real searches.
-    # 90s/home queries keep shuffle/API order (intentional variety).
-    if is_real_search and not is_90s:
-        merged = _filter_and_rank(search_term, merged, min_conf=0.0)
-
-    # BUG-4 FIX: only cache if top result is actually relevant.
-    # Prevents wrong results from poisoning cache for 600s.
-    should_cache = True
-    if is_real_search and not is_90s and merged:
-        top_score = _search_score(search_term, merged[0])
-        if top_score < 0.42:
-            log.warning(
-                f"[Search] Skipping cache — low relevance top result "
-                f"query='{search_term}' top='{merged[0].get('trackName', '')}' "
-                f"score={top_score:.3f}"
-            )
-            should_cache = False
-
-    if should_cache:
+    if merged:
         _l1_meta.set(cache_key, merged)
         _cache_set(cache_key, merged)
+        return jsonify({'results': merged})
 
-    return jsonify({'results': merged})
-
+    return jsonify({'results': [], 'error': 'No results found'})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2764,7 +2737,7 @@ def get_saavn_song():
         return jsonify({'success': True, 'token': token, **_cached})
 
     for query in build_query_variants(q, artist, fallback):
-        result = fetch_saavn_parallel(query)
+        result = fetch_saavn_parallel(query, title=q, artist=artist)
         if result:
             if low_quality:
                 low_url, low_q = _pick_low_quality(result.get('_raw_urls', []))
@@ -2812,38 +2785,42 @@ def resolve_song():
         return jsonify({'success': False, 'url': None, 'token': token})
 
     for query in build_query_variants(q, artist, fallback):
-        result = fetch_saavn_parallel(query)
+        result = fetch_saavn_parallel(query, title=q, artist=artist)
         if result:
+            _rart = _get_artwork(q, artist) or result.get('image', '')
             return jsonify({
                 'success': True, 'token': token,
                 'url':     f"/api/stream?url={quote(result['url'], safe='')}",
                 'quality': result['quality'], 'title': result['title'],
-                'artist':  result['artist'], 'image': result.get('image', ''),
+                'artist':  result['artist'], 'image': _rart,
                 'source':  'saavn',
             })
 
     ytm = fetch_from_ytmusic(q, artist)
     if ytm and ytm.get('url'):
+        _rart = _get_artwork(q, artist) or ytm.get('image', '')
         return jsonify({'success': True, 'token': token,
                         'url':    f"/api/stream?url={quote(ytm['url'], safe='')}",
                         'quality': ytm['quality'], 'title': ytm['title'],
-                        'artist':  ytm['artist'], 'image': ytm.get('image', ''),
+                        'artist':  ytm['artist'], 'image': _rart,
                         'source':  'ytmusic'})
 
     yt = fetch_from_ytdlp(q, artist)
     if yt and yt.get('url'):
+        _rart = _get_artwork(q, artist) or yt.get('image', '')
         return jsonify({'success': True, 'token': token,
                         'url':    f"/api/stream?url={quote(yt['url'], safe='')}",
                         'quality': yt['quality'], 'title': yt['title'],
-                        'artist':  yt['artist'], 'image': yt.get('image', ''),
+                        'artist':  yt['artist'], 'image': _rart,
                         'source':  'youtube'})
 
     sc = fetch_from_soundcloud(q, artist)
     if sc and sc.get('url'):
+        _rart = _get_artwork(q, artist) or sc.get('image', '')
         return jsonify({'success': True, 'token': token,
                         'url':    f"/api/stream?url={quote(sc['url'], safe='')}",
                         'quality': sc['quality'], 'title': sc['title'],
-                        'artist':  sc['artist'], 'image': sc.get('image', ''),
+                        'artist':  sc['artist'], 'image': _rart,
                         'source':  'soundcloud'})
 
     piped = fetch_from_piped(q, title=q, artist=artist)
@@ -2851,7 +2828,7 @@ def resolve_song():
         return jsonify({'success': True, 'token': token,
                         'url':    f"/api/stream?url={quote(piped['url'], safe='')}",
                         'quality': piped['quality'], 'title': piped['title'],
-                        'artist':  piped['artist'], 'image': piped.get('image', ''),
+                        'artist':  piped['artist'], 'image': _get_artwork(q, artist) or piped.get('image', ''),
                         'source':  'piped'})
 
     inv = fetch_from_invidious(q, title=q, artist=artist)
@@ -2859,7 +2836,7 @@ def resolve_song():
         return jsonify({'success': True, 'token': token,
                         'url':    f"/api/stream?url={quote(inv['url'], safe='')}",
                         'quality': inv['quality'], 'title': inv['title'],
-                        'artist':  inv['artist'], 'image': inv.get('image', ''),
+                        'artist':  inv['artist'], 'image': _get_artwork(q, artist) or inv.get('image', ''),
                         'source':  'invidious'})
 
     return jsonify({'success': False, 'url': None, 'token': token})
@@ -2934,7 +2911,7 @@ def download_song():
     filename_base = f"{q} - {artist}".strip(' -') if artist else q
 
     for query in build_query_variants(q, artist, ''):
-        result = fetch_saavn_parallel(query)
+        result = fetch_saavn_parallel(query, title=q, artist=artist)
         if result and result.get('url'):
             raw_urls = result.get('_raw_urls', [])
             if quality == 'gift' and raw_urls:
