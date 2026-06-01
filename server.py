@@ -264,6 +264,11 @@ def _store_verified(song_id: str, title: str, artist: str, data: dict, confidenc
         _l1_verified.set(_verified_key(song_id=song_id), data)
     if title:
         _l1_verified.set(_verified_key(title=title, artist=artist), data)
+    # Store artwork at priority 3 (last-verified) — persists beyond audio cache expiry
+    # and fills gap between Saavn/iTunes (1,2) and YTMusic/others (4,5)
+    image = data.get('image', '')
+    if image and image.startswith('http') and title:
+        _store_artwork(title, artist, image, 3)
 
 def _get_verified(song_id: str = '', title: str = '', artist: str = '') -> Optional[dict]:
     if song_id:
@@ -316,7 +321,7 @@ _SONG_CACHE_TTL       = 86400
 _VOLATILE_CACHE_TTL   = 21600
 _TEMP_CACHE_TTL       = 14400
 _VOLATILE_SOURCES     = {'youtube', 'youtube-broad', 'piped', 'invidious', 'soundcloud'}
-_CACHE_MIN_CONFIDENCE = 0.60   # below this → never cache in L2 (poison prevention)
+_CACHE_MIN_CONFIDENCE = 0.75   # below this → never cache in L2 (poison prevention)
 
 def _supabase_cache_get(cache_key: str) -> Optional[dict]:
     # Check L1 first (zero network cost)
@@ -497,6 +502,25 @@ def _is_slowed_reverb(title: str) -> bool:
     t = title.lower()
     return any(ind in t for ind in _SLOWED_INDICATORS)
 
+# Per-keyword confidence penalties applied when user did NOT request the version.
+# These stack independently — a "Lofi Slowed Reverb" title takes all three.
+_KEYWORD_PENALTIES_MAP = {
+    'lofi': 0.20, 'lo-fi': 0.20,
+    'dj': 0.25,
+    'remix': 0.15, 'slowed': 0.20, 'reverb': 0.15,
+    'nightcore': 0.25, '8d': 0.15, 'bass boosted': 0.15,
+    'cover': 0.30, 'karaoke': 0.30, 'instrumental': 0.30,
+    'live': 0.15, 'acoustic': 0.10, 'unplugged': 0.15,
+}
+
+# Keywords already penalized by group checks (remix/slowed/live blocks).
+# Per-keyword loop skips these to prevent double-stacking the same penalty.
+_KEYWORD_PENALTY_SKIP_IF_GROUP_FIRED = {
+    'remix', 'slowed', 'reverb', 'lofi', 'lo-fi', 'nightcore', 'sped up', 'speed up',
+    '8d audio', 'bass boosted', 'pitched', 'live', 'acoustic', 'unplugged',
+    'cover', 'karaoke', 'instrumental',
+}
+
 def compute_confidence(
     query_title:  str,
     query_artist: str,
@@ -520,9 +544,13 @@ def compute_confidence(
     t_word = _word_overlap(qt, rt)
     t_sim  = (t_seq * 0.6 + t_word * 0.4)
 
-    # prefix boost: result starts with query
+    # prefix boost: only boost when query is a genuine prefix (no version keyword added)
     if rt.startswith(qt) or qt.startswith(rt):
-        t_sim = min(1.0, t_sim + 0.15)
+        # Extra chars beyond query must not be a version/remix indicator
+        suffix = rt[len(qt):].strip() if rt.startswith(qt) else qt[len(rt):].strip()
+        suffix_has_indicator = any(ind in suffix for ind in _REMIX_INDICATORS)
+        if not suffix_has_indicator:
+            t_sim = min(1.0, t_sim + 0.15)
 
     # ── Artist similarity (35% weight) ────────────────────────────────────────
     # Normalize artists before comparing: strip feat/ft/featuring/&/x/,
@@ -554,16 +582,30 @@ def compute_confidence(
     # ── Weighted sum (weights sum to 1.0) ─────────────────────────────────────
     conf = (t_sim * 0.50) + (a_sim * 0.35) + (d_sim * 0.10) + (s_conf * 0.05)
 
-    # ── Hard artist mismatch rejection ────────────────────────────────────────
-    # Reject: artist_sim < 0.50 AND title_sim < 0.95 (spec: mismatch > 50% + title_sim < 95%)
-    if qa_norm and ra_norm and a_sim < 0.50 and t_sim < 0.95:
-        return 0.0
-
-    # ── Bonus: exact title ────────────────────────────────────────────────────
+    # ── Bonus: exact title (applied BEFORE artist reject so a perfect title
+    #    with weak artist metadata isn't silently discarded) ──────────────────
     if qt and rt and qt == rt:
         conf = min(1.0, conf + 0.15)
 
-    # ── Remix / slowed / cover / live penalties (exempt when user requested) ──
+    # ── Hard artist mismatch rejection ────────────────────────────────────────
+    # Spec: reject if artist_sim < 0.60 AND title_sim < 0.95
+    # Exempt: exact title matches (conf already boosted above) are never rejected
+    # solely on artist — covers cases where artist metadata is missing/different.
+    if qa_norm and ra_norm and a_sim < 0.60 and t_sim < 0.95:
+        # Grace: if exact-title bonus pushed conf high, still allow with warning
+        if qt != rt:
+            return 0.0
+
+    # ── Duration hard-reject (spec: >35% delta → reject, >20% → penalty) ─────
+    if query_duration_s > 0 and result_duration_s > 0:
+        dur_ratio = abs(query_duration_s - result_duration_s) / max(query_duration_s, 1)
+        if dur_ratio > 0.35:
+            return 0.0          # hard reject
+        elif dur_ratio > 0.20:
+            conf -= 0.20        # massive penalty per spec
+
+    # ── Remix / slowed / cover / live penalties (ALL stack, exempt if requested)
+    # Each penalty is independent — a "Lofi Slowed Reverb" title takes all three.
     user_wants_version = _query_requests_version(query_title)
     query_is_remix   = _is_remix_or_cover(query_title)
     result_is_remix  = _is_remix_or_cover(result_title)
@@ -573,14 +615,31 @@ def compute_confidence(
     result_is_slowed = _is_slowed_reverb(result_title)
 
     if not user_wants_version:
+        rt_lower = result_title.lower()
+        # Each indicator fires independently (no elif) so stacked descriptors are penalized fully
         if result_is_slowed and not query_is_slowed:
-            conf -= 0.30   # harshest penalty: slowed/reverb never wanted accidentally
-        elif result_is_live and not query_is_live:
-            conf -= 0.20   # live versions are unexpected unless requested
-        elif result_is_remix and not query_is_remix:
-            conf -= 0.22   # penalize unexpected remixes heavily
-        elif not result_is_remix and query_is_remix:
-            conf -= 0.10   # slightly penalize if user wanted remix but got original
+            conf -= 0.20   # slowed/reverb/lofi penalty
+        if result_is_live and not query_is_live:
+            conf -= 0.15   # live version penalty
+        if result_is_remix and not query_is_remix:
+            conf -= 0.15   # remix/cover/dj penalty
+        # Per-keyword penalties for stragglers not caught by the above groups.
+        # Skip keywords whose penalty is already covered by a group block above
+        # to prevent double-stacking (e.g. 'slowed' would fire again here).
+        for kw, penalty in _KEYWORD_PENALTIES_MAP.items():
+            if kw in _KEYWORD_PENALTY_SKIP_IF_GROUP_FIRED:
+                continue   # already penalized by group block
+            query_has_kw = kw in query_title.lower()
+            # DJ needs word-boundary check to avoid false hits like "djinn"
+            if kw == 'dj':
+                result_has_kw = bool(re.search(r'\bdj\b', rt_lower))
+                query_has_kw  = bool(re.search(r'\bdj\b', query_title.lower()))
+            else:
+                result_has_kw = kw in rt_lower
+            if result_has_kw and not query_has_kw:
+                conf -= penalty
+    elif not result_is_remix and query_is_remix:
+        conf -= 0.10   # user wanted remix but got original
 
     return max(0.0, min(1.0, conf))
 
@@ -1554,7 +1613,7 @@ def _resolve_itunes_to_saavn(itunes_song: dict) -> Optional[dict]:
                         if conf > best_conf:
                             best_conf = conf; best = song
 
-                    if not best or best_conf < 0.65: continue
+                    if not best or best_conf < 0.72: continue
 
                     saavn_id = (best.get('id') or '').strip()
                     raw_urls = best.get('downloadUrl') or best.get('download_url') or []
@@ -1659,20 +1718,26 @@ def _ytm_search(query: str, limit: int = 8) -> list:
                             if vid_id: break
                     if not vid_id: continue
                     cols     = renderer.get('flexColumns', [])
-                    title_t  = ''; artist_t = ''
+                    title_t  = ''; artist_t = ''; dur_s = 0
                     for i, col in enumerate(cols):
                         runs = (col.get('musicResponsiveListItemFlexColumnRenderer', {})
                                    .get('text', {}).get('runs', []))
                         text = ' '.join(r.get('text', '') for r in runs).strip()
                         if i == 0: title_t = text
                         elif i == 1: artist_t = text.split('\u2022')[0].strip()
+                        else:
+                            # Duration appears as "3:45" or similar in later columns
+                            dur_match = re.search(r'(\d{1,2}):(\d{2})', text)
+                            if dur_match and not dur_s:
+                                dur_s = int(dur_match.group(1)) * 60 + int(dur_match.group(2))
                     thumbs = (renderer.get('thumbnail', {})
                                       .get('musicThumbnailRenderer', {})
                                       .get('thumbnail', {}).get('thumbnails', []))
                     thumb = thumbs[-1]['url'] if thumbs else ''
                     if thumb: thumb = re.sub(r'=w\d+-h\d+', '=w500-h500', thumb)
                     results.append({'videoId': vid_id, 'title': title_t,
-                                    'artist': artist_t, 'thumbnail': thumb})
+                                    'artist': artist_t, 'thumbnail': thumb,
+                                    'duration_s': dur_s})
                     if len(results) >= limit: return results
         return results
     except Exception as e:
@@ -1734,11 +1799,13 @@ def fetch_from_ytmusic(title: str, artist: str = '') -> Optional[dict]:
     best = None; best_conf = -1.0
     for item in results:
         conf = compute_confidence(title, artist, item.get('title', ''),
-                                  item.get('artist', ''), source='ytmusic')
+                                  item.get('artist', ''),
+                                  result_duration_s=item.get('duration_s', 0),
+                                  source='ytmusic')
         if conf > best_conf:
             best_conf = conf; best = item
 
-    if not best or best_conf < 0.25: return None
+    if not best or best_conf < 0.45: return None
     video_id = best['videoId']
     url, quality = _ytm_get_stream_url(video_id)
     if not url: return None
@@ -1749,7 +1816,9 @@ def fetch_from_ytmusic(title: str, artist: str = '') -> Optional[dict]:
         'image': best.get('thumbnail', ''), 'source': 'ytmusic',
         '_confidence': round(best_conf, 3),
     }
-    _l1_audio.set(l1_key, result)
+    # Cache only if confidence passes threshold (anti-poisoning)
+    if best_conf >= 0.50:
+        _l1_audio.set(l1_key, result)
     # Store artwork with lower priority (4) so Saavn/iTunes can override
     if best.get('thumbnail'):
         # Use cached Saavn/iTunes artwork if available (priority ≤ 3 wins)
@@ -1777,16 +1846,15 @@ def fetch_from_ytdlp(title, artist='') -> Optional[dict]:
     if clean_artist:
         search_queries += [
             f"ytmsearch5:{clean_artist} {clean_title}",
-            f"ytsearch5:{clean_artist} {clean_title} full song",
-            f"ytmsearch3:{clean_title}",
-            f"ytsearch3:{clean_title} {clean_artist} audio",
-            f"ytsearch2:{clean_title} song",
+            f"ytmsearch3:{clean_title} {clean_artist}",
+            f"ytsearch5:{clean_artist} {clean_title}",
+            f"ytsearch3:{clean_title} {clean_artist}",
         ]
     else:
         search_queries += [
             f"ytmsearch5:{clean_title}",
-            f"ytsearch5:{clean_title} full song audio",
-            f"ytsearch3:{clean_title} song",
+            f"ytmsearch3:{clean_title}",
+            f"ytsearch5:{clean_title}",
         ]
 
     ydl_opts = {
@@ -1857,7 +1925,8 @@ def fetch_from_ytdlp(title, artist='') -> Optional[dict]:
                 result['image'] = cached_art
             elif thumb:
                 _store_artwork(title, artist, thumb, 5)
-            _l1_audio.set(l1_key, result)
+            if best_conf >= 0.50:
+                _l1_audio.set(l1_key, result)
             log.info(f"[yt-dlp] ✓ '{best_result.get('title')}' conf={best_conf:.2f} q={quality}")
             return result
     except Exception as e:
@@ -1893,7 +1962,7 @@ def fetch_from_soundcloud(title, artist='') -> Optional[dict]:
                 conf = compute_confidence(title, artist, entry.get('title', ''),
                                           entry.get('uploader', ''), source='soundcloud')
                 if conf > best_conf: best_conf = conf; best = entry
-            if not best or best_conf < 0.20: return None
+            if not best or best_conf < 0.40: return None
             formats  = best.get('formats', [])
             if not formats: return None
             best_fmt = max(formats, key=lambda f: f.get('abr') or f.get('tbr') or 0)
@@ -1910,7 +1979,8 @@ def fetch_from_soundcloud(title, artist='') -> Optional[dict]:
             cached_art = _get_artwork(title, artist)
             if cached_art:
                 result['image'] = cached_art
-            _l1_audio.set(l1_key, result)
+            if best_conf >= 0.50:
+                _l1_audio.set(l1_key, result)
             return result
     except Exception as e:
         log.warning(f"[SoundCloud] '{title}' → {e}")
@@ -1990,13 +2060,19 @@ def _fetch_saavn_by_id(song_id: str) -> Optional[dict]:
 # ═══════════════════════════════════════════════════════════════════════════════
 # FETCH FROM MIRROR  (enhanced: confidence-filtered, remix-aware)
 # ═══════════════════════════════════════════════════════════════════════════════
-def fetch_from_mirror(mirror, query, min_score=0.4):
+def fetch_from_mirror(mirror, query, min_score=0.4, title: str = '', artist: str = ''):
     if not _mirror_ok(mirror): return None
+    # Use original title for version-request detection — query may be a cleaned variant
+    _version_check_src = title or query
+    _user_wants_version = _query_requests_version(_version_check_src)
+    _conf_title  = title or query
+    _conf_artist = artist or ''
+
     for endpoint in ['/api/search/songs', '/api/search', '/search/songs']:
         try:
             t0 = time.time()
             r  = requests.get(f'{mirror}{endpoint}',
-                              params={'query': query, 'q': query, 'limit': 10},
+                              params={'query': query, 'q': query, 'limit': 15},
                               timeout=_health.adaptive_timeout(mirror),
                               headers={'User-Agent': 'Mozilla/5.0'})
             elapsed = (time.time() - t0) * 1000
@@ -2005,34 +2081,37 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
             results = (data.get('data', {}).get('results') or data.get('results') or
                        data.get('songs', {}).get('results') or [])
 
-            best_song = None; best_score = -1; best_dur = float('inf')
-            q_normalized = normalize(query)
-
+            # Collect ALL candidates — never first-wins
+            candidates = []
             for song in results:
                 song_title  = song.get('name') or song.get('title', '')
                 song_artist = song.get('primaryArtists') or song.get('primary_artists') or ''
                 if not has_word_match(query, song_title): continue
-                score = title_score(query, song_title, song_artist)
-                dur   = int(song.get('duration', 999) or 999)
-                if dur > 600: score -= 0.6
-                if dur > 900: score -= 1.0
-                # remix penalty
-                if _is_remix_or_cover(song_title): score -= 0.8
-                song_year = int(song.get('year') or 0)
-                if song_year >= 2010:               score += 0.15
-                elif song_year > 0 and song_year < 2000: score -= 0.25
-                if song_artist:
-                    artist_norm  = normalize(song_artist)
-                    artist_words = [w for w in artist_norm.split() if len(w) >= 3]
-                    query_words  = [w for w in q_normalized.split() if len(w) >= 3]
-                    matching_aw  = sum(1 for aw in artist_words
-                                       if any(fuzzy_word_match(aw, qw) >= 0.80 for qw in query_words))
-                    if artist_words and matching_aw >= 1:
-                        score += 0.5 * (matching_aw / max(len(artist_words), 1))
-                if score > best_score or (score == best_score and dur < best_dur):
-                    best_score = score; best_song = song; best_dur = dur
+                dur = int(song.get('duration', 999) or 999)
+                if dur > 1080: continue
 
-            if not best_song or best_score < min_score: continue
+                # Hard-skip remix when user wants original
+                if not _user_wants_version and _is_remix_or_cover(song_title):
+                    continue
+
+                conf = compute_confidence(
+                    _conf_title, _conf_artist,
+                    song_title, song_artist,
+                    result_duration_s=dur,
+                    source='saavn',
+                )
+                if conf <= 0.0: continue
+                legacy_score = title_score(query, song_title, song_artist)
+                candidates.append((conf, legacy_score, song))
+
+            if not candidates: continue
+
+            # Sort by confidence desc, legacy score as tie-break
+            candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            best_conf, best_legacy, best_song = candidates[0]
+
+            if best_conf < 0.40: continue
+
             raw_urls = best_song.get('downloadUrl') or best_song.get('download_url') or []
             if isinstance(raw_urls, str):
                 raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
@@ -2044,7 +2123,8 @@ def fetch_from_mirror(mirror, query, min_score=0.4):
                 'url': best_url, 'quality': quality,
                 'title': best_song.get('name') or best_song.get('title', ''),
                 'artist': best_song.get('primaryArtists') or best_song.get('primary_artists') or '',
-                'image': pick_image(best_song), 'score': round(best_score, 3),
+                'image': pick_image(best_song), 'score': round(best_legacy, 3),
+                '_confidence': round(best_conf, 3),
                 'source': 'saavn', '_raw_urls': raw_urls,
             }
             if result_data['image']:
@@ -2064,7 +2144,9 @@ def fetch_saavn_parallel(query, title: str = '', artist: str = ''):
 
     threshold = dynamic_min_score(query)
     mirrors   = _best_mirrors(n=8)
-    futures   = {_executor.submit(fetch_from_mirror, m, query, threshold): m for m in mirrors}
+    # Pass title+artist into fetch_from_mirror so it uses confidence engine per-candidate
+    futures   = {_executor.submit(fetch_from_mirror, m, query, threshold, title, artist): m
+                 for m in mirrors}
     all_results = []
     try:
         for future in as_completed(futures, timeout=6):
@@ -2076,24 +2158,23 @@ def fetch_saavn_parallel(query, title: str = '', artist: str = ''):
 
     if not all_results: return None
 
-    # Blend mirror score with confidence engine; use title+artist if provided
-    _conf_title  = title or query
-    _conf_artist = artist or ''
+    # Sort by _confidence (already computed by fetch_from_mirror), then quality bonus.
+    # We collect ALL mirror responses and pick the globally best candidate —
+    # never take the first responder blindly (FIX: was first-mirror-wins).
     all_results.sort(
         key=lambda r: (
-            r.get('score', 0) * 0.5 +
-            compute_confidence(
-                _conf_title, _conf_artist,
-                r.get('title', ''), r.get('artist', ''),
-                source=r.get('source', 'saavn'),
-            ) * 0.5 +
-            (0.05 if '320' in str(r.get('quality', '')) else 0)
+            float(r.get('_confidence', r.get('score', 0))) +
+            (0.02 if '320' in str(r.get('quality', '')) else 0)
         ),
         reverse=True,
     )
     best = all_results[0]
-    _l1_saavn.set(l1_key, best)
-    log.info(f"[Parallel] ✓ '{best['title']}' score={best['score']} q={best['quality']}")
+    best_conf = float(best.get('_confidence', best.get('score', 0)))
+
+    # L1 write only if confidence passes threshold (anti-poisoning)
+    if best_conf >= _CACHE_MIN_CONFIDENCE:
+        _l1_saavn.set(l1_key, best)
+    log.info(f"[Parallel] ✓ '{best['title']}' conf={best_conf:.2f} q={best['quality']} mirrors_responded={len(all_results)}")
     return best
 
 
@@ -2124,11 +2205,15 @@ def fetch_from_piped(query, title='', artist='') -> Optional[dict]:
             for item in results[:5]:
                 if item.get('type') != 'stream': continue
                 if not has_word_match(query, item.get('title', '')): continue
-                conf = compute_confidence(query, artist, item.get('title', ''),
-                                          item.get('uploaderName', ''), source='piped')
+                conf = compute_confidence(
+                    title or query, artist,
+                    item.get('title', ''),
+                    item.get('uploaderName', ''),
+                    source='piped',
+                )
                 if conf > best_conf: best_conf = conf; best = item
 
-            if not best or best_conf < 0.30: continue
+            if not best or best_conf < 0.45: continue
             video_id = best.get('url', '').replace('/watch?v=', '').strip()
             if not video_id: continue
 
@@ -2186,11 +2271,15 @@ def fetch_from_invidious(query, title='', artist='') -> Optional[dict]:
             best = None; best_conf = -1.0
             for item in results[:5]:
                 if not has_word_match(query, item.get('title', '')): continue
-                conf = compute_confidence(query, artist, item.get('title', ''),
-                                          item.get('author', ''), source='invidious')
+                conf = compute_confidence(
+                    title or query, artist,
+                    item.get('title', ''),
+                    item.get('author', ''),
+                    source='invidious',
+                )
                 if conf > best_conf: best_conf = conf; best = item
 
-            if not best or best_conf < 0.30: continue
+            if not best or best_conf < 0.45: continue
             video_id = best.get('videoId', '')
             if not video_id: continue
 
@@ -2742,29 +2831,33 @@ def get_saavn_song():
             if low_quality:
                 low_url, low_q = _pick_low_quality(result.get('_raw_urls', []))
                 if low_url: result['url'] = low_url; result['quality'] = low_q
-            conf = result.get('score', 0.5)
-            _l1_saavn.set(_ck, result)
+            conf = float(result.get('_confidence', result.get('score', 0.5)))
+            if conf >= _CACHE_MIN_CONFIDENCE:
+                _l1_saavn.set(_ck, result)
             _executor.submit(_supabase_cache_set, _ck, result, conf)
             return jsonify({'success': True, 'token': token, **result})
 
     ytm = fetch_from_ytmusic(q, artist)
     if ytm and ytm.get('url'):
-        conf = float(ytm.get('_confidence', 0.6))
-        _l1_saavn.set(_ck, ytm)
+        conf = float(ytm.get('_confidence', 0.0))
+        if conf >= _CACHE_MIN_CONFIDENCE:
+            _l1_saavn.set(_ck, ytm)
         _executor.submit(_supabase_cache_set, _ck, ytm, conf)
         return jsonify({'success': True, 'token': token, **ytm})
 
     yt = fetch_from_ytdlp(q, artist)
     if yt and yt.get('url'):
-        conf = float(yt.get('_confidence', 0.5))
-        _l1_saavn.set(_ck, yt)
+        conf = float(yt.get('_confidence', 0.0))
+        if conf >= _CACHE_MIN_CONFIDENCE:
+            _l1_saavn.set(_ck, yt)
         _executor.submit(_supabase_cache_set, _ck, yt, conf)
         return jsonify({'success': True, 'token': token, **yt})
 
     sc = fetch_from_soundcloud(q, artist)
     if sc and sc.get('url'):
-        conf = float(sc.get('_confidence', 0.45))
-        _l1_saavn.set(_ck, sc)
+        conf = float(sc.get('_confidence', 0.0))
+        if conf >= _CACHE_MIN_CONFIDENCE:
+            _l1_saavn.set(_ck, sc)
         _executor.submit(_supabase_cache_set, _ck, sc, conf)
         return jsonify({'success': True, 'token': token, **sc})
 
