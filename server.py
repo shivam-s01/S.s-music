@@ -1,22 +1,3 @@
-# ═══════════════════════════════════════════════════════════════════════════════
-#  AURUM MUSIC BACKEND — PRODUCTION ARCHITECTURE v2.0
-#  Staff Engineer / Performance Architect Edition
-#
-#  Architecture improvements over v1:
-#  ┌─────────────────────────────────────────────────────────────────────────┐
-#  │  MATCH ENGINE     Multi-layer: title + artist + duration + confidence   │
-#  │  CONFIDENCE       Weighted scoring, remix/cover detection, dedup        │
-#  │  CACHE TIERS      L1 in-memory TTL → L2 Supabase → L3 resolution cache │
-#  │  HEALING          Mirror scoring, quarantine, adaptive timeout, rep.    │
-#  │  FALLBACK         Progressive, scored, non-blocking, CPU-efficient      │
-#  │  PLAYBACK         Warm cache, predictive prefetch, background resolve   │
-#  │  THREADING        Smarter concurrency, cancel-on-first-win, dedup lock  │
-#  └─────────────────────────────────────────────────────────────────────────┘
-#
-#  ALL existing routes, sources, and features preserved.
-#  Four PWA routes NEVER modified: /, /manifest.json, /sw.js, /.well-known/
-# ═══════════════════════════════════════════════════════════════════════════════
-
 from flask import Flask, request, jsonify, send_file, Response, stream_with_context
 from werkzeug.middleware.proxy_fix import ProxyFix
 import requests
@@ -654,7 +635,11 @@ def fuzzy_word_match(qw, tw):
 def title_score(query, song_title, song_artist=''):
     q, t, a = normalize(query), normalize(song_title), normalize(song_artist)
     if not q: return 0.0
-    if q == t: return 3.0
+    # Exact match bonus reduced 3.0→2.0 so duration_bonus and compute_confidence
+    # can tiebreak between multiple songs with identical titles (e.g. "Ram Jane"
+    # by 5 different artists). 3.0 was too dominant — compute_confidence had
+    # zero influence when exact match dominated at 65% weight.
+    if q == t: return 2.0
     q_words = q.split(); t_words = t.split(); a_words = a.split() if a else []
     score = 0.0
     if t.startswith(q): score += 2.0
@@ -671,6 +656,26 @@ def dynamic_min_score(query):
     elif length <= 5:  return 0.40
     elif length <= 10: return 0.55
     else:              return 0.65
+
+def _duration_bonus(dur_s: int) -> float:
+    """
+    Bonus/penalty based on track duration.
+    Rationale: songs < 2:30 are almost always snippets, short covers, or
+    low-quality uploads. Real songs are 3:00-7:00. This tiebreaks between
+    e.g. "Luv Latter" (1:59 snippet) vs "Luv Letter" (4:31 real song)
+    when both match the typo query equally.
+
+    < 2:30  → -1.5  (almost certainly not the intended song)
+    2:30-3:00 → -0.3  (slightly short)
+    3:00-7:00 → +0.2  (normal song length)
+    > 7:00  →  0.0  (long but neutral)
+    unknown →  0.0  (no duration data — neutral)
+    """
+    if dur_s <= 0:   return 0.0
+    if dur_s < 150:  return -1.5
+    if dur_s < 180:  return -0.3
+    if dur_s <= 420: return 0.2
+    return 0.0
 
 def has_word_match(query, song_title):
     q_words = normalize(query).split()
@@ -2472,35 +2477,112 @@ def play_song():
 # ═══════════════════════════════════════════════════════════════════════════════
 # /api/songs  — Parallel fetch with confidence-filtered deduplication
 # ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
+# /api/songs  — FIXED: Relevance-ranked, cache-poison-proof, mismatch-immune
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# ROOT CAUSES OF MISMATCH (ALL FIXED HERE):
+#
+# BUG-1  No relevance sort after merge
+#        merged = itunes + saavn was returned in raw API order.
+#        iTunes popularity order ≠ query relevance order.
+#        "Choliye" → "Coolie Disco" because Saavn's API returned it first.
+#        FIX: final merged list sorted by hybrid score (title_score + confidence).
+#
+# BUG-2  Saavn direct results had zero relevance filtering
+#        _normalize_saavn_songs() preserved raw Saavn API order.
+#        FIX: every saavn result scored against query; below 0.30 discarded.
+#
+# BUG-3  iTunes resolved results kept iTunes popularity order
+#        After _resolve_itunes_to_saavn(), results weren't re-ranked by query.
+#        FIX: resolved itunes list sorted by title_score before merging.
+#
+# BUG-4  Wrong results got cached and poisoned next 600s of responses
+#        If top result had low confidence, it still got cached.
+#        FIX: cache only when top result confidence >= 0.42 for real searches.
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _search_score(query: str, song: dict) -> float:
+    """
+    Hybrid relevance score:
+      title_score  (exact/prefix/word match, 0.65 weight)
+      compute_confidence (remix/live penalties, artist sim, 0.35 weight)
+      _duration_bonus (penalizes snippets < 2:30, tiebreaks equal titles)
+    """
+    title  = song.get('trackName') or song.get('title', '')
+    artist = (song.get('artistName') or song.get('artist', '')
+              or song.get('_resolvedArtist', ''))
+    dur_ms = int(song.get('trackTimeMillis', 0) or 0)
+    dur_s  = dur_ms // 1000
+
+    ts = title_score(query, title, artist)
+    cc = compute_confidence(
+        query_title=query,
+        query_artist='',
+        result_title=title,
+        result_artist=artist,
+        query_duration_s=0,
+        result_duration_s=dur_s,
+        source=song.get('_source', 'saavn'),
+    )
+    db = _duration_bonus(dur_s)
+    return ts * 0.65 + cc * 2.0 * 0.35 + db
+
+
+def _filter_and_rank(query: str, songs: list, min_conf: float = 0.0) -> list:
+    """
+    Score every song against query, drop below min_conf, return sorted best-first.
+    min_conf=0.0 means no filtering (used for home/90s/generic queries).
+    """
+    scored = [(s, _search_score(query, s)) for s in songs]
+    if min_conf > 0:
+        scored = [(s, sc) for s, sc in scored if sc >= min_conf]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [s for s, _ in scored]
+
+
 @app.route('/api/songs')
 @limiter.limit("60 per minute")
 def get_songs():
-    q       = request.args.get('q', 'top bollywood songs').strip()
-    era     = request.args.get('era', '').strip()
-    is_90s  = (era == '90s') or any(t in q.lower() for t in NINETIES_TRIGGERS)
+    q   = request.args.get('q', '').strip()
+    era = request.args.get('era', '').strip()
+
+    # Distinguish real search from home/browse mode
+    is_real_search = bool(q) and q.lower() not in ('top bollywood songs',)
+    if not q:
+        q = 'top bollywood songs'
+
+    is_90s      = (era == '90s') or any(t in q.lower() for t in NINETIES_TRIGGERS)
     search_term = random.choice(NINETIES_SEEDS) if is_90s else q
 
     cache_key = f"songs:{search_term.lower()}"
-    cached    = _l1_meta.get(cache_key)
+
+    # ── L1 cache ──────────────────────────────────────────────────────────────
+    cached = _l1_meta.get(cache_key)
     if cached is not None:
         return jsonify({'results': cached, '_cached': True})
 
-    # fallback to legacy cache
-    legacy_cached = _cache_get(cache_key)
-    if legacy_cached is not None:
-        return jsonify({'results': legacy_cached, '_cached': True})
+    legacy = _cache_get(cache_key)
+    if legacy is not None:
+        return jsonify({'results': legacy, '_cached': True})
 
-    itunes_results = []
-    saavn_results  = []
+    itunes_results: list = []
+    saavn_results:  list = []
 
+    # ── iTunes fetch + Saavn resolve ──────────────────────────────────────────
     def fetch_itunes():
         nonlocal itunes_results
         try:
-            r = requests.get('https://itunes.apple.com/search',
-                             params={'term': search_term, 'media': 'music', 'entity': 'song',
-                                     'limit': 50, 'country': 'IN'}, timeout=12)
+            r = requests.get(
+                'https://itunes.apple.com/search',
+                params={'term': search_term, 'media': 'music',
+                        'entity': 'song', 'limit': 50, 'country': 'IN'},
+                timeout=12,
+            )
             r.raise_for_status()
             results = r.json().get('results', [])
+
             if is_90s:
                 filtered = [s for s in results if s.get('trackName') and
                             1990 <= _safe_year(s.get('releaseDate')) <= 1999]
@@ -2511,34 +2593,47 @@ def get_songs():
             else:
                 candidates = [s for s in results if s.get('trackName')][:30]
 
-            resolve_futures = {
-                _executor.submit(_resolve_itunes_to_saavn, s): s
-                for s in candidates
-            }
+            resolve_futures = {_executor.submit(_resolve_itunes_to_saavn, s): s
+                               for s in candidates}
             resolved = []
             try:
-                for future in as_completed(resolve_futures, timeout=10):
+                for fut in as_completed(resolve_futures, timeout=10):
                     try:
-                        res = future.result()
+                        res = fut.result()
                         if res: resolved.append(res)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                    except Exception: pass
+            except Exception: pass
+
+            # BUG-3 FIX: re-rank resolved results by query relevance,
+            # not by iTunes popularity. Only for real searches (not 90s/home).
+            if is_real_search and not is_90s:
+                resolved = _filter_and_rank(search_term, resolved, min_conf=0.0)
+
             itunes_results = resolved[:30]
         except Exception:
             pass
 
+    # ── Saavn direct fetch ────────────────────────────────────────────────────
     def fetch_saavn():
         nonlocal saavn_results
         try:
             raw = _fetch_saavn_search_parallel(search_term)
-            if raw:
-                normalized = _normalize_saavn_songs(raw)
-                if is_90s:
-                    filtered = [s for s in normalized if 1990 <= _safe_year(s.get('releaseDate')) <= 1999]
-                    normalized = filtered if len(filtered) >= 5 else normalized
-                    random.shuffle(normalized)
+            if not raw:
+                return
+            normalized = _normalize_saavn_songs(raw)
+
+            if is_90s:
+                filtered = [s for s in normalized if
+                            1990 <= _safe_year(s.get('releaseDate')) <= 1999]
+                normalized = filtered if len(filtered) >= 5 else normalized
+                random.shuffle(normalized)
+                saavn_results = normalized[:30]
+            else:
+                if is_real_search:
+                    # BUG-2 FIX: score + filter Saavn direct results.
+                    # min_conf=0.30 removes completely unrelated results
+                    # while keeping partial/translit matches.
+                    normalized = _filter_and_rank(search_term, normalized, min_conf=0.30)
                 saavn_results = normalized[:30]
         except Exception:
             pass
@@ -2549,17 +2644,39 @@ def get_songs():
     t1.join(timeout=15)
     t2.join(timeout=4)
 
+    # ── Merge + dedup ─────────────────────────────────────────────────────────
     merged = list(itunes_results)
     for s in saavn_results:
         if not any(is_likely_duplicate(s, e) for e in merged):
             merged.append(s)
 
-    if merged:
+    if not merged:
+        return jsonify({'results': [], 'error': 'No results found'})
+
+    # BUG-1 FIX: sort the full merged list by relevance for real searches.
+    # 90s/home queries keep shuffle/API order (intentional variety).
+    if is_real_search and not is_90s:
+        merged = _filter_and_rank(search_term, merged, min_conf=0.0)
+
+    # BUG-4 FIX: only cache if top result is actually relevant.
+    # Prevents wrong results from poisoning cache for 600s.
+    should_cache = True
+    if is_real_search and not is_90s and merged:
+        top_score = _search_score(search_term, merged[0])
+        if top_score < 0.42:
+            log.warning(
+                f"[Search] Skipping cache — low relevance top result "
+                f"query='{search_term}' top='{merged[0].get('trackName', '')}' "
+                f"score={top_score:.3f}"
+            )
+            should_cache = False
+
+    if should_cache:
         _l1_meta.set(cache_key, merged)
         _cache_set(cache_key, merged)
-        return jsonify({'results': merged})
 
-    return jsonify({'results': [], 'error': 'No results found'})
+    return jsonify({'results': merged})
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
