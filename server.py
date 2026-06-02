@@ -271,8 +271,8 @@ def _verified_key(song_id: str = '', title: str = '', artist: str = '') -> str:
     return f"verified:{normalize(title)}:{normalize(artist)}"
 
 def _store_verified(song_id: str, title: str, artist: str, data: dict, confidence: float):
-    """Store in verified cache only if conf ≥ 0.85 (high-confidence results only)."""
-    if confidence < 0.85:
+    """AGGRESSIVE: Store in verified cache only if conf ≥ 0.90 (was 0.85)."""
+    if confidence < 0.90:
         return
     if song_id:
         _l1_verified.set(_verified_key(song_id=song_id), data)
@@ -333,7 +333,7 @@ _SONG_CACHE_TTL       = 86400
 _VOLATILE_CACHE_TTL   = 21600
 _TEMP_CACHE_TTL       = 14400
 _VOLATILE_SOURCES     = {'youtube', 'youtube-broad', 'piped', 'invidious', 'soundcloud'}
-_CACHE_MIN_CONFIDENCE = 0.75   # below this → never cache in L2 (poison prevention)
+_CACHE_MIN_CONFIDENCE = 0.80   # AGGRESSIVE: was 0.75 — only high-confidence results enter L2
 
 def _supabase_cache_get(cache_key: str) -> Optional[dict]:
     # Check L1 first (zero network cost)
@@ -434,16 +434,36 @@ def _supabase_cache_set(cache_key: str, data: dict, confidence: float = 1.0):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _REMIX_INDICATORS = [
-    'remix', 'slowed', 'reverb', 'lofi', 'lo-fi', 'mashup', 'cover',
-    'karaoke', 'instrumental', 'dj ', 'nightcore', 'pitched', 'sped up',
-    'chopped', 'screwed', 'flip', 'bootleg', 'edit', 'extended mix',
-    'club mix', 'dance mix', 'radio edit', 'tribute',
-    'live', 'acoustic', 'unplugged', 'concert', 'tour', 'performance',
-    'live at', 'live from', 'live version', 'live session', 'stripped',
-    '8d audio', 'bass boosted', 'speed up', 'slowed down',
+    # DJ variants — all possible spellings/formats
+    'dj remix', 'dj mix', 'dj version', 'dj edit', 'dj drop',
+    'dj mashup', 'dj cut', 'dj blend', 'dj flip', 'dj bootleg',
+    # standalone dj — checked via regex word boundary (not substring)
+    'dj',
+    # Remix / mashup / cover family
+    'remix', 'remixed', 'mashup', 'mash up', 'cover', 'cover version',
+    'tribute', 'flip', 'bootleg', 'rework', 'edit', 'reedited',
+    # Slowed / speed family
+    'slowed', 'slowed down', 'slowed reverb', 'reverb', 'pitched',
+    'sped up', 'speed up', 'sped-up', 'nightcore', 'chopped', 'screwed',
+    # Lofi family
+    'lofi', 'lo-fi', 'lo fi', 'chill mix', 'chill version',
+    # Bass / audio effects
+    '8d audio', '8d', 'bass boosted', 'bass boost',
+    # Karaoke / instrumental
+    'karaoke', 'instrumental', 'minus one',
+    # Club / extended
+    'extended mix', 'extended version', 'club mix', 'dance mix',
+    'radio edit', 'club version',
+    # Live / acoustic
+    'live', 'live at', 'live from', 'live version', 'live session',
+    'acoustic', 'unplugged', 'stripped', 'concert', 'performance',
+    'tour',
 ]
-# NOTE: 'version' intentionally removed — causes false positives on
+# NOTE: 'version' intentionally NOT in list — causes false positives on
 # legitimate Saavn titles like "Deluxe Version", "2024 Version", etc.
+
+# Pre-compiled DJ regex — catches all caps/spacing variants: DJ, dj, Dj
+_DJ_RE = re.compile(r'\bdj\b', re.IGNORECASE)
 
 _LIVE_INDICATORS = [
     'live', 'acoustic', 'unplugged', 'concert', 'live at', 'live from',
@@ -511,13 +531,18 @@ def _word_overlap(a: str, b: str) -> float:
 
 def _is_remix_or_cover(title: str) -> bool:
     t = title.lower()
+    # Fast path: DJ regex (handles DJ, dj, Dj — all caps variants)
+    if _DJ_RE.search(title):
+        return True
     for ind in _REMIX_INDICATORS:
-        # Multi-word indicators: plain substring is fine (e.g. 'extended mix')
-        # Single-word: require word boundary to avoid 'cover' in 'recover', 'edit' in 'credit'
+        if ind == 'dj':
+            continue   # already handled above
+        # Multi-word: plain substring match (e.g. 'extended mix', 'bass boosted')
         if ' ' in ind:
             if ind in t:
                 return True
         else:
+            # Single-word: word boundary to avoid 'cover'→'recover', 'edit'→'credit'
             if re.search(r'\b' + re.escape(ind.strip()) + r'\b', t):
                 return True
     return False
@@ -557,9 +582,15 @@ def compute_confidence(
     Multi-layer confidence engine.
     Returns float ∈ [0.0, 1.0].
     """
-    qt = _normalize_text(query_title)
+    # Language-aware normalization: Bhojpuri gets extra translit pass
+    _lang = _detect_language(query_title + ' ' + query_artist)
+    if _lang == 'bhojpuri':
+        qt = _bhojpuri_normalize(query_title)
+        rt = _bhojpuri_normalize(result_title)
+    else:
+        qt = _normalize_text(query_title)
+        rt = _normalize_text(result_title)
     qa = _normalize_text(query_artist)
-    rt = _normalize_text(result_title)
     ra = _normalize_text(result_artist)
 
     # ── Title similarity (50% weight) ─────────────────────────────────────────
@@ -609,23 +640,22 @@ def compute_confidence(
         conf = min(1.0, conf + 0.15)
 
     # ── Hard artist mismatch rejection ────────────────────────────────────────
-    # Exempt when title is an exact match (conf already boosted above)
-    if qa_norm and ra_norm and a_sim < 0.60 and t_sim < 0.95:
-        if qt != rt:   # don't reject exact title matches
+    # AGGRESSIVE: lowered threshold 0.60→0.50 — stricter artist match required
+    if qa_norm and ra_norm and a_sim < 0.50 and t_sim < 0.95:
+        if qt != rt:
             return 0.0
 
-    # ── Duration hard-reject (spec: >35% delta → reject, >20% → strong penalty) ─
+    # ── Duration hard-reject — AGGRESSIVE: 35%→25% delta, 20%→12% penalty trigger ──
     if query_duration_s > 0 and result_duration_s > 0:
         dur_ratio = abs(query_duration_s - result_duration_s) / max(query_duration_s, 1)
-        if dur_ratio > 0.35:
-            return 0.0       # hard reject — completely wrong version
-        elif dur_ratio > 0.20:
-            conf -= 0.20     # strong penalty per spec
+        if dur_ratio > 0.25:
+            return 0.0       # AGGRESSIVE: was 0.35 — anything >25% duration diff = wrong song
+        elif dur_ratio > 0.12:
+            conf -= 0.25     # AGGRESSIVE: was 0.20 penalty at 0.20 ratio
 
-    # ── Remix / slowed / cover / live penalties (exempt when user requested) ──
+    # ── Remix / slowed / cover / live — ZERO TOLERANCE on all variants ────────
     user_wants_version = _query_requests_version(query_title)
     query_is_remix   = _is_remix_or_cover(query_title)
-    # FIX 5a: use normalized rt/qt so special-char encoded titles (𝐋𝐨𝐟𝐢, 【lofi】) are caught
     result_is_remix  = _is_remix_or_cover(rt)
     query_is_live    = _is_live_version(query_title)
     result_is_live   = _is_live_version(rt)
@@ -633,22 +663,90 @@ def compute_confidence(
     result_is_slowed = _is_slowed_reverb(rt)
 
     if not user_wants_version:
-        # FIX 5b: penalties raised + hard ceiling so lofi/remix can NEVER win over original
+        _query_starts_with_dj = bool(re.match(r'^dj\b', qt, re.IGNORECASE))
+        if result_is_remix and not query_is_remix and not _query_starts_with_dj:
+            return 0.0   # DJ remix, cover, mashup → instant reject
         if result_is_slowed and not query_is_slowed:
-            conf -= 0.45                  # was 0.30
-            conf = min(conf, 0.40)        # hard ceiling — slowed can never pass threshold
+            return 0.0   # slowed/reverb/lofi/nightcore → instant reject
+        # AGGRESSIVE: live version also instant reject now (was -0.30 penalty)
         if result_is_live and not query_is_live:
-            conf -= 0.30                  # was 0.20
-            conf = min(conf, 0.45)
-        if result_is_remix and not query_is_remix:
-            conf -= 0.40                  # was 0.22
-            conf = min(conf, 0.42)        # hard ceiling
+            return 0.0   # live/acoustic/concert → instant reject
     elif not result_is_remix and query_is_remix:
-        conf -= 0.10       # user wanted remix but got original
+        conf -= 0.10
 
     return max(0.0, min(1.0, conf))
 
 def is_likely_duplicate(a: dict, b: dict, threshold: float = 0.92) -> bool:
+    """Detect duplicates using title + artist similarity."""
+    ta = _normalize_text(a.get('trackName') or a.get('title', ''))
+    tb = _normalize_text(b.get('trackName') or b.get('title', ''))
+    aa = _normalize_text(a.get('artistName') or a.get('artist', ''))
+    ab = _normalize_text(b.get('artistName') or b.get('artist', ''))
+    t_sim = _seq_ratio(ta, tb)
+    a_sim = _seq_ratio(aa, ab) if aa and ab else 0.5
+    return (t_sim * 0.7 + a_sim * 0.3) >= threshold
+# AGGRESSIVE MASTER MATCH GATE
+# Single function called before ANY result is accepted from ANY source.
+# Returns (is_confirmed: bool, confidence: float, reason: str)
+# ═══════════════════════════════════════════════════════════════════════════════
+def _is_confirmed_match(
+    req_title:   str,
+    req_artist:  str,
+    res_title:   str,
+    res_artist:  str,
+    source:      str = '',
+    duration_s:  int = 0,
+    res_dur_s:   int = 0,
+    min_conf:    float = 0.65,
+) -> tuple:
+    """
+    AGGRESSIVE gate: every candidate from every source must pass this.
+    Returns (True, conf, 'ok') or (False, conf, reason_string).
+    """
+    if not res_title:
+        return False, 0.0, 'empty_title'
+
+    # 1. Raw version keyword check BEFORE confidence — fastest rejection
+    _user_wants_ver = _query_requests_version(req_title) or _query_requests_version(req_artist)
+    if not _user_wants_ver:
+        if _is_remix_or_cover(res_title):
+            return False, 0.0, 'remix_cover_rejected'
+        if _is_slowed_reverb(res_title):
+            return False, 0.0, 'slowed_reverb_rejected'
+        if _is_live_version(res_title):
+            return False, 0.0, 'live_version_rejected'
+
+    # 2. Compute full confidence
+    conf = compute_confidence(
+        req_title, req_artist, res_title, res_artist,
+        query_duration_s=duration_s,
+        result_duration_s=res_dur_s,
+        source=source,
+    )
+
+    # 3. Minimum confidence gate
+    if conf < min_conf:
+        return False, conf, f'low_conf_{conf:.3f}'
+
+    # 4. Title must share at least one significant word (anti-completely-wrong-song)
+    _req_words = set(w for w in normalize(req_title).split() if len(w) >= 3)
+    _res_words = set(w for w in normalize(res_title).split() if len(w) >= 3)
+    if _req_words and _res_words and not _req_words.intersection(_res_words):
+        # Allow if seq_ratio is very high (handles transliteration differences)
+        _seq = _seq_ratio(normalize(req_title), normalize(res_title))
+        if _seq < 0.55:
+            return False, conf, f'no_word_overlap_seq={_seq:.3f}'
+
+    # 5. Artist must not be completely different (when both provided)
+    if req_artist and res_artist:
+        _ra = _normalize_artist(normalize(req_artist))
+        _rb = _normalize_artist(normalize(res_artist))
+        if _ra and _rb:
+            _a_sim = _seq_ratio(_ra, _rb)
+            if _a_sim < 0.30:
+                return False, conf, f'artist_mismatch_{_a_sim:.3f}'
+
+    return True, conf, 'ok'
     """Detect duplicates using title + artist similarity."""
     ta = _normalize_text(a.get('trackName') or a.get('title', ''))
     tb = _normalize_text(b.get('trackName') or b.get('title', ''))
@@ -886,6 +984,54 @@ NINETIES_TRIGGERS = [
     'classic', 'nineties', 'throwback', 'evergreen', 'gaane',
 ]
 
+# ─── Language Detection ───────────────────────────────────────────────────────
+# Maps query keywords → language tag for Saavn search.
+# Bhojpuri treated as its own language so Saavn returns correct regional results.
+_LANGUAGE_KEYWORD_MAP = {
+    'bhojpuri': 'bhojpuri', 'bhojpuri song': 'bhojpuri',
+    'bhojpuri gana': 'bhojpuri', 'bhojpuri gaana': 'bhojpuri',
+    'pawan singh': 'bhojpuri', 'khesari lal': 'bhojpuri',
+    'dinesh lal': 'bhojpuri', 'nirahua': 'bhojpuri',
+    'ritesh pandey': 'bhojpuri', 'ankush raja': 'bhojpuri',
+    'pramod premi': 'bhojpuri', 'kallu': 'bhojpuri',
+    'shilpi raj': 'bhojpuri', 'gunjan singh': 'bhojpuri',
+    'hindi': 'hindi', 'bollywood': 'hindi',
+    'hindi song': 'hindi', 'hindi gana': 'hindi',
+    'english': 'english', 'english song': 'english', 'pop': 'english',
+    'punjabi': 'punjabi', 'punjabi song': 'punjabi',
+    'haryanvi': 'haryanvi', 'rajasthani': 'rajasthani',
+    'tamil': 'tamil', 'telugu': 'telugu', 'kannada': 'kannada',
+    'malayalam': 'malayalam', 'bengali': 'bengali',
+    'marathi': 'marathi', 'gujarati': 'gujarati', 'odia': 'odia',
+}
+
+# Bhojpuri romanization normalization — same word, many spellings
+_BHOJPURI_TRANSLIT = [
+    ('tohaar', 'tohar'), ('hamaar', 'hamar'), ('kahe', 'kaahe'),
+    ('bhaiya', 'bhaiyya'), ('saiya', 'saiyya'), ('piya', 'piyaa'),
+    ('bhauji', 'bhouji'), ('lahariya', 'laharia'),
+    ('goriya', 'goria'), ('balmuaa', 'balmua'),
+    ('ae', 'aye'), ('ogo', 'ago'), ('hau', 'hu'),
+    ('bade', 'bado'), ('kaisan', 'kaisa'),
+]
+
+def _detect_language(query: str) -> str:
+    """Detect language from query. Returns tag like 'bhojpuri', 'hindi', 'english' or ''."""
+    q = query.lower().strip()
+    for kw in sorted(_LANGUAGE_KEYWORD_MAP, key=len, reverse=True):
+        if kw in q:
+            return _LANGUAGE_KEYWORD_MAP[kw]
+    return ''
+
+def _bhojpuri_normalize(text: str) -> str:
+    """Normalize Bhojpuri romanization variants for matching engine."""
+    t = text.lower().strip()
+    t = re.sub(r'[^a-z0-9\s]', '', t)
+    t = re.sub(r'\s+', ' ', t).strip()
+    for src, dst in _BHOJPURI_TRANSLIT:
+        t = re.sub(r'\b' + re.escape(src) + r'\b', dst, t)
+    return t
+
 ALLOWED_STREAM_DOMAINS = [
     'akamaized.net', 'jiocdn.com', 'saavncdn.com',
     'cf.saavncdn.com', 'aac.saavncdn.com', 'static.saavncdn.com',
@@ -919,12 +1065,12 @@ ALLOWED_STREAM_DOMAINS = [
 # Sources with 3+ consecutive successes are restored from quarantine.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_QUARANTINE_SECS       = 180   # 3 minutes quarantine for dead sources
-_REP_RECOVERY_SECS     = 90    # probe quarantined source after 90s
-_REP_FAIL_COST         = 8
-_REP_MIN_FOR_TRAFFIC   = 20    # below this → quarantine
-_ADAPTIVE_TIMEOUT_BASE = 5.0   # base timeout seconds
-_ADAPTIVE_TIMEOUT_MAX  = 10.0
+_QUARANTINE_SECS       = 60    # STRONG HEAL: 1 min quarantine (was 3 min)
+_REP_RECOVERY_SECS     = 30    # STRONG HEAL: probe after 30s (was 90s)
+_REP_FAIL_COST         = 6     # STRONG HEAL: slightly lower cost so recovery is faster
+_REP_MIN_FOR_TRAFFIC   = 15    # STRONG HEAL: lower bar — more sources stay alive
+_ADAPTIVE_TIMEOUT_BASE = 4.0   # STRONG HEAL: tighter base timeout (was 5s)
+_ADAPTIVE_TIMEOUT_MAX  = 8.0   # STRONG HEAL: max 8s (was 10s)
 
 class _SourceHealth:
     """Per-source health tracker with reputation, adaptive timeout, quarantine."""
@@ -1385,31 +1531,184 @@ def _maybe_reactive_heal(source_type: str):
     elif source_type == 'soundcloud':
         _executor.submit(_refresh_soundcloud_client_id)
 
+# ─── STRONG SELF-HEAL THRESHOLDS ────────────────────────────────────────────
+# If alive mirrors drop below these, emergency heal triggers immediately.
+_HEAL_MIN_SAAVN_MIRRORS  = 5   # need at least 5 working Saavn mirrors
+_HEAL_MIN_PIPED          = 2   # need at least 2 Piped instances
+_HEAL_MIN_INVIDIOUS      = 2   # need at least 2 Invidious instances
+_HEAL_EMERGENCY_INTERVAL = 120 # emergency heal: every 2 min if degraded
+_HEAL_FULL_INTERVAL      = 3600 # full heal: every 1 hour (was 2 hours)
+
+# Track last time emergency heal ran per source type
+_last_emergency_heal: Dict[str, float] = {}
+_emergency_heal_lock = threading.Lock()
+
+def _should_emergency_heal(source: str, interval: float = _HEAL_EMERGENCY_INTERVAL) -> bool:
+    now = time.time()
+    with _emergency_heal_lock:
+        if now - _last_emergency_heal.get(source, 0) > interval:
+            _last_emergency_heal[source] = now
+            return True
+    return False
+
+def _count_alive_mirrors() -> int:
+    with _mirror_lock:
+        return sum(1 for m in SAAVN_MIRRORS if _mirror_ok(m))
+
+def _count_alive_piped() -> int:
+    with _piped_lock:
+        return sum(1 for p in PIPED_INSTANCES if _health.is_alive(p))
+
+def _count_alive_invidious() -> int:
+    with _invidious_lock:
+        return sum(1 for i in INVIDIOUS_INSTANCES if _health.is_alive(i))
+
+def _strong_heal_saavn():
+    """
+    STRONG HEAL for Saavn:
+    1. Verify all existing mirrors — remove permanently dead ones.
+    2. Restore any that were wrongly quarantined (probe them).
+    3. Discover new mirrors if count is below threshold.
+    """
+    log.info('[StrongHeal:Saavn] Starting...')
+    # Step 1: parallel verify all existing mirrors
+    with _mirror_lock:
+        current = list(SAAVN_MIRRORS)
+    probe_futures = {_executor.submit(_test_mirror_working, m): m for m in current}
+    dead, recovered = [], []
+    try:
+        for future in as_completed(probe_futures, timeout=20):
+            m = probe_futures[future]
+            try:
+                alive = future.result()
+                if alive:
+                    recovered.append(m)
+                    _mirror_fail_count[m] = 0   # reset fail count on success
+                elif _mirror_fail_count.get(m, 0) >= 20:
+                    dead.append(m)              # only remove if repeatedly failing
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    if dead:
+        with _mirror_lock:
+            for m in dead:
+                if m not in _BASE_MIRRORS and m in SAAVN_MIRRORS:
+                    SAAVN_MIRRORS.remove(m)
+                    _discovered_set.discard(m)
+        log.info(f'[StrongHeal:Saavn] Removed {len(dead)} dead mirrors')
+
+    # Step 2: reset quarantine on recovered mirrors
+    for m in recovered:
+        h = _health._data.get(m, {})
+        if h.get('quarantined'):
+            h['quarantined'] = False
+            h['consecutive_ok'] = 3
+            log.info(f'[StrongHeal:Saavn] ✓ Un-quarantined: {m[:50]}')
+
+    # Step 3: discover new mirrors only if below threshold
+    alive_count = _count_alive_mirrors()
+    if alive_count < _HEAL_MIN_SAAVN_MIRRORS:
+        log.info(f'[StrongHeal:Saavn] Only {alive_count} alive, discovering new...')
+        _discover_mirrors()
+    else:
+        log.info(f'[StrongHeal:Saavn] ✓ {alive_count} mirrors alive — OK')
+
+def _strong_heal_piped():
+    """Verify + restore Piped instances, always keep ≥ _HEAL_MIN_PIPED alive."""
+    log.info('[StrongHeal:Piped] Starting...')
+    with _piped_lock:
+        current = list(PIPED_INSTANCES)
+    for inst in current:
+        if not _health.is_alive(inst):
+            # Try to probe and restore
+            if _test_piped_instance(inst):
+                h = _health._data.get(inst, {})
+                h['quarantined'] = False
+                h['consecutive_ok'] = 3
+                log.info(f'[StrongHeal:Piped] ✓ Restored: {inst[:50]}')
+    if _count_alive_piped() < _HEAL_MIN_PIPED:
+        log.info('[StrongHeal:Piped] Below threshold — fetching new instances')
+        _heal_piped()
+
+def _strong_heal_invidious():
+    """Verify + restore Invidious instances, always keep ≥ _HEAL_MIN_INVIDIOUS alive."""
+    log.info('[StrongHeal:Invidious] Starting...')
+    with _invidious_lock:
+        current = list(INVIDIOUS_INSTANCES)
+    for inst in current:
+        if not _health.is_alive(inst):
+            if _test_invidious_instance(inst):
+                h = _health._data.get(inst, {})
+                h['quarantined'] = False
+                h['consecutive_ok'] = 3
+                log.info(f'[StrongHeal:Invidious] ✓ Restored: {inst[:50]}')
+    if _count_alive_invidious() < _HEAL_MIN_INVIDIOUS:
+        log.info('[StrongHeal:Invidious] Below threshold — fetching new instances')
+        _heal_invidious()
+
 def _master_heal_loop():
-    time.sleep(30)
+    """
+    STRONG MASTER HEAL LOOP
+    - Runs every 60s
+    - Emergency heals if sources drop below thresholds
+    - Full heal cycle every 1 hour
+    """
+    time.sleep(20)   # shorter initial delay (was 30s)
+    last_full_heal = 0.0
+
     while True:
         try:
-            log.info('[SelfHeal] Starting full heal cycle...')
-            futures = [
-                _executor.submit(_discover_mirrors),
-                _executor.submit(_verify_existing_mirrors),
-                _executor.submit(_heal_piped),
-                _executor.submit(_heal_invidious),
-                _executor.submit(_refresh_soundcloud_client_id),
-            ]
-            for f in as_completed(futures, timeout=120):
-                try: f.result()
-                except Exception as e: log.warning(f'[SelfHeal] Error: {e}')
-            with _mirror_lock:    sm = len(SAAVN_MIRRORS)
-            with _piped_lock:     pi = len(PIPED_INSTANCES)
-            with _invidious_lock: iv = len(INVIDIOUS_INSTANCES)
-            log.info(f'[SelfHeal] ✓ Done — Saavn:{sm} Piped:{pi} Invidious:{iv}')
+            now = time.time()
+
+            # ── Emergency heal: triggered when alive counts drop below threshold ──
+            saavn_alive = _count_alive_mirrors()
+            piped_alive = _count_alive_piped()
+            inv_alive   = _count_alive_invidious()
+
+            if saavn_alive < _HEAL_MIN_SAAVN_MIRRORS:
+                if _should_emergency_heal('saavn'):
+                    log.warning(f'[StrongHeal] ⚠ Emergency: only {saavn_alive} Saavn mirrors alive!')
+                    _executor.submit(_strong_heal_saavn)
+
+            if piped_alive < _HEAL_MIN_PIPED:
+                if _should_emergency_heal('piped'):
+                    log.warning(f'[StrongHeal] ⚠ Emergency: only {piped_alive} Piped instances alive!')
+                    _executor.submit(_strong_heal_piped)
+
+            if inv_alive < _HEAL_MIN_INVIDIOUS:
+                if _should_emergency_heal('invidious'):
+                    log.warning(f'[StrongHeal] ⚠ Emergency: only {inv_alive} Invidious instances alive!')
+                    _executor.submit(_strong_heal_invidious)
+
+            # ── Full heal cycle: every _HEAL_FULL_INTERVAL seconds ──────────────
+            if now - last_full_heal > _HEAL_FULL_INTERVAL:
+                last_full_heal = now
+                log.info('[StrongHeal] Starting scheduled full heal cycle...')
+                futures = [
+                    _executor.submit(_strong_heal_saavn),
+                    _executor.submit(_strong_heal_piped),
+                    _executor.submit(_strong_heal_invidious),
+                    _executor.submit(_refresh_soundcloud_client_id),
+                ]
+                for f in as_completed(futures, timeout=120):
+                    try: f.result()
+                    except Exception as e: log.warning(f'[StrongHeal] Error: {e}')
+                log.info(
+                    f'[StrongHeal] ✓ Full cycle done — '
+                    f'Saavn:{_count_alive_mirrors()} '
+                    f'Piped:{_count_alive_piped()} '
+                    f'Invidious:{_count_alive_invidious()}'
+                )
+
         except Exception as e:
-            log.error(f'[SelfHeal] Master loop error: {e}')
-        time.sleep(7200)
+            log.error(f'[StrongHeal] Master loop error: {e}')
+
+        time.sleep(60)   # check every 60s (was every 2 hours!)
 
 threading.Thread(target=_master_heal_loop, daemon=True).start()
-log.info('[SelfHeal] Master heal loop started')
+log.info('[StrongHeal] Strong master heal loop started (60s interval)')
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1510,13 +1809,16 @@ def serve_static(filename):
 # ═══════════════════════════════════════════════════════════════════════════════
 # SAAVN SEARCH HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
-def _fetch_saavn_search_mirror(mirror, search_term):
+def _fetch_saavn_search_mirror(mirror, search_term, language: str = ''):
     if not _mirror_ok(mirror): return []
     for endpoint in ['/api/search/songs', '/api/search', '/search/songs']:
         try:
-            t0 = time.time()
+            t0     = time.time()
+            params = {'query': search_term, 'q': search_term, 'limit': 20}
+            if language:
+                params['language'] = language   # Saavn supports ?language= filter
             r  = requests.get(f'{mirror}{endpoint}',
-                              params={'query': search_term, 'q': search_term, 'limit': 20},
+                              params=params,
                               timeout=_health.adaptive_timeout(mirror),
                               headers={'User-Agent': 'Mozilla/5.0'})
             elapsed = (time.time() - t0) * 1000
@@ -1531,13 +1833,15 @@ def _fetch_saavn_search_mirror(mirror, search_term):
             _mirror_failed(mirror)
     return []
 
-def _fetch_saavn_search_parallel(search_term):
+def _fetch_saavn_search_parallel(search_term, language: str = ''):
     """
     Race top-N mirrors. Return as soon as the first winner responds.
     Cancel remaining futures immediately (bandwidth + CPU saving).
     """
+    if not language:
+        language = _detect_language(search_term)
     mirrors = _best_mirrors(n=6)
-    futures = {_executor.submit(_fetch_saavn_search_mirror, m, search_term): m for m in mirrors}
+    futures = {_executor.submit(_fetch_saavn_search_mirror, m, search_term, language): m for m in mirrors}
     try:
         for future in as_completed(futures, timeout=8):
             try:
@@ -1628,23 +1932,20 @@ def _resolve_itunes_to_saavn(itunes_song: dict) -> Optional[dict]:
                         song_title  = song.get('name') or song.get('title', '')
                         song_artist = (song.get('primaryArtists') or
                                        song.get('primary_artists') or '')
-                        # Hard skip: result is remix but user didn't ask for remix
-                        if (_is_remix_or_cover(song_title) and
-                                not _is_remix_or_cover(title) and
-                                not _is_live_version(title) and
-                                not _is_slowed_reverb(title)):
-                            continue
                         song_dur = int(song.get('duration', 0) or 0)
-                        conf = compute_confidence(
+                        # AGGRESSIVE: master gate
+                        _ok, _conf, _reason = _is_confirmed_match(
                             title, artist, song_title, song_artist,
-                            query_duration_s=itunes_dur,
-                            result_duration_s=song_dur,
-                            source='saavn',
+                            source='saavn', duration_s=itunes_dur, res_dur_s=song_dur,
+                            min_conf=0.70,
                         )
-                        if conf > best_conf:
-                            best_conf = conf; best = song
+                        if not _ok:
+                            log.debug(f"[iTunesResolve] Rejected '{song_title}': {_reason}")
+                            continue
+                        if _conf > best_conf:
+                            best_conf = _conf; best = song
 
-                    if not best or best_conf < 0.65: continue
+                    if not best or best_conf < 0.70: continue  # GODMODE FIX 10: was 0.65
 
                     saavn_id = (best.get('id') or '').strip()
                     raw_urls = best.get('downloadUrl') or best.get('download_url') or []
@@ -1823,12 +2124,17 @@ def fetch_from_ytmusic(title: str, artist: str = '') -> Optional[dict]:
 
     best = None; best_conf = -1.0
     for item in results:
-        conf = compute_confidence(title, artist, item.get('title', ''),
-                                  item.get('artist', ''), source='ytmusic')
-        if conf > best_conf:
-            best_conf = conf; best = item
+        _ok, _conf, _reason = _is_confirmed_match(
+            title, artist, item.get('title', ''), item.get('artist', ''),
+            source='ytmusic', min_conf=0.60,
+        )
+        if not _ok:
+            log.debug(f"[YTMusic] Rejected '{item.get('title')}': {_reason}")
+            continue
+        if _conf > best_conf:
+            best_conf = _conf; best = item
 
-    if not best or best_conf < 0.45: return None
+    if not best or best_conf < 0.60: return None  # GODMODE FIX 4: was 0.45
     video_id = best['videoId']
     url, quality = _ytm_get_stream_url(video_id)
     if not url: return None
@@ -1905,25 +2211,25 @@ def fetch_from_ytdlp(title, artist='') -> Optional[dict]:
                         if not entry: continue
                         yt_title  = entry.get('title', '')
                         yt_artist = entry.get('uploader', '') or entry.get('artist', '')
-                        # FIX 8a: hard-skip lofi/remix/slowed from yt-dlp results
-                        if not _wants_ver and (
-                            _is_remix_or_cover(yt_title) or
-                            _is_slowed_reverb(yt_title) or
-                            _is_live_version(yt_title)
-                        ):
+                        # AGGRESSIVE: master gate replaces all individual checks
+                        _ok, _conf, _reason = _is_confirmed_match(
+                            title, artist, yt_title, yt_artist,
+                            source='youtube', min_conf=0.60,
+                        )
+                        if not _ok:
+                            log.debug(f"[yt-dlp] Rejected '{yt_title}': {_reason}")
                             continue
-                        conf = compute_confidence(title, artist, yt_title, yt_artist, source='youtube')
                         if 'music.youtube' in (entry.get('webpage_url') or ''):
-                            conf = min(1.0, conf + 0.05)
-                        if conf > best_conf:
-                            best_conf = conf; best_result = entry
+                            _conf = min(1.0, _conf + 0.05)
+                        if _conf > best_conf:
+                            best_conf = _conf; best_result = entry
                     if best_conf >= 0.75: break
                 except Exception:
                     continue
 
             if not best_result: return None
-            # FIX 8b: raised floor from 0.35 → 0.50 to prevent wrong-song cache poisoning
-            if best_conf < 0.50: return None
+            # GODMODE FIX 12: raised floor from 0.50 → 0.60 to prevent wrong-song cache poisoning
+            if best_conf < 0.60: return None
 
             formats       = best_result.get('formats', [])
             audio_formats = [f for f in formats
@@ -1999,17 +2305,16 @@ def fetch_from_soundcloud(title, artist='') -> Optional[dict]:
             for entry in info['entries']:
                 if not entry or entry.get('duration', 0) < 60: continue
                 sc_title = entry.get('title', '')
-                # FIX 9: hard-skip lofi/remix/slowed from SoundCloud
-                if not _wants_ver_sc and (
-                    _is_remix_or_cover(sc_title) or
-                    _is_slowed_reverb(sc_title) or
-                    _is_live_version(sc_title)
-                ):
+                # AGGRESSIVE: master gate
+                _ok, _conf, _reason = _is_confirmed_match(
+                    title, artist, sc_title, entry.get('uploader', ''),
+                    source='soundcloud', min_conf=0.60,
+                )
+                if not _ok:
+                    log.debug(f"[SoundCloud] Rejected '{sc_title}': {_reason}")
                     continue
-                conf = compute_confidence(title, artist, sc_title,
-                                          entry.get('uploader', ''), source='soundcloud')
-                if conf > best_conf: best_conf = conf; best = entry
-            if not best or best_conf < 0.50: return None
+                if _conf > best_conf: best_conf = _conf; best = entry
+            if not best or best_conf < 0.60: return None  # GODMODE FIX 7: was 0.50
             formats  = best.get('formats', [])
             if not formats: return None
             best_fmt = max(formats, key=lambda f: f.get('abr') or f.get('tbr') or 0)
@@ -2036,7 +2341,7 @@ def fetch_from_soundcloud(title, artist='') -> Optional[dict]:
 # ═══════════════════════════════════════════════════════════════════════════════
 # SAAVN BY ID
 # ═══════════════════════════════════════════════════════════════════════════════
-def _fetch_saavn_by_id(song_id: str) -> Optional[dict]:
+def _fetch_saavn_by_id(song_id: str, expected_title: str = '', expected_artist: str = '') -> Optional[dict]:
     # Check L1 first
     l1_key = f"saavn_id:{song_id}"
     cached = _l1_saavn.get(l1_key)
@@ -2082,6 +2387,19 @@ def _fetch_saavn_by_id(song_id: str) -> Optional[dict]:
                         'image': pick_image(song),
                         '_raw_urls': raw_urls,
                     }
+                    # GODMODE FIX 1: Hard-reject ID result if title mismatches expected
+                    if expected_title and id_result.get('title'):
+                        _id_verify_conf = compute_confidence(
+                            expected_title, expected_artist,
+                            id_result['title'], id_result.get('artist', ''),
+                            source='saavn',
+                        )
+                        if _id_verify_conf < 0.65:  # AGGRESSIVE: was 0.60
+                            log.warning(
+                                f"[SaavnID] MISMATCH REJECTED: expected='{expected_title}' "
+                                f"got='{id_result['title']}' conf={_id_verify_conf:.3f}"
+                            )
+                            return None
                     if id_result['image']:
                         _store_artwork(id_result['title'], id_result['artist'], id_result['image'], 1)
                     return id_result
@@ -2106,7 +2424,7 @@ def _fetch_saavn_by_id(song_id: str) -> Optional[dict]:
 # ═══════════════════════════════════════════════════════════════════════════════
 # FETCH FROM MIRROR  (enhanced: confidence-filtered, remix-aware)
 # ═══════════════════════════════════════════════════════════════════════════════
-def fetch_from_mirror(mirror, query, min_score=0.4, title: str = '', artist: str = ''):
+def fetch_from_mirror(mirror, query, min_score=0.4, title: str = '', artist: str = '', language: str = ''):
     if not _mirror_ok(mirror): return None
     # Use original title for version-request detection — query may be a cleaned variant
     _version_check_src  = title or query
@@ -2121,8 +2439,11 @@ def fetch_from_mirror(mirror, query, min_score=0.4, title: str = '', artist: str
     for endpoint in ['/api/search/songs', '/api/search', '/search/songs']:
         try:
             t0 = time.time()
+            _fparams = {'query': query, 'q': query, 'limit': 15}
+            if language:
+                _fparams['language'] = language
             r  = requests.get(f'{mirror}{endpoint}',
-                              params={'query': query, 'q': query, 'limit': 15},
+                              params=_fparams,
                               timeout=_health.adaptive_timeout(mirror),
                               headers={'User-Agent': 'Mozilla/5.0'})
             elapsed = (time.time() - t0) * 1000
@@ -2139,22 +2460,16 @@ def fetch_from_mirror(mirror, query, min_score=0.4, title: str = '', artist: str
                 if not has_word_match(query, song_title): continue
                 dur = int(song.get('duration', 999) or 999)
                 if dur > 1080: continue
-                # FIX 6b: hard-skip remix AND slowed AND live when user wants original
-                if not _user_wants_version and (
-                    _is_remix_or_cover(song_title) or
-                    _is_slowed_reverb(song_title) or
-                    _is_live_version(song_title)
-                ):
-                    continue
-                conf = compute_confidence(
-                    _conf_title, _conf_artist,
-                    song_title, song_artist,
-                    result_duration_s=dur,
-                    source='saavn',
+                # AGGRESSIVE: master gate replaces individual version checks
+                _ok, _conf, _reason = _is_confirmed_match(
+                    _conf_title, _conf_artist, song_title, song_artist,
+                    source='saavn', res_dur_s=dur, min_conf=0.65,
                 )
-                if conf <= 0.0: continue
+                if not _ok:
+                    log.debug(f"[Mirror] Rejected '{song_title}': {_reason}")
+                    continue
                 legacy_score = title_score(query, song_title, song_artist)
-                candidates.append((conf, legacy_score, song))
+                candidates.append((_conf, legacy_score, song))
 
             if not candidates: continue
 
@@ -2162,7 +2477,7 @@ def fetch_from_mirror(mirror, query, min_score=0.4, title: str = '', artist: str
             candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
             best_conf, best_legacy, best_song = candidates[0]
 
-            if best_conf < 0.50: continue
+            if best_conf < 0.65: continue  # GODMODE FIX 9: was 0.50 — prevent wrong song from Saavn mirror search
 
             raw_urls = best_song.get('downloadUrl') or best_song.get('download_url') or []
             if isinstance(raw_urls, str):
@@ -2194,10 +2509,11 @@ def fetch_saavn_parallel(query, title: str = '', artist: str = ''):
     cached = _l1_saavn.get(l1_key)
     if cached: return cached
 
+    # Detect language from title/artist for better Saavn results
+    _lang = _detect_language((title or query) + ' ' + artist)
     threshold = dynamic_min_score(query)
     mirrors   = _best_mirrors(n=8)
-    # Pass title+artist so fetch_from_mirror uses confidence engine per-candidate
-    futures   = {_executor.submit(fetch_from_mirror, m, query, threshold, title, artist): m
+    futures   = {_executor.submit(fetch_from_mirror, m, query, threshold, title, artist, _lang): m
                  for m in mirrors}
     all_results = []
     try:
@@ -2220,6 +2536,12 @@ def fetch_saavn_parallel(query, title: str = '', artist: str = ''):
     )
     best      = all_results[0]
     best_conf = float(best.get('_confidence', best.get('score', 0)))
+
+    # AGGRESSIVE: Hard gate — if even the best result is low confidence, return None
+    # This forces fallback to other sources instead of playing wrong song
+    if best_conf < 0.65:
+        log.warning(f"[Parallel] ALL results below confidence gate (best={best_conf:.2f}) for '{best.get('title')}' — rejecting")
+        return None
 
     # L1 write only if confidence passes threshold (anti-poisoning)
     if best_conf >= _CACHE_MIN_CONFIDENCE:
@@ -2259,22 +2581,17 @@ def fetch_from_piped(query, title='', artist='') -> Optional[dict]:
                 if item.get('type') != 'stream': continue
                 if not has_word_match(query, item.get('title', '')): continue
                 piped_title = item.get('title', '')
-                # FIX 10: hard-skip lofi/remix/slowed from Piped
-                if not _wants_ver_piped and (
-                    _is_remix_or_cover(piped_title) or
-                    _is_slowed_reverb(piped_title) or
-                    _is_live_version(piped_title)
-                ):
-                    continue
-                conf = compute_confidence(
-                    title or query, artist,
-                    piped_title,
-                    item.get('uploaderName', ''),
-                    source='piped',
+                # AGGRESSIVE: master gate
+                _ok, _conf, _reason = _is_confirmed_match(
+                    title or query, artist, piped_title, item.get('uploaderName', ''),
+                    source='piped', min_conf=0.60,
                 )
-                if conf > best_conf: best_conf = conf; best = item
+                if not _ok:
+                    log.debug(f"[Piped] Rejected '{piped_title}': {_reason}")
+                    continue
+                if _conf > best_conf: best_conf = _conf; best = item
 
-            if not best or best_conf < 0.45: continue
+            if not best or best_conf < 0.60: continue  # GODMODE FIX 5: was 0.45
             video_id = best.get('url', '').replace('/watch?v=', '').strip()
             if not video_id: continue
 
@@ -2336,22 +2653,17 @@ def fetch_from_invidious(query, title='', artist='') -> Optional[dict]:
             for item in results[:5]:
                 if not has_word_match(query, item.get('title', '')): continue
                 inv_title = item.get('title', '')
-                # FIX 11: hard-skip lofi/remix/slowed from Invidious
-                if not _wants_ver_inv and (
-                    _is_remix_or_cover(inv_title) or
-                    _is_slowed_reverb(inv_title) or
-                    _is_live_version(inv_title)
-                ):
-                    continue
-                conf = compute_confidence(
-                    title or query, artist,
-                    inv_title,
-                    item.get('author', ''),
-                    source='invidious',
+                # AGGRESSIVE: master gate
+                _ok, _conf, _reason = _is_confirmed_match(
+                    title or query, artist, inv_title, item.get('author', ''),
+                    source='invidious', min_conf=0.60,
                 )
-                if conf > best_conf: best_conf = conf; best = item
+                if not _ok:
+                    log.debug(f"[Invidious] Rejected '{inv_title}': {_reason}")
+                    continue
+                if _conf > best_conf: best_conf = _conf; best = item
 
-            if not best or best_conf < 0.45: continue
+            if not best or best_conf < 0.60: continue  # GODMODE FIX 6: was 0.45
             video_id = best.get('videoId', '')
             if not video_id: continue
 
@@ -2418,23 +2730,18 @@ def fetch_from_jiosavan(title: str, artist: str = '') -> Optional[dict]:
         for song in songs[:5]:
             song_title  = song.get('song') or song.get('title') or song.get('name', '')
             song_artist = song.get('primary_artists') or song.get('singers') or song.get('artist', '')
-            # FIX 7a: hard-skip lofi/remix/slowed in JioSavan too
-            if not _user_wants_ver and (
-                _is_remix_or_cover(song_title) or
-                _is_slowed_reverb(song_title) or
-                _is_live_version(song_title)
-            ):
-                continue
-            # FIX 7b: pass duration so confidence engine can reject wrong versions
-            song_dur = int(song.get('duration', 0) or 0)
-            conf = compute_confidence(
+            song_dur    = int(song.get('duration', 0) or 0)
+            # AGGRESSIVE: use master gate for every candidate
+            _ok, _conf, _reason = _is_confirmed_match(
                 title, artist, song_title, song_artist,
-                result_duration_s=song_dur,
-                source='jiosavan',
+                source='jiosavan', duration_s=0, res_dur_s=song_dur, min_conf=0.65,
             )
-            if conf > best_conf: best_conf = conf; best = song
+            if not _ok:
+                log.debug(f"[JioSavan] Rejected '{song_title}': {_reason}")
+                continue
+            if _conf > best_conf: best_conf = _conf; best = song
 
-        if not best or best_conf < 0.50: return None
+        if not best or best_conf < 0.65: return None  # GODMODE FIX 8: was 0.50 — primary source must be strict
 
         media_url = (best.get('media_url') or best.get('encrypted_media_url') or
                      best.get('download_url') or '')
@@ -2505,79 +2812,99 @@ def play_song():
     source     = 'unknown'
     confidence = 0.0
 
-    _play_ck = f"play:{song_id or normalize(title)}:{normalize(artist)}"
+    # FIX A: Dual cache keys — one by ID, one by title+artist
+    # This ensures the SAME song is always found in cache regardless of how
+    # the frontend calls /api/play (by id, or by title, or both).
+    _play_ck       = f"play:{song_id or normalize(title)}:{normalize(artist)}"
+    _play_ck_id    = f"play:{song_id}:{normalize(artist)}"    if song_id else None
+    _play_ck_title = f"play:{normalize(title)}:{normalize(artist)}" if title  else None
+
+    def _check_cache_entry(entry):
+        """Return entry if valid, not an unwanted version, and title still matches. Else None."""
+        if not entry or not entry.get('url'):
+            return None
+        _ct = entry.get('title', '')
+        # Reject cached remix/slowed/cover if user didn't ask for it
+        if not _user_wants_ver and (
+            _is_remix_or_cover(_ct) or _is_slowed_reverb(_ct) or _is_live_version(_ct)
+        ):
+            return None
+        # GODMODE FIX 2: Re-verify cached entry still matches current request title/artist.
+        # Prevents stale cache from serving wrong song when same key is reused.
+        _cached_title  = entry.get('title', '')
+        _cached_artist = entry.get('artist', '')
+        if title and _cached_title:
+            _recheck_conf = compute_confidence(
+                title, artist, _cached_title, _cached_artist, source='saavn'
+            )
+            if _recheck_conf < 0.65:  # AGGRESSIVE: was 0.60
+                log.info(
+                    f"[Cache] STALE ENTRY REJECTED: requested='{title}' "
+                    f"cached='{_cached_title}' conf={_recheck_conf:.3f}"
+                )
+                return None
+        return entry
 
     # ── 0. Verified cache — highest confidence results, fastest path ──────────
     _user_wants_ver = _query_requests_version(title or '') or _query_requests_version(artist or '')
-    _verified_hit = _get_verified(song_id=song_id, title=title, artist=artist)
-    if _verified_hit and _verified_hit.get('url'):
-        _cached_title = _verified_hit.get('title', '')
-        # FIX BUG 1: invalidate if cached result is lofi/remix/slowed and user didn't ask for it
-        _cache_is_unwanted_ver = (not _user_wants_ver and (
-            _is_remix_or_cover(_cached_title) or
-            _is_slowed_reverb(_cached_title) or
-            _is_live_version(_cached_title)
-        ))
-        if not _cache_is_unwanted_ver:
-            audio_url  = _verified_hit['url']
-            quality    = _verified_hit.get('quality', 'unknown')
-            source     = _verified_hit.get('source', 'unknown')
-            confidence = float(_verified_hit.get('confidence', 0.90))
-            if not title:  title  = _cached_title
-            if not artist: artist = _verified_hit.get('artist', '')
-            log.info(f"[Cache:Verified] HIT play key={_play_ck}")
-        else:
-            log.info(f"[Cache:Verified] SKIP unwanted version '{_cached_title}'")
 
-    # ── 1. L1 cache (< 1ms) ──────────────────────────────────────────────────
+    def _try_verified(key_id='', key_title='', key_artist=''):
+        hit = _get_verified(song_id=key_id, title=key_title, artist=key_artist)
+        return _check_cache_entry(hit)
+
+    _verified_hit = _try_verified(song_id, title, artist)
+    if not _verified_hit and _play_ck_id and song_id:
+        _verified_hit = _try_verified(song_id=song_id)
+    if _verified_hit:
+        audio_url  = _verified_hit['url']
+        quality    = _verified_hit.get('quality', 'unknown')
+        source     = _verified_hit.get('source', 'unknown')
+        confidence = float(_verified_hit.get('confidence', 0.90))
+        if not title:  title  = _verified_hit.get('title', '')
+        if not artist: artist = _verified_hit.get('artist', '')
+        log.info(f"[Cache:Verified] HIT play key={_play_ck}")
+
+    # ── 1. L1 cache (< 1ms) — check BOTH keys ────────────────────────────────
     if not audio_url:
-        l1_hit = _l1_saavn.get(_play_ck)
-        if l1_hit and l1_hit.get('url'):
-            _cached_title = l1_hit.get('title', '')
-            _cache_is_unwanted_ver = (not _user_wants_ver and (
-                _is_remix_or_cover(_cached_title) or
-                _is_slowed_reverb(_cached_title) or
-                _is_live_version(_cached_title)
-            ))
-            if not _cache_is_unwanted_ver:
+        for _ck in filter(None, [_play_ck_id, _play_ck_title, _play_ck]):
+            l1_hit = _check_cache_entry(_l1_saavn.get(_ck))
+            if l1_hit:
                 audio_url  = l1_hit['url']
                 quality    = l1_hit.get('quality', 'unknown')
                 source     = l1_hit.get('source', 'unknown')
                 confidence = float(l1_hit.get('confidence', 1.0))
-                if not title:  title  = _cached_title
+                if not title:  title  = l1_hit.get('title', '')
                 if not artist: artist = l1_hit.get('artist', '')
-                log.info(f"[Cache:L1] HIT play key={_play_ck}")
-            else:
-                _l1_saavn.delete(_play_ck)
-                log.info(f"[Cache:L1] INVALIDATED unwanted version '{_cached_title}'")
+                log.info(f"[Cache:L1] HIT key={_ck}")
+                break
+            elif _l1_saavn.get(_ck):
+                # Entry exists but is an unwanted version — purge it
+                _l1_saavn.delete(_ck)
+                log.info(f"[Cache:L1] INVALIDATED unwanted version key={_ck}")
 
-    # ── 2. L2 Supabase cache ──────────────────────────────────────────────────
+    # ── 2. L2 Supabase cache — check BOTH keys ───────────────────────────────
     if not audio_url:
-        _play_cached = _supabase_cache_get(_play_ck)
-        if _play_cached and _play_cached.get('url'):
-            _cached_title = _play_cached.get('title', '')
-            _cache_is_unwanted_ver = (not _user_wants_ver and (
-                _is_remix_or_cover(_cached_title) or
-                _is_slowed_reverb(_cached_title) or
-                _is_live_version(_cached_title)
-            ))
-            if not _cache_is_unwanted_ver:
-                audio_url  = _play_cached['url']
-                quality    = _play_cached.get('quality', 'unknown')
-                source     = _play_cached.get('source', 'unknown')
-                confidence = float(_play_cached.get('confidence', 1.0))
-                if not title:  title  = _cached_title
-                if not artist: artist = _play_cached.get('artist', '')
-                log.info(f"[Cache:L2] HIT play key={_play_ck}")
-                # Refresh L1
-                _l1_saavn.set(_play_ck, _play_cached)
-            else:
-                _executor.submit(sb_delete, 'song_cache', {'cache_key': _play_ck})
-                log.info(f"[Cache:L2] INVALIDATED unwanted version '{_cached_title}'")
+        for _ck in filter(None, [_play_ck_id, _play_ck_title, _play_ck]):
+            l2_hit = _check_cache_entry(_supabase_cache_get(_ck))
+            if l2_hit:
+                audio_url  = l2_hit['url']
+                quality    = l2_hit.get('quality', 'unknown')
+                source     = l2_hit.get('source', 'unknown')
+                confidence = float(l2_hit.get('confidence', 1.0))
+                if not title:  title  = l2_hit.get('title', '')
+                if not artist: artist = l2_hit.get('artist', '')
+                log.info(f"[Cache:L2] HIT key={_ck}")
+                # Refresh L1 under all relevant keys
+                for _wk in filter(None, [_play_ck_id, _play_ck_title, _play_ck]):
+                    _l1_saavn.set(_wk, l2_hit)
+                break
+            elif _supabase_cache_get(_ck) is not None:
+                _executor.submit(sb_delete, 'song_cache', {'cache_key': _ck})
+                log.info(f"[Cache:L2] INVALIDATED unwanted version key={_ck}")
 
     # ── 3. Saavn ID path: ONLY ID-based fetch ─────────────────────────────────
     if not audio_url and song_id:
-        result = _fetch_saavn_by_id(song_id)
+        result = _fetch_saavn_by_id(song_id, expected_title=title, expected_artist=artist)
         if result and result.get('url'):
             audio_url  = result['url']
             quality    = result.get('quality', 'unknown')
@@ -2586,6 +2913,12 @@ def play_song():
             if not title:  title  = result.get('title', '')
             if not artist: artist = result.get('artist', '')
             log.info(f"[Play] ✓ Saavn ID={song_id} q={quality}")
+            # FIX B: immediately cache under title key too — next call by title hits L1
+            if title and _play_ck_title:
+                _early_cache = {**result, 'source': 'saavn', 'confidence': 0.95,
+                                'title': title, 'artist': artist}
+                _l1_saavn.set(_play_ck_title, _early_cache)
+                _l1_saavn.set(_play_ck_id,    _early_cache)
         else:
             # ID fetch failed — only use title if provided
             if title:
@@ -2613,111 +2946,138 @@ def play_song():
                 break
 
     # ── 5. SCORED PARALLEL FALLBACKS ─────────────────────────────────────────
-    # All sources launched at once. Collect for up to 600ms window.
-    # Winner selection: highest confidence candidate.
-    # Tie-break (confidence diff < 5%): use fastest responder.
+    # FIX C: Saavn-first strategy.
+    # Phase 1 (0–1.5s): Saavn + JioSavan only (most accurate sources).
+    # Phase 2 (only if Phase 1 fails): All other sources in parallel.
+    # Winner must have confidence ≥ 0.65 to be accepted.
+    # This prevents YouTube/SoundCloud low-confidence results from
+    # beating a slower-but-correct Saavn result.
     if not audio_url and title:
-        log.info(f"[Play] Saavn miss → scored parallel fallbacks: '{title}'")
+        log.info(f"[Play] Saavn miss → Saavn-priority fallbacks: '{title}'")
 
-        _COLLECT_WINDOW  = 0.600   # 600ms collection window
-        _CONF_DIFF_FLOOR = 0.05    # use fastest if confidence gap < 5%
+        _MIN_FALLBACK_CONF = 0.72   # AGGRESSIVE: was 0.70 — every fallback source must clear this bar
 
-        _all_fb_futures = {
-            _executor.submit(fetch_from_ytmusic,    title, artist):              'ytmusic',
-            _executor.submit(fetch_from_jiosavan,   title, artist):              'jiosavan',
-            _executor.submit(fetch_from_ytdlp,      title, artist):              'youtube',
-            _executor.submit(fetch_from_soundcloud, title, artist):              'soundcloud',
-            # query=title (positional), title/artist as kwargs — no duplicate arg
-            _executor.submit(fetch_from_piped,      title, title=title,
-                             artist=artist):                                      'piped',
-            _executor.submit(fetch_from_invidious,  title, title=title,
-                             artist=artist):                                      'invidious',
+        # Phase 1: Fast Saavn-family sources only
+        _phase1_futures = {
+            _executor.submit(fetch_from_jiosavan, title, artist): 'jiosavan',
         }
-
-        # Collect candidates within the window; record arrival order for tie-break
-        _fb_candidates  = []   # list of (confidence, arrival_index, res, source_name)
-        _arrival_idx    = 0
-        _deadline       = time.time() + _COLLECT_WINDOW
-
+        _phase1_candidates = []
         try:
-            remaining_timeout = max(0.05, _deadline - time.time())
-            for future in as_completed(_all_fb_futures, timeout=remaining_timeout):
+            for future in as_completed(_phase1_futures, timeout=3.0):
                 try:
                     res = future.result()
                     if res and res.get('url'):
-                        src_name = _all_fb_futures[future]
-                        conf     = float(res.get('_confidence', 0.50))
-                        _fb_candidates.append((_arrival_idx, conf, res, src_name))
-                        _arrival_idx += 1
+                        conf = float(res.get('_confidence', 0.50))
+                        if conf >= _MIN_FALLBACK_CONF:
+                            _phase1_candidates.append((conf, res, _phase1_futures[future]))
                 except Exception:
                     pass
-                if time.time() >= _deadline:
-                    break   # window closed — stop collecting, score what we have
         except Exception:
             pass
 
-        # If we have candidates from the window, pick winner now.
-        # Otherwise wait for the remaining fast sources up to their natural timeout.
-        if not _fb_candidates:
-            # Window produced nothing — extend to 8s, collect at least 2 before picking
-            # FIX BUG 4: was 'break' on first result — could pick low-confidence result
-            # when a high-confidence one arrives 100ms later.
+        if _phase1_candidates:
+            # Sort by confidence — take best
+            _phase1_candidates.sort(key=lambda x: -x[0])
+            _p1_conf, _p1_res, _p1_src = _phase1_candidates[0]
+            audio_url  = _p1_res['url']
+            quality    = _p1_res.get('quality', 'unknown')
+            source     = _p1_res.get('source', _p1_src)
+            confidence = _p1_conf
+            if not title:  title  = _p1_res.get('title', title)
+            if not artist: artist = _p1_res.get('artist', artist)
+            log.info(f"[Play] ✓ Phase1 winner: {source} conf={_p1_conf:.3f}")
+
+        # Phase 2: Only if Phase 1 produced nothing — launch all remaining sources
+        if not audio_url:
+            log.info(f"[Play] Phase1 miss → Phase2 all-sources: '{title}'")
+            _COLLECT_WINDOW  = 1.5    # raised from 0.6s → 1.5s so more results arrive
+            _CONF_DIFF_FLOOR = 0.05
+
+            _all_fb_futures = {
+                _executor.submit(fetch_from_ytmusic,    title, artist):              'ytmusic',
+                _executor.submit(fetch_from_ytdlp,      title, artist):              'youtube',
+                _executor.submit(fetch_from_soundcloud, title, artist):              'soundcloud',
+                _executor.submit(fetch_from_piped,      title, title=title,
+                                 artist=artist):                                      'piped',
+                _executor.submit(fetch_from_invidious,  title, title=title,
+                                 artist=artist):                                      'invidious',
+            }
+
+            _fb_candidates  = []
+            _arrival_idx    = 0
+            _deadline       = time.time() + _COLLECT_WINDOW
+
             try:
-                for future in as_completed(_all_fb_futures, timeout=8):
+                remaining_timeout = max(0.05, _deadline - time.time())
+                for future in as_completed(_all_fb_futures, timeout=remaining_timeout):
                     try:
                         res = future.result()
                         if res and res.get('url'):
                             src_name = _all_fb_futures[future]
                             conf     = float(res.get('_confidence', 0.50))
-                            _fb_candidates.append((_arrival_idx, conf, res, src_name))
-                            _arrival_idx += 1
-                            # stop collecting once we have 2 results or one very high conf
-                            if len(_fb_candidates) >= 2 or conf >= 0.85:
-                                break
+                            if conf >= _MIN_FALLBACK_CONF:   # FIX C2: reject low-conf results immediately
+                                _fb_candidates.append((_arrival_idx, conf, res, src_name))
+                                _arrival_idx += 1
                     except Exception:
                         pass
+                    if time.time() >= _deadline:
+                        break
             except Exception:
                 pass
 
-        if _fb_candidates:
-            # Sort by confidence desc, then arrival_index asc (fastest first on tie)
-            _fb_candidates.sort(key=lambda x: (-x[1], x[0]))
-            _best_conf  = _fb_candidates[0][1]
-            _worst_conf = _fb_candidates[-1][1]
+            # Extend window if we got nothing yet
+            if not _fb_candidates:
+                try:
+                    for future in as_completed(_all_fb_futures, timeout=8):
+                        try:
+                            res = future.result()
+                            if res and res.get('url'):
+                                src_name = _all_fb_futures[future]
+                                conf     = float(res.get('_confidence', 0.50))
+                                if conf >= _MIN_FALLBACK_CONF:
+                                    _fb_candidates.append((_arrival_idx, conf, res, src_name))
+                                    _arrival_idx += 1
+                                    if len(_fb_candidates) >= 2 or conf >= 0.85:
+                                        break
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
 
-            # If top candidate is within 5% of a faster one, prefer faster
-            _winner_idx, _winner_conf, _winner_res, _winner_src = _fb_candidates[0]
-            for _arr, _c, _r, _s in _fb_candidates:
-                if _arr < _winner_idx and (_best_conf - _c) < _CONF_DIFF_FLOOR:
-                    # This candidate arrived earlier and confidence is close enough
-                    _winner_idx  = _arr
-                    _winner_conf = _c
-                    _winner_res  = _r
-                    _winner_src  = _s
-                    break
+            if _fb_candidates:
+                _fb_candidates.sort(key=lambda x: (-x[1], x[0]))
+                _best_conf  = _fb_candidates[0][1]
 
-            # Cancel all remaining (still pending) futures
-            for f in _all_fb_futures:
-                f.cancel()
+                _winner_idx, _winner_conf, _winner_res, _winner_src = _fb_candidates[0]
+                for _arr, _c, _r, _s in _fb_candidates:
+                    if _arr < _winner_idx and (_best_conf - _c) < _CONF_DIFF_FLOOR:
+                        _winner_idx  = _arr
+                        _winner_conf = _c
+                        _winner_res  = _r
+                        _winner_src  = _s
+                        break
 
-            audio_url  = _winner_res['url']
-            quality    = _winner_res.get('quality', 'unknown')
-            source     = _winner_res.get('source', _winner_src)
-            confidence = _winner_conf
-            if not title:  title  = _winner_res.get('title', title)
-            if not artist: artist = _winner_res.get('artist', artist)
-            if _winner_res.get('image') and title:
-                _art_priority = (
-                    1 if source in ('saavn', 'jiosavan') else
-                    2 if source == 'itunes' else
-                    4 if source == 'ytmusic' else 5
+                for f in _all_fb_futures:
+                    f.cancel()
+
+                audio_url  = _winner_res['url']
+                quality    = _winner_res.get('quality', 'unknown')
+                source     = _winner_res.get('source', _winner_src)
+                confidence = _winner_conf
+                if not title:  title  = _winner_res.get('title', title)
+                if not artist: artist = _winner_res.get('artist', artist)
+                if _winner_res.get('image') and title:
+                    _art_priority = (
+                        1 if source in ('saavn', 'jiosavan') else
+                        2 if source == 'itunes' else
+                        4 if source == 'ytmusic' else 5
+                    )
+                    _store_artwork(title, artist, _winner_res['image'], _art_priority)
+                log.info(
+                    f"[Play] ✓ Phase2 winner: {source} conf={_winner_conf:.3f} "
+                    f"arrival={_winner_idx} candidates={len(_fb_candidates)} "
+                    f"title='{_winner_res.get('title')}' q={quality}"
                 )
-                _store_artwork(title, artist, _winner_res['image'], _art_priority)
-            log.info(
-                f"[Play] ✓ Fallback winner: {source} conf={_winner_conf:.3f} "
-                f"arrival={_winner_idx} candidates={len(_fb_candidates)} "
-                f"title='{_winner_res.get('title')}' q={quality}"
-            )
 
     # ── 6. Broad YouTube last-resort ─────────────────────────────────────────
     if not audio_url and title:
@@ -2725,7 +3085,7 @@ def play_song():
             broad = fetch_from_ytdlp(broad_query, artist)   # pass artist for scoring
             if broad and broad.get('url'):
                 broad_conf = float(broad.get('_confidence', 0.0))
-                if broad_conf < 0.35: continue   # skip clearly bad broad matches
+                if broad_conf < 0.60: continue   # GODMODE FIX 3: was 0.35 — too permissive, covers/remixes slipped in
                 audio_url  = broad['url']
                 quality    = broad.get('quality', 'unknown')
                 source     = 'youtube-broad'
@@ -2736,20 +3096,27 @@ def play_song():
         log.warning(f"[Play] ✗ ALL sources failed id={song_id} title='{title}'")
         return jsonify({'error': 'No audio source found'}), 404
 
+    # AGGRESSIVE FINAL GATE — Never stream low confidence result
+    if title and audio_url:
+        if confidence < 0.65 and source not in ('saavn',) and not song_id:
+            log.warning(
+                f"[Play] FINAL GATE REJECTED: low confidence={confidence:.3f} "
+                f"source={source} title='{title}' — refusing to stream wrong song"
+            )
+            return jsonify({'error': 'No confident audio match found', 'confidence': confidence}), 404
+
     # ── 7. Async cache writes (only if confidence passes threshold) ───────────
     # FIX BUG T2: also try artwork from winner_res image if _get_artwork is empty
     _best_art = ''
     if title:
         _best_art = _get_artwork(title, artist)
         if not _best_art and audio_url:
-            # Try to find image from the winning source result
             for _src_key in [f"saavn_q:{normalize(title)}", _play_ck]:
                 _art_hit = _l1_saavn.get(_src_key)
                 if _art_hit and _art_hit.get('image'):
                     _best_art = _art_hit['image']
                     break
     elif song_id:
-        # ID-only play — try to get artwork from any source that resolved title
         _best_art = _get_artwork(title or song_id, artist)
 
     _cache_payload = {
@@ -2757,12 +3124,17 @@ def play_song():
         'title': title, 'artist': artist, 'confidence': confidence,
         'image': _best_art,
     }
-    # FIX 12: also write under saavn_q key so fetch_saavn_parallel L1 hits work
+    # FIX D: Write under ALL relevant keys — id key + title key + legacy key
+    # This means the next call (by id OR by title) will hit L1 immediately.
     if confidence >= _CACHE_MIN_CONFIDENCE:
-        _l1_saavn.set(_play_ck, _cache_payload)
+        for _wk in filter(None, [_play_ck_id, _play_ck_title, _play_ck]):
+            _l1_saavn.set(_wk, _cache_payload)
         if title:
             _l1_saavn.set(f"saavn_q:{normalize(title)}", _cache_payload)
     _executor.submit(_supabase_cache_set, _play_ck, _cache_payload, confidence)
+    # Also write L2 under the title key for cross-session persistence
+    if _play_ck_title and _play_ck_title != _play_ck:
+        _executor.submit(_supabase_cache_set, _play_ck_title, _cache_payload, confidence)
     # Write to verified cache if confidence is high (≥ 0.85)
     _store_verified(song_id, title, artist, _cache_payload, confidence)
 
