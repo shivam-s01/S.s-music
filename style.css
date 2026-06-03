@@ -402,34 +402,31 @@ img.img-error { opacity: 1; }
 /* ─── MINI PLAYER ───────────────────────────────────────────────*/
 #mini-player {
   position: absolute;
-  bottom: calc(var(--nav) + var(--safe-bottom) + 8px);
+  bottom: calc(var(--nav) + var(--safe-bottom) + 10px);
   left: 12px;
   right: 12px;
-  background: var(--mini-bg);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  border-radius: 20px;
-  padding: 9px 9px 12px;
+  background: rgba(14, 13, 10, 0.96);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  border-radius: 18px;
+  padding: 10px 12px;
   display: flex;
   align-items: center;
   gap: 10px;
   z-index: var(--z-mini);
-  box-shadow: var(--mini-shadow);
-  cursor: pointer;           /* FIX LOW: was cursor:default, mini-player is tappable */
-  touch-action: auto;
+  box-shadow: 0 -1px 0 rgba(184,150,64,0.12),
+              0 8px 32px rgba(0,0,0,0.5),
+              inset 0 0.5px 0 rgba(255,255,255,0.06);
+  border: 0.5px solid rgba(184,150,64,0.15);
   transform: translateY(calc(130px + var(--safe-bottom)));
   opacity: 0;
-  transition: transform 0.38s cubic-bezier(0.33, 1, 0.68, 1),
-    opacity 0.2s ease;
+  transition: transform 0.38s cubic-bezier(0.33,1,0.68,1),
+              opacity 0.2s ease;
   user-select: none;
   isolation: isolate;
   overflow: hidden;
 }
 
-/* FIX HIGH: Mini player blurred art background
-   --mini-art-bg must be a valid url() or gradient set by JS.
-   Added fallback so ::before doesn't paint a blank bloated layer
-   when variable is not yet set (prevents unnecessary GPU compositing) */
 #mini-player::before {
   content: '';
   position: absolute;
@@ -437,15 +434,14 @@ img.img-error { opacity: 1; }
   background-image: var(--mini-art-bg, none);
   background-size: cover;
   background-position: center;
-  filter: blur(16px) brightness(0.14) saturate(1.4);
+  filter: blur(18px) brightness(0.12) saturate(1.6);
   transform: scale(1.2);
   z-index: -1;
   border-radius: inherit;
   pointer-events: none;
   contain: paint;
-  /* FIX: only composite when variable is actually set */
   will-change: auto;
-  opacity: var(--mini-art-opacity, 0); /* JS sets --mini-art-opacity:1 after setting --mini-art-bg */
+  opacity: var(--mini-art-opacity, 0);
   transition: opacity 0.3s ease;
 }
 
@@ -453,32 +449,45 @@ img.img-error { opacity: 1; }
   transform: translateY(0);
   opacity: 1;
 }
-#mini-player.playing-glow {
-  box-shadow: var(--mini-shadow), 0 0 12px rgba(184, 150, 64, 0.07);
+
+.mini-player-inner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
 }
 
 .mini-art {
-  width: 46px;
-  height: 46px;
-  border-radius: 11px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
   object-fit: cover;
   flex-shrink: 0;
   background: var(--surface3);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.28);
-  position: relative;
-  z-index: 1;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.5);
 }
-[data-theme="light"] .mini-art { box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1); }
+
+#mini-player.show .mini-art {
+  animation: mini-art-spin 12s linear infinite;
+  animation-play-state: paused;
+}
+#mini-player.show.playing .mini-art {
+  animation-play-state: running;
+}
+@keyframes mini-art-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
 
 .mini-info {
   flex: 1;
   min-width: 0;
-  position: relative;
-  z-index: 1;
 }
 .mini-title {
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 700;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -486,7 +495,7 @@ img.img-error { opacity: 1; }
   letter-spacing: -0.1px;
 }
 .mini-artist {
-  font-size: 10.5px;
+  font-size: 11px;
   color: var(--text2);
   margin-top: 2px;
   white-space: nowrap;
@@ -497,58 +506,96 @@ img.img-error { opacity: 1; }
 .mini-controls {
   display: flex;
   align-items: center;
-  gap: 1px;
-  padding-right: 1px;
-  position: relative;
-  z-index: 1;
+  gap: 4px;
+  flex-shrink: 0;
 }
+
 .mini-controls button {
   background: none;
   border: none;
   cursor: pointer;
-  padding: 8px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   touch-action: manipulation;
-  transition: transform var(--t-spring), opacity var(--t-smooth);
+  transition: transform var(--t-spring), background 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
 }
 .mini-controls button:active {
-  transform: scale(0.72);
-  opacity: 0.6;
+  transform: scale(0.82);
+  background: rgba(255,255,255,0.06);
 }
 .mini-controls button svg {
-  width: 18px;
-  height: 18px;
-  stroke: var(--text2);
+  width: 17px;
+  height: 17px;
+  stroke: rgba(238,232,224,0.6);
   fill: none;
-  stroke-width: 1.7;
+  stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+
+/* + button gold tint */
+.mini-controls button:first-child svg {
+  stroke: var(--gold-l);
+  width: 18px;
+  height: 18px;
+}
+
+/* Play button — bigger, filled circle */
+.mini-controls .play-btn {
+  background: linear-gradient(138deg, var(--gold-xl), var(--gold));
+  width: 40px;
+  height: 40px;
+  box-shadow: 0 2px 12px rgba(184,150,64,0.35);
+}
+.mini-controls .play-btn:active {
+  transform: scale(0.86);
+  background: linear-gradient(138deg, var(--gold-xl), var(--gold));
+}
 .mini-controls .play-btn svg {
-  width: 22px;
-  height: 22px;
-  stroke: var(--text);
+  stroke: #050508;
+  width: 16px;
+  height: 16px;
+  stroke-width: 2.2;
 }
 
 .mini-progress {
   position: absolute;
   bottom: 0;
-  left: 10px;
-  right: 10px;
-  height: 2.5px;
-  background: rgba(255, 255, 255, 0.032);
-  border-radius: 2px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: rgba(255,255,255,0.05);
+  border-radius: 0 0 18px 18px;
   overflow: hidden;
 }
-[data-theme="light"] .mini-progress { background: rgba(0, 0, 0, 0.08); }
 .mini-progress-bar {
   height: 100%;
   background: linear-gradient(90deg, var(--gold), var(--gold-xl));
-  border-radius: 2px;
+  border-radius: inherit;
   width: 0%;
-  transform-origin: left;
+}
+
+/* Light theme */
+[data-theme="light"] #mini-player {
+  background: rgba(252,249,243,0.97);
+  border-color: rgba(184,150,64,0.2);
+  box-shadow: 0 -1px 0 rgba(184,150,64,0.1),
+              0 8px 28px rgba(0,0,0,0.12),
+              inset 0 0.5px 0 rgba(255,255,255,0.9);
+}
+[data-theme="light"] .mini-controls button svg {
+  stroke: rgba(18,18,18,0.55);
+}
+[data-theme="light"] .mini-controls button:first-child svg {
+  stroke: var(--gold);
+}
+[data-theme="light"] .mini-progress {
+  background: rgba(0,0,0,0.06);
 }
 
 /* ─── FULLSCREEN PLAYER ─────────────────────────────────────────*/
