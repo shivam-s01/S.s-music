@@ -242,6 +242,19 @@ def get_saavn_song():
         _l1_saavn.set(_ck, _cached)
         return jsonify({'success': True, 'token': token, **_cached})
 
+    def _best_image(res_img):
+        """Get best artwork: cache → result image → iTunes fallback."""
+        art = _get_artwork(q, artist)
+        if art: return art
+        if res_img and res_img.startswith('http'): return res_img
+        # iTunes fallback — non-blocking, 1.5s max
+        try:
+            _f = _executor_bg.submit(_fetch_itunes_artwork, q, artist)
+            _a = _f.result(timeout=1.5)
+            if _a: _store_artwork(q, artist, _a, 2); return _a
+        except Exception: pass
+        return res_img or ''
+
     for query in build_query_variants(q, artist, fallback):
         result = fetch_saavn_parallel(query, title=q, artist=artist, language=_lang)
         if result:
@@ -249,8 +262,7 @@ def get_saavn_song():
                 low_url, low_q = _pick_low_quality(result.get('_raw_urls', []))
                 if low_url: result['url'] = low_url; result['quality'] = low_q
             conf = float(result.get('_confidence', result.get('score', 0.5)))
-            _best_art = _get_artwork(q, artist)
-            if _best_art: result['image'] = _best_art
+            result['image'] = _best_image(result.get('image', ''))
             if conf >= _CACHE_MIN_CONFIDENCE:
                 _l1_saavn.set(_ck, result)
             _executor_cache.submit(_supabase_cache_set, _ck, result, conf)
@@ -259,8 +271,7 @@ def get_saavn_song():
     ytm = fetch_from_ytmusic(q, artist)
     if ytm and ytm.get('url'):
         conf = float(ytm.get('_confidence', 0.0))
-        _best_art = _get_artwork(q, artist)
-        if _best_art: ytm['image'] = _best_art
+        ytm['image'] = _best_image(ytm.get('image', ''))
         if conf >= _CACHE_MIN_CONFIDENCE:
             _l1_saavn.set(_ck, ytm)
         _executor_cache.submit(_supabase_cache_set, _ck, ytm, conf)
@@ -269,8 +280,7 @@ def get_saavn_song():
     yt = fetch_from_ytdlp(q, artist)
     if yt and yt.get('url'):
         conf = float(yt.get('_confidence', 0.0))
-        _best_art = _get_artwork(q, artist)
-        if _best_art: yt['image'] = _best_art
+        yt['image'] = _best_image(yt.get('image', ''))
         if conf >= _CACHE_MIN_CONFIDENCE:
             _l1_saavn.set(_ck, yt)
         _executor_cache.submit(_supabase_cache_set, _ck, yt, conf)
@@ -279,8 +289,7 @@ def get_saavn_song():
     sc = fetch_from_soundcloud(q, artist)
     if sc and sc.get('url'):
         conf = float(sc.get('_confidence', 0.0))
-        _best_art = _get_artwork(q, artist)
-        if _best_art: sc['image'] = _best_art
+        sc['image'] = _best_image(sc.get('image', ''))
         if conf >= _CACHE_MIN_CONFIDENCE:
             _l1_saavn.set(_ck, sc)
         _executor_cache.submit(_supabase_cache_set, _ck, sc, conf)
@@ -790,8 +799,11 @@ def admin_users():
 _ARTWORK_ALLOWED_DOMAINS = [
     'saavncdn.com', 'cf.saavncdn.com', 'c.saavncdn.com', 'aac.saavncdn.com',
     'static.saavncdn.com', 'h.saavncdn.com',
+    # iTunes/Apple Music CDN — all subdomains of mzstatic.com
     'is1-ssl.mzstatic.com', 'is2-ssl.mzstatic.com', 'is3-ssl.mzstatic.com',
     'is4-ssl.mzstatic.com', 'is5-ssl.mzstatic.com',
+    'a1.mzstatic.com', 'a2.mzstatic.com', 'a3.mzstatic.com',
+    'a4.mzstatic.com', 'a5.mzstatic.com', 'mzstatic.com',
     'i.scdn.co', 'img.youtube.com', 'i.ytimg.com',
     'cf-media.sndcdn.com', 'i1.sndcdn.com', 'i2.sndcdn.com',
 ]
