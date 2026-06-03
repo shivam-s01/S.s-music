@@ -1389,7 +1389,7 @@ img.img-error { opacity: 1; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: calc(var(--safe-top) + 16px) 20px 12px;
+  padding: calc(var(--safe-top) + 4px) 20px 12px;
 }
 .ph-wordmark {
   display: flex;
