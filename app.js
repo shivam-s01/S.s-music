@@ -1,7 +1,3 @@
-// ════════════════════════════════════════════════════════════════════════════
-// AURUM MUSIC PLAYER v3.2 - SAAVN-FIRST EDITION
-// ════════════════════════════════════════════════════════════════════════════
-
 // ─── 1. ADAPTIVE PERFORMANCE ENGINE ─────────────────────────────────────────
 const PerfMode = { ULTRA: 'ultra', BALANCED: 'balanced', LITE: 'lite' };
 let currentPerfMode = PerfMode.BALANCED;
@@ -120,12 +116,13 @@ function setImgSrc(img, src) {
 }
 
 function getArtUrl(song, size) {
-  const target = isLowEnd ? '300x300' : (size || perfSettings.artworkSize);
-  // Support both iTunes (artworkUrl100) and Saavn (artworkUrl100 already normalized)
-  const base = song?.artworkUrl100 || '';
-  if (!base) return '';
-  // Replace any size pattern with target
-  return base.replace(/\d{2,4}x\d{2,4}/, target);
+  const target = isLowEnd ? '300x300' : (size || perfSettings.artworkSize || '400x400');
+  if (!song) return '';
+  const _c = [song.artworkUrl100, song.artworkUrl60, song.image, song.artwork, song.thumbnail, song.cover].filter(u => u && typeof u === 'string' && u.startsWith('http'));
+  if (!_c.length) return '';
+  const _r = _c[0].replace(/\d{2,4}x\d{2,4}/g, target);
+  if (!_r.startsWith('/api/artwork') && _r.includes('saavncdn.com')) return '/api/artwork?url=' + encodeURIComponent(_r);
+  return _r;
 }
 
 document.querySelectorAll('img').forEach(img => setupImg(img));
@@ -209,11 +206,16 @@ window._aurumAudio = audio;
 let _currentSaavnUrl     = null;
 let _currentSaavnQuality = null;
 
+const _VERSION_KW = ['remix','lofi','lo-fi','lo fi','slowed','reverb','nightcore','cover','acoustic','live version','live at','mashup','instrumental','dj remix','dj mix','bass boost','8d audio','sped up','speed up','karaoke','unplugged','stripped','deep house','chillout','extended mix','club mix'];
+function _isVersionSong(t) { return !!t && _VERSION_KW.some(kw => t.toLowerCase().includes(kw)); }
+function _userWantsVersion(t, a) { return _VERSION_KW.some(kw => ((t||'')+' '+(a||'')).toLowerCase().includes(kw)); }
+
 function _titleMatches(saavnTitle, trackName) {
   if (!saavnTitle || !trackName) return false;
   const norm = s => s.toLowerCase().replace(/\(.*?\)/g,'').replace(/\[.*?\]/g,'').replace(/[^a-z0-9\s]/g,'').replace(/\s+/g,' ').trim();
   const st = norm(saavnTitle), it = norm(trackName);
   if (!st || !it) return false;
+  if (_isVersionSong(saavnTitle) && !_isVersionSong(trackName)) return false;
   if (st === it) return true;
   if (st.includes(it) || it.includes(st)) return true;
   const sw = st.split(' ').filter(w => w.length > 0);
@@ -327,8 +329,10 @@ async function _autoFetchFullSong(song, autoplay = true) {
       if (r.ok) {
         const j = await r.json();
         if (j.success && j.url) {
-          // Saavn source ke liye title match strict nahi — ID se aaya hai
-          if (j.source === 'saavn' || _titleMatches(j.title, requested.trackName)) {
+          const _wV = _userWantsVersion(requested.trackName, requested.artistName || '');
+          if (_isVersionSong(j.title || '') && !_wV) {
+            console.info('[AutoFetch] REJECTED version: ' + j.title);
+          } else if (j.source === 'saavn' || _titleMatches(j.title, requested.trackName)) {
             d = j;
             proxyUrl = j.source === 'saavn'
               ? `/api/play?id=${encodeURIComponent(j._saavnId || '')}`
@@ -404,13 +408,14 @@ async function _upgradeAudio(proxyUrl, d, song, autoplay, ctrl, requested) {
   if (sbEl) sbEl.classList.add('full-active');
   _cleanupPre();
 
-  // Metadata update from response
+  // GODMODE: NEVER overwrite trackName/artistName — causes wrong song in player
   if (d) {
-    if (d.title  && d.title  !== 'Unknown') currentTrack.trackName  = d.title;
-    if (d.artist && d.artist !== 'Unknown') currentTrack.artistName = d.artist;
-    if (d.image  && d.image.startsWith('http')) {
-      currentTrack.artworkUrl100 = d.image.replace('500x500', '100x100');
+    if (d.image && d.image.startsWith('http') && currentTrack?.trackId === requested.trackId) {
+      if (!currentTrack.artworkUrl100 || !currentTrack.artworkUrl100.startsWith('http')) {
+        currentTrack.artworkUrl100 = d.image.replace('500x500', '100x100');
+      }
     }
+    if (d.quality) _currentSaavnQuality = d.quality;
   }
 
   if (wasPlaying) {
@@ -1651,6 +1656,9 @@ async function loadHomeSection(sec) {
       clearTimeout(to);
       const d = await r.json();
       let songs = (d.results || []).filter(s => s.previewUrl || s._source === 'saavn');
+      if (!['lofi','hiphop','party','workout'].includes(sec.id)) {
+        songs = songs.filter(s => !_isVersionSong(s.trackName || ''));
+      }
       for (let i = songs.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [songs[i], songs[j]] = [songs[j], songs[i]];
@@ -1991,7 +1999,12 @@ async function doSearch(q) {
     const r = await fetch(`/api/songs?q=${encodeURIComponent(q)}`);
     const d = await r.json();
     saveRecentSearch(q);
-    const songs = (d.results || []).filter(s => s.previewUrl || s._source === 'saavn');
+    let songs = (d.results || []).filter(s => s.previewUrl || s._source === 'saavn');
+    if (!_userWantsVersion(q, '')) {
+      const _o = songs.filter(s => !_isVersionSong(s.trackName || ''));
+      const _v = songs.filter(s =>  _isVersionSong(s.trackName || ''));
+      songs = [..._o, ..._v];
+    }
     renderSearchResults(songs, q);
   } catch(e) {
     const body = document.getElementById('search-body');
