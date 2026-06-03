@@ -103,7 +103,10 @@ function setImgSrc(img, src) {
   };
   if (img && img.id === 'mini-art' && src) {
     const mp = document.getElementById('mini-player');
-    if (mp) mp.style.setProperty('--mini-art-url', `url('${src}')`);
+    if (mp) {
+      mp.style.setProperty('--mini-art-bg', `url('${src}')`);
+      mp.style.setProperty('--mini-art-opacity', '1');
+    }
   }
   if (imgObserver && !img.closest('#fullscreen-player') && !img.closest('#mini-player')) {
     img.dataset.lazySrc = src;
