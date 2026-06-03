@@ -437,6 +437,10 @@ def _cache_set(key, data, store=None):
     else:
         _meta_cache_lru.set(key, data)
 
+# Aliases used by server.py and fetchers.py imports
+_cache_get_l2 = _cache_get
+_cache_put_l2 = _cache_set
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # L2 CACHE — SUPABASE
