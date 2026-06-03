@@ -235,7 +235,18 @@ function _titleMatches(saavnTitle, trackName) {
   const threshold = total <= 2 ? 0.85 : total <= 3 ? 0.60 : 0.50;
   return matched / total >= threshold;
 }
-
+// ─── ITUNES ART FETCHER ───────────────────────────────────────────────────────
+async function _fetchItunesArt(title, artist) {
+  try {
+    const q = encodeURIComponent(`${title} ${artist}`);
+    const r = await fetch(`https://itunes.apple.com/search?term=${q}&entity=song&limit=1`);
+    const d = await r.json();
+    if (d.results?.[0]?.artworkUrl100) {
+      return d.results[0].artworkUrl100.replace('100x100', '600x600');
+    }
+  } catch(e) {}
+  return null;
+}
 // ─── 9. LOAD TRACK — SAAVN-FIRST ─────────────────────────────────────────────
 function loadTrack(song, autoplay = true) {
   if (!song) return;
@@ -250,6 +261,14 @@ function loadTrack(song, autoplay = true) {
   if (sb) { sb.classList.remove('full-active'); sb.max = 30; sb.value = 0; sb.style.setProperty('--prog', '0%'); }
 
   currentTrack = song;
+  // iTunes art — hamesha fetch karo chahe source kuch bhi ho
+_fetchItunesArt(song.trackName || '', song.artistName || '').then(url => {
+  if (url && currentTrack?.trackId === song.trackId) {
+    currentTrack.artworkUrl100 = url;
+    currentTrack.image = url;
+    updatePlayerUI();
+  }
+});
   currentQuality = 'loading';
 
   const durEl = document.getElementById('fp-duration');
@@ -410,11 +429,6 @@ async function _upgradeAudio(proxyUrl, d, song, autoplay, ctrl, requested) {
 
   // GODMODE: NEVER overwrite trackName/artistName — causes wrong song in player
   if (d) {
-    if (d.image && d.image.startsWith('http') && currentTrack?.trackId === requested.trackId) {
-      if (!currentTrack.artworkUrl100 || !currentTrack.artworkUrl100.startsWith('http')) {
-        currentTrack.artworkUrl100 = d.image.replace('500x500', '100x100');
-      }
-    }
     if (d.quality) _currentSaavnQuality = d.quality;
   }
 
