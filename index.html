@@ -481,27 +481,29 @@
     </button>
   </nav>
 
-  <div id="mini-player" onclick="openFullscreen()" role="button" tabindex="0" aria-label="Open full player">
+<div id="mini-player" role="button" tabindex="0" aria-label="Open full player">
+  <div class="mini-player-inner" onclick="openFullscreen()">
     <img class="mini-art" id="mini-art" src="" alt="Album art">
     <div class="mini-info">
       <div class="mini-title" id="mini-title">—</div>
       <div class="mini-artist" id="mini-artist">—</div>
     </div>
-    <div class="mini-controls" role="group" aria-label="Playback controls">
-      <button onclick="event.stopPropagation();prevTrack()" aria-label="Previous track">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/></svg>
-      </button>
-      <button class="play-btn" onclick="event.stopPropagation();togglePlay()" id="mini-play-btn" aria-label="Play or pause">
-        <svg id="mini-play-icon" viewBox="0 0 24 24" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-      </button>
-      <button onclick="event.stopPropagation();nextTrack()" aria-label="Next track">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
-      </button>
-    </div>
-    <div class="mini-progress" role="progressbar" aria-label="Track progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-      <div class="mini-progress-bar" id="mini-progress-bar"></div>
-    </div>
   </div>
+  <div class="mini-controls" role="group" aria-label="Playback controls">
+    <button onclick="event.stopPropagation();toggleSaveCurrentTrack()" aria-label="Save track" id="mini-save-btn">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
+    <button class="play-btn" onclick="event.stopPropagation();togglePlay()" id="mini-play-btn" aria-label="Play or pause">
+      <svg id="mini-play-icon" viewBox="0 0 24 24" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+    </button>
+    <button onclick="event.stopPropagation();nextTrack()" aria-label="Next track">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/></svg>
+    </button>
+  </div>
+  <div class="mini-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+    <div class="mini-progress-bar" id="mini-progress-bar"></div>
+  </div>
+</div>
 
   <div id="fullscreen-player" role="region" aria-label="Now playing">
     <div id="fp-bg" aria-hidden="true">
