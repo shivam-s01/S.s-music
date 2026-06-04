@@ -483,9 +483,15 @@ def _do_url_refresh(cache_key, title, artist, source):
             song_id = _song_index_get(title, artist)
             if song_id: result = _fetch_saavn_by_id(song_id, title, artist)
             if not result:
+                # PATCH: late import to avoid circular dependency
+                try:
+                    import fetchers as _fetchers_mod
+                    _fsp = _fetchers_mod.fetch_saavn_parallel
+                except (ImportError, AttributeError):
+                    _fsp = fetch_saavn_parallel
                 from match_engine import build_query_variants
                 for qv in build_query_variants(title, artist, '')[:2]:
-                    result = fetch_saavn_parallel(qv, title=title, artist=artist)
+                    result = _fsp(qv, title=title, artist=artist)
                     if result and result.get('url'): break
         if result and result.get('url'):
             conf = float(result.get('_confidence', result.get('score', 0.85)))
@@ -560,146 +566,24 @@ def _song_index_put(title, artist, saavn_id, confirmed_title, artwork_url=''):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# AUDIO FINGERPRINTING — PERMANENT MISMATCH PREVENTION
-# AcoustID se audio DNA verify karo — language/genre/era se koi fark nahi
-# Hindi, English, Bhojpuri, 90s — sab pe kaam karta hai
+# AUDIO FINGERPRINTING — LIGHTWEIGHT DNA-ONLY VERSION
+# AcoustID removed: Saavn CDN streams pe kaam nahi karta tha (encrypted format)
+# Bhojpuri/regional songs AcoustID DB mein nahi hain
+# DNA gate (dna_compatible) already handles version mismatch — fingerprint redundant tha
+# 512KB fetch per fallback source = significant MB waste → removed
 # ═══════════════════════════════════════════════════════════════════════════════
-
-def _get_audio_fingerprint(url: str) -> tuple:
-    """
-    URL se pehle ~30 seconds ka audio fetch karke fingerprint banao.
-    Return: (duration_seconds, fingerprint_string) or (None, None) on failure
-    """
-    try:
-        import acoustid
-        import chromaprint
-
-        # Sirf pehle 512KB fetch karo — 30sec ke liye enough hai
-        headers = {
-            'User-Agent': 'Mozilla/5.0',
-            'Range': 'bytes=0-524288',  # 512KB
-        }
-        r = requests.get(url, headers=headers, stream=True, timeout=8)
-        audio_data = b''.join(r.iter_content(8192))
-        if not audio_data:
-            return None, None
-
-        duration, fp = chromaprint.decode_audio_and_fingerprint(audio_data)
-        return duration, fp
-    except ImportError:
-        # pyacoustid ya chromaprint install nahi — silently skip
-        return None, None
-    except Exception as e:
-        log.debug(f'[Fingerprint] fetch error: {e}')
-        return None, None
-
 
 def verify_via_fingerprint(url: str, expected_title: str, expected_artist: str) -> bool:
     """
-    AcoustID se verify karo ki URL wala song sahi hai ya nahi.
-
-    WORKS FOR:
-    - Hindi mainstream (100%)
-    - English (100%)
-    - 90s Bollywood (95% — mostly in AcoustID DB)
-    - Bhojpuri (90% — rare songs AcoustID mein nahi, tab version-only check)
-
-    Returns True if verified OR if fingerprint unavailable (safe fallback).
-    Returns False only when we're SURE it's wrong.
+    PATCHED: AcoustID fingerprint removed — DNA gate sufficient hai.
+    Saavn CDN streams chromaprint decode nahi kar sakta (encrypted/DRM).
+    Regional/Bhojpuri songs AcoustID DB mein missing hain.
+    Ab sirf version word check karta hai — zero network overhead.
     """
-    if not ACOUSTID_API_KEY:
-        # API key nahi — version DNA check pe fallback (still good protection)
-        from match_engine import has_version_words
-        result_has_version = has_version_words(expected_title)
-        # Agar expected_title mein version word nahi toh assume correct
-        return not result_has_version
-
-    # L1 fingerprint cache check — ek baar verify ho gaya toh dobara nahi
-    _fp_cache_key = f"fp_verified:{normalize(expected_title)}:{normalize(expected_artist)}"
-    _cached_fp = _l1_fingerprint.get(_fp_cache_key)
-    if _cached_fp is not None:
-        return _cached_fp
-
-    try:
-        import acoustid
-
-        duration, fp = _get_audio_fingerprint(url)
-
-        if not fp or not duration:
-            # Fingerprint nahi mila — DNA check pe fallback
-            from match_engine import has_version_words
-            _result = not has_version_words(expected_title)
-            log.debug(f'[Fingerprint] No FP for "{expected_title}" — DNA fallback: {_result}')
-            return _result
-
-        # AcoustID lookup
-        results = list(acoustid.lookup(
-            ACOUSTID_API_KEY, fp, duration,
-            meta='recordings releases'
-        ))
-
-        if not results:
-            # AcoustID mein nahi mila — rare/regional song ho sakta hai
-            # Bhojpuri, regional songs often not in AcoustID DB
-            # Sirf version check karo
-            from match_engine import has_version_words
-            _result = not has_version_words(expected_title)
-            log.debug(f'[Fingerprint] Not in AcoustID "{expected_title}" — DNA fallback: {_result}')
-            _l1_fingerprint.set(_fp_cache_key, _result)
-            return _result
-
-        # Results milen — title/artist se match karo
-        _exp_t = normalize(expected_title)
-        _exp_a = normalize(expected_artist)
-
-        best_score = 0.0
-        for score, recording_id, title, artist in results:
-            if score < 0.70:  # Low confidence AcoustID result — skip
-                continue
-            best_score = max(best_score, score)
-
-            _res_t = normalize(title or '')
-            _res_a = normalize(artist or '')
-
-            # Title match check
-            t_sim = SequenceMatcher(None, _exp_t, _res_t).ratio()
-            # Artist match check (partial — pehla artist word bhi enough)
-            a_sim = 0.0
-            if _exp_a and _res_a:
-                a_sim = SequenceMatcher(None, _exp_a, _res_a).ratio()
-                # First word match bonus
-                _exp_a_first = _exp_a.split()[0] if _exp_a.split() else ''
-                _res_a_first = _res_a.split()[0] if _res_a.split() else ''
-                if _exp_a_first and _res_a_first and _exp_a_first == _res_a_first:
-                    a_sim = min(1.0, a_sim + 0.20)
-            elif not _exp_a:
-                a_sim = 0.5  # Artist unknown — neutral
-
-            # Title match 0.75+ ya artist match 0.70+ — verified
-            if t_sim >= 0.75 or a_sim >= 0.70:
-                log.info(f'[Fingerprint] ✓ VERIFIED: "{expected_title}" t_sim={t_sim:.2f} a_sim={a_sim:.2f}')
-                _l1_fingerprint.set(_fp_cache_key, True)
-                return True
-
-        # AcoustID mein mila lekin title/artist match nahi — WRONG SONG
-        if best_score >= 0.85:
-            log.warning(
-                f'[Fingerprint] ✗ MISMATCH: requested="{expected_title}" '
-                f'AcoustID returned different song (score={best_score:.2f})'
-            )
-            _l1_fingerprint.set(_fp_cache_key, False)
-            return False
-
-        # Inconclusive — DNA check pe fallback
-        from match_engine import has_version_words
-        _result = not has_version_words(expected_title)
-        _l1_fingerprint.set(_fp_cache_key, _result)
-        return _result
-
-    except Exception as e:
-        log.debug(f'[Fingerprint] Error for "{expected_title}": {e}')
-        # Error pe safe fallback — assume correct
-        return True
+    from match_engine import has_version_words
+    # Agar result title mein version word hai aur user ne nahi manga — reject
+    result_has_version = has_version_words(expected_title)
+    return not result_has_version
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1129,15 +1013,17 @@ def _is_confirmed_match(
     res_dur_s:   int = 0,
     min_conf:    float = 0.65,
 ) -> tuple:
-    if not res_title:
+    if not res_title or not res_title.strip():
         return False, 0.0, 'empty_title'
 
     # ── GATE 0: DNA check — SABSE PEHLE, kabhi bypass nahi ─────────────────
+    # PATCH: req_title bhi empty nahi hona chahiye — agar dono empty hain toh skip
     try:
         from match_engine import dna_compatible, get_song_dna
-        if not dna_compatible(req_title, res_title):
-            _res_dna = get_song_dna(res_title)
-            return False, 0.0, f'dna_mismatch:{_res_dna}'
+        if req_title and res_title:
+            if not dna_compatible(req_title, res_title):
+                _res_dna = get_song_dna(res_title)
+                return False, 0.0, f'dna_mismatch:{_res_dna}'
     except ImportError:
         pass
 
