@@ -1,6 +1,3 @@
-# fetchers.py — Audio source fetchers: Saavn, YT Music, SoundCloud, Piped, Invidious, yt-dlp
-# Imported by: server.py
-
 import re
 import os
 import time
@@ -439,6 +436,9 @@ def fetch_from_ytmusic(title, artist=''):
 
     best = None; best_conf = -1.0
     for item in results:
+        # HARDGATE: DNA check before anything else
+        if not dna_compatible(title, item.get('title', '')):
+            log.debug(f"[YTMusic] DNA block: '{item.get('title')}'"); continue
         _ok, _conf, _reason = _is_confirmed_match(
             title, artist, item.get('title', ''), item.get('artist', ''),
             source='ytmusic', min_conf=0.60,
@@ -451,11 +451,6 @@ def fetch_from_ytmusic(title, artist=''):
     video_id = best['videoId']
     url, quality = _ytm_get_stream_url(video_id)
     if not url: return None
-
-    # ── FINGERPRINT VERIFY ───────────────────────────────────────────────────
-    if not verify_via_fingerprint(url, title, artist):
-        log.warning(f"[YTMusic] Fingerprint FAILED: '{best.get('title')}'")
-        return None
 
     _cb.record_success('ytmusic')
     result = {
@@ -521,6 +516,9 @@ def fetch_from_ytdlp(title, artist=''):
                         if not entry: continue
                         yt_title  = entry.get('title', '')
                         yt_artist = entry.get('uploader', '') or entry.get('artist', '')
+                        # HARDGATE: DNA check before anything else
+                        if not dna_compatible(title, yt_title):
+                            log.debug(f"[yt-dlp] DNA block: '{yt_title}'"); continue
                         _ok, _conf, _reason = _is_confirmed_match(
                             title, artist, yt_title, yt_artist,
                             source='youtube', min_conf=0.60,
@@ -554,12 +552,6 @@ def fetch_from_ytdlp(title, artist=''):
             if not thumb:
                 vid_id = best_result.get('id', '')
                 if vid_id: thumb = f"https://img.youtube.com/vi/{vid_id}/mqdefault.jpg"
-
-            # ── FINGERPRINT VERIFY ───────────────────────────────────────────
-            if not verify_via_fingerprint(best_fmt['url'], title, artist):
-                log.warning(f"[yt-dlp] Fingerprint FAILED: '{best_result.get('title')}'")
-                _cb.record_failure('youtube')
-                return None
 
             _cb.record_success('youtube')
             _src_perf.record('youtube', 0, True)
@@ -624,11 +616,6 @@ def fetch_from_soundcloud(title, artist=''):
             if not formats: return None
             best_fmt = max(formats, key=lambda f: f.get('abr') or f.get('tbr') or 0)
             if not best_fmt.get('url'): return None
-
-            # ── FINGERPRINT VERIFY ───────────────────────────────────────────
-            if not verify_via_fingerprint(best_fmt['url'], title, artist):
-                log.warning(f"[SoundCloud] Fingerprint FAILED: '{best.get('title')}'")
-                return None
 
             _cb.record_success('soundcloud')
             abr     = best_fmt.get('abr') or best_fmt.get('tbr') or 0
@@ -723,6 +710,11 @@ def _fetch_saavn_by_id(song_id, expected_title='', expected_artist=''):
                             return None
                     if id_result['image']:
                         _store_artwork(id_result['title'], id_result['artist'], id_result['image'], 1)
+                    # PATCH: song_id key pe result cache karo — thumbnail always available
+                    _l1_saavn.set(f"saavn_id:{song_id}", {
+                        **id_result,
+                        'image': id_result.get('image', '') or _get_artwork(id_result.get('title',''), id_result.get('artist','')),
+                    })
                     return id_result
             except Exception:
                 _mirror_failed(mirror)
@@ -924,11 +916,6 @@ def fetch_from_piped(query, title='', artist=''):
             best_audio = max(audio_streams, key=lambda s: s.get('bitrate', 0))
             if not best_audio.get('url'): continue
 
-            # ── FINGERPRINT VERIFY ───────────────────────────────────────────
-            if not verify_via_fingerprint(best_audio['url'], title or query, artist):
-                log.warning(f"[Piped] Fingerprint FAILED: '{best.get('title')}'")
-                continue
-
             bitrate = best_audio.get('bitrate', 0)
             _health.record_ok(instance, elapsed)
             piped_result = {
@@ -997,11 +984,6 @@ def fetch_from_invidious(query, title='', artist=''):
             if not audio_formats: continue
             best_fmt = max(audio_formats, key=lambda f: f.get('bitrate', 0))
             if not best_fmt.get('url'): continue
-
-            # ── FINGERPRINT VERIFY ───────────────────────────────────────────
-            if not verify_via_fingerprint(best_fmt['url'], title or query, artist):
-                log.warning(f"[Invidious] Fingerprint FAILED: '{best.get('title')}'")
-                continue
 
             bitrate = best_fmt.get('bitrate', 0)
             _health.record_ok(instance, elapsed)
@@ -1144,24 +1126,26 @@ def play_song():
                 _is_live_version(_ct)):
                 return None
 
-        # DNA check on cached song
-        if title and _ct:
-            if not dna_compatible(title, _ct):
-                log.info(f"[Cache] DNA MISMATCH — invalidating cached='{_ct}'")
+        # PATCH: DNA check — original request title use karo (pipeline se update hua title nahi)
+        # song_id only request pe bhi original title available hoga via request.args
+        _orig_req_title = request.args.get('title', '').strip() or title
+        if _orig_req_title and _ct:
+            if not dna_compatible(_orig_req_title, _ct):
+                log.info(f"[Cache] DNA MISMATCH — invalidating cached='{_ct}' req='{_orig_req_title}'")
                 return None
 
         # Confidence recheck
         # FIX: duration=0,0 pass karo — d_sim bias avoid karne ke liye
-        if title and _ct:
+        if _orig_req_title and _ct:
             _recheck_conf = compute_confidence(
-                title, artist, _ct, entry.get('artist', ''),
+                _orig_req_title, artist, _ct, entry.get('artist', ''),
                 source='saavn',
                 query_duration_s=0,
                 result_duration_s=0,
             )
             if _recheck_conf < 0.72:
                 log.info(
-                    f"[Cache] STALE REJECTED: requested='{title}' "
+                    f"[Cache] STALE REJECTED: requested='{_orig_req_title}' "
                     f"cached='{_ct}' conf={_recheck_conf:.3f}"
                 )
                 return None
@@ -1373,6 +1357,11 @@ def play_song():
             if broad and broad.get('url'):
                 broad_conf = float(broad.get('_confidence', 0.0))
                 if broad_conf < 0.60: continue
+                # HARDGATE: DNA check on result — broad search se wrong version aa sakta hai
+                _broad_result_title = broad.get('title', '')
+                if _broad_result_title and not dna_compatible(title, _broad_result_title):
+                    log.warning(f"[broad] DNA BLOCK: '{_broad_result_title}' for '{title}'")
+                    continue
                 audio_url  = broad['url']
                 quality    = broad.get('quality', 'unknown')
                 source     = 'youtube-broad'
@@ -1392,8 +1381,25 @@ def play_song():
             return jsonify({'error': 'No confident audio match found'}), 404
 
     # ─── FINAL MISMATCH CHECK — wrong song detect karo BEFORE streaming ──────
-    # FIX: Ye check sirf tab fail karta tha jab ALL sources fail hote the
-    # Ab har successful result pe bhi check karo
+    # HARDGATE: DNA check EVERY source — last line of defence
+    _orig_title = request.args.get('title', '').strip()
+    # PATCH: result title bhi check karo (pipeline mein update hua hoga)
+    _final_check_title = title  # pipeline se updated
+    if _orig_title and _final_check_title and not dna_compatible(_orig_title, _final_check_title):
+        log.warning(f"[FINAL DNA] BLOCK: orig='{_orig_title}' got='{_final_check_title}' src={source}")
+        _conf_tuner.record_miss(_orig_title, artist)
+        _invalidate_cache_keys(_play_ck_id, _play_ck_title, _play_ck)
+        return jsonify({'error': 'Song DNA mismatch — version blocked'}), 404
+
+    # PATCH: agar audio_url ka source title bhi check nahi hua (e.g. broad search)
+    # broad search result title explicitly check
+    if _orig_title and source == 'youtube-broad' and title:
+        if not dna_compatible(_orig_title, title):
+            log.warning(f"[FINAL DNA broad] BLOCK: orig='{_orig_title}' got='{title}'")
+            _conf_tuner.record_miss(_orig_title, artist)
+            _invalidate_cache_keys(_play_ck_id, _play_ck_title, _play_ck)
+            return jsonify({'error': 'Song DNA mismatch — version blocked'}), 404
+
     _final_result_title  = title  # updated during pipeline
     _final_result_artist = artist
     if title and audio_url and source not in ('saavn',):
@@ -1424,18 +1430,78 @@ def play_song():
     _best_art = ''
     if title:
         _best_art = _get_artwork(title, artist)
-        if not _best_art:
-            for _src_key in [f"saavn_q:{normalize(title)}", _play_ck]:
-                _art_hit = _l1_saavn.get(_src_key)
-                if _art_hit and _art_hit.get('image'):
-                    _best_art = _art_hit['image']; break
-    elif song_id:
+    # PATCH: song_id based cache check — thumbnail guaranteed hogi
+    if not _best_art and song_id:
+        _id_cache_hit = _l1_saavn.get(f"saavn_id:{song_id}")
+        if _id_cache_hit and _id_cache_hit.get('image'):
+            _best_art = _id_cache_hit['image']
+    if not _best_art and title:
+        for _src_key in [f"saavn_q:{normalize(title)}", _play_ck, _play_ck_id, _play_ck_title]:
+            if not _src_key: continue
+            _art_hit = _l1_saavn.get(_src_key)
+            if _art_hit and _art_hit.get('image'):
+                _best_art = _art_hit['image']; break
+    if not _best_art and song_id:
         _best_art = _get_artwork(title or song_id, artist)
+
+    # PATCH: Thumbnail guaranteed sync fetch — agar abhi bhi nahi mili
+    # Background fetch se pehle — streaming response mein X-Artwork-URL guaranteed chahiye
+    if not _best_art and song_id:
+        try:
+            from sources import _best_mirrors as _bm
+            _art_mirrors = _bm(n=2)
+            for _am in _art_mirrors:
+                try:
+                    _ar = requests.get(
+                        f"{_am}/api/songs/{song_id}",
+                        timeout=2,
+                        headers={'User-Agent': 'Mozilla/5.0'}
+                    )
+                    if _ar.status_code == 200:
+                        _ard = _ar.json()
+                        _ard_song = None
+                        if isinstance(_ard.get('data'), list) and _ard['data']:
+                            _ard_song = _ard['data'][0]
+                        elif isinstance(_ard.get('data'), dict):
+                            _ard_song = _ard['data']
+                        elif _ard.get('id'):
+                            _ard_song = _ard
+                        if _ard_song:
+                            _img = pick_image(_ard_song)
+                            if _img:
+                                _best_art = _img
+                                _store_artwork(title or song_id, artist, _img, 1)
+                                # Also cache in saavn_id key for future
+                                _existing = _l1_saavn.get(f"saavn_id:{song_id}") or {}
+                                _l1_saavn.set(f"saavn_id:{song_id}", {**_existing, 'image': _img})
+                                break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    # PATCH: agar abhi bhi nahi mili — background mein fetch karo (next play ke liye)
+    if not _best_art and song_id and title:
+        def _bg_art_fetch(_sid, _t, _a):
+            try:
+                _r = _fetch_saavn_by_id(_sid, _t, _a)
+                if _r and _r.get('image'):
+                    _store_artwork(_t, _a, _r['image'], 1)
+            except Exception: pass
+        _executor_cache.submit(_bg_art_fetch, song_id, title, artist)
+
+    # PATCH: _best_art ek aur baar try karo before cache write
+    if not _best_art and song_id:
+        _id_hit2 = _l1_saavn.get(f"saavn_id:{song_id}")
+        if _id_hit2 and _id_hit2.get('image'):
+            _best_art = _id_hit2['image']
+    if not _best_art and title:
+        _best_art = _get_artwork(title, artist)
 
     _cache_payload = {
         'url': audio_url, 'quality': quality, 'source': source,
         'title': title, 'artist': artist, 'confidence': confidence,
-        'image': _best_art,
+        'image': _best_art or '',
     }
 
     # Sirf high-confidence results cache karo
@@ -1490,7 +1556,7 @@ def play_song():
 
         def generate():
             try:
-                for chunk in upstream.iter_content(chunk_size=65536):
+                for chunk in upstream.iter_content(chunk_size=16384):
                     if chunk: yield chunk
             finally:
                 upstream.close()
