@@ -86,66 +86,6 @@ def _keepalive_ping():
 threading.Thread(target=_keepalive_ping, daemon=True).start()
 log.info('[Keepalive] Ping loop started')
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# ITUNES ARTWORK FETCHER — Fallback for missing thumbnails
-# ═══════════════════════════════════════════════════════════════════════════════
-def _fetch_itunes_artwork(title: str, artist: str = '') -> str:
-    """
-    Fetch artwork from iTunes Search API.
-    Returns 600x600 image URL or '' if not found.
-    Free API, no key needed, covers 99% of songs.
-    """
-    cache_key = f"itunes_art:{normalize(title)[:40]}:{normalize(artist)[:20]}"
-    cached = _l1_artwork.get(cache_key)
-    if cached:
-        return cached.get('url', '')
-
-    try:
-        query = f"{title} {artist}".strip() if artist else title
-        r = requests.get(
-            'https://itunes.apple.com/search',
-            params={
-                'term':    query,
-                'media':   'music',
-                'entity':  'song',
-                'limit':   5,
-                'country': 'IN',
-            },
-            timeout=5,
-            headers={'User-Agent': 'Mozilla/5.0'},
-        )
-        if r.status_code != 200:
-            return ''
-        results = r.json().get('results', [])
-        if not results:
-            return ''
-
-        # Find best matching result
-        best_url = ''
-        best_conf = 0.0
-        for item in results:
-            r_title  = item.get('trackName', '')
-            r_artist = item.get('artistName', '')
-            art_url  = item.get('artworkUrl100', '')
-            if not art_url:
-                continue
-            conf = compute_confidence(title, artist, r_title, r_artist, source='itunes')
-            if conf > best_conf:
-                best_conf = conf
-                best_url  = art_url
-
-        if best_url and best_conf >= 0.50:
-            # Upgrade to 600x600 (iTunes default is 100x100)
-            best_url = re.sub(r'\b\d+x\d+bb\b', '600x600bb', best_url)
-            best_url = re.sub(r'\b100x100\b',     '600x600',   best_url)
-            _l1_artwork.set(cache_key, {'url': best_url, 'priority': 3})
-            return best_url
-    except Exception as e:
-        log.debug(f'[iTunes:Art] Failed for "{title}": {e}')
-    return ''
-
-
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CORS
@@ -826,17 +766,14 @@ def _fetch_saavn_by_id(song_id: str, expected_title: str = '', expected_artist: 
 def fetch_from_mirror(mirror, query, min_score=0.4, title: str = '', artist: str = '', language: str = ''):
     if not _mirror_ok(mirror): return None
     _version_check_src  = title or query
-    _user_wants_version = (
-        _query_requests_version(_version_check_src) or
-        _query_requests_version(artist)
-    )
+    _user_wants_version = _query_requests_version(_version_check_src)  # FIX: title only
     _conf_title  = title or query
     _conf_artist = artist or ''
 
     for endpoint in ['/api/search/songs', '/api/search', '/search/songs']:
         try:
             t0 = time.time()
-            _fparams = {'query': query, 'q': query, 'limit': 15}
+            _fparams = {'query': query, 'q': query, 'limit': 25}  # FIX: was 15, 90s songs appear late
             if language:
                 _fparams['language'] = language
             r  = requests.get(f'{mirror}{endpoint}',
@@ -864,8 +801,10 @@ def fetch_from_mirror(mirror, query, min_score=0.4, title: str = '', artist: str
                     log.debug(f"[Mirror] Rejected '{song_title}': {_reason}")
                     continue
                 legacy_score = title_score(query, song_title, song_artist)
-                # FIX-D1: Slight position penalty for Saavn popularity bias
-                _pos_penalty = max(0.0, 0.02 * (idx - 2)) if idx >= 3 else 0.0
+                # FIX-D1: Position penalty capped at 0.08 max
+                # Old: 0.02*(idx-2) uncapped → idx=10 gave 0.16 penalty, killing 90s songs
+                # New: cap at 0.08 so a correct match at idx=15 still passes threshold
+                _pos_penalty = min(0.08, max(0.0, 0.015 * (idx - 2))) if idx >= 3 else 0.0
                 candidates.append((_conf - _pos_penalty, legacy_score, song))
 
             if not candidates: continue
@@ -913,11 +852,18 @@ def fetch_saavn_parallel(query, title: str = '', artist: str = '', language: str
     futures   = {_executor.submit(fetch_from_mirror, m, query, threshold, title, artist, _lang): m
                  for m in mirrors}
     all_results = []
+    _EARLY_EXIT_CONF = 0.88  # If we get a very confident result, don't wait for rest
     try:
-        for future in as_completed(futures, timeout=6):
+        for future in as_completed(futures, timeout=4):  # reduced from 6s
             try:
                 result = future.result()
-                if result: all_results.append(result)
+                if result:
+                    all_results.append(result)
+                    # Early exit: if high-confidence result found, stop waiting
+                    _conf = float(result.get('_confidence', result.get('score', 0)))
+                    if _conf >= _EARLY_EXIT_CONF:
+                        for f in futures: f.cancel()
+                        break
             except Exception: pass
     except Exception: pass
 
@@ -1196,7 +1142,7 @@ def play_song():
     # FIX-14: Detect language early, pass to all fetch functions
     _play_lang = _detect_language((title or '') + ' ' + (artist or ''))
 
-    _user_wants_ver = _query_requests_version(title or '') or _query_requests_version(artist or '')
+    _user_wants_ver = _query_requests_version(title or '')  # FIX: artist name must not bypass version filter
 
     def _check_cache_entry(entry):
         if not entry or not entry.get('url'):
@@ -1257,8 +1203,7 @@ def play_song():
     # Step 2: L2 Supabase cache
     if not audio_url:
         for _ck in filter(None, [_play_ck_id, _play_ck_title, _play_ck]):
-            _l2_raw = _supabase_cache_get_with_refresh(_ck)   # BUG-FIX: single call
-            l2_hit  = _check_cache_entry(_l2_raw)
+            l2_hit = _check_cache_entry(_supabase_cache_get_with_refresh(_ck))
             if l2_hit:
                 audio_url  = l2_hit['url']
                 quality    = l2_hit.get('quality', 'unknown')
@@ -1270,7 +1215,7 @@ def play_song():
                 for _wk in filter(None, [_play_ck_id, _play_ck_title, _play_ck]):
                     _l1_saavn.set(_wk, l2_hit)
                 break
-            elif _l2_raw is not None:   # BUG-FIX: reuse already-fetched value
+            elif _supabase_cache_get_with_refresh(_ck) is not None:
                 _executor_cache.submit(sb_delete, 'song_cache', {'cache_key': _ck})
                 log.info(f"[Cache:L2] INVALIDATED unwanted version key={_ck}")
 
@@ -1295,9 +1240,12 @@ def play_song():
                     _l1_saavn.set(_play_ck_title, _early_cache)
                     if _play_ck_id: _l1_saavn.set(_play_ck_id, _early_cache)
 
-    # Step 3: Saavn ID path
+    # Step 3: Saavn ID path — use pre-fired future from Step 2 if available
     if not audio_url and song_id:
-        result = _fetch_saavn_by_id(song_id, expected_title=title, expected_artist=artist)
+        try:
+            result = _id_future.result(timeout=1.0) if (_id_future and not _id_future.done() is False) else                      _fetch_saavn_by_id(song_id, expected_title=title, expected_artist=artist)
+        except Exception:
+            result = _fetch_saavn_by_id(song_id, expected_title=title, expected_artist=artist)
         if result and result.get('url'):
             audio_url  = result['url']
             quality    = result.get('quality', 'unknown')
@@ -1326,14 +1274,13 @@ def play_song():
     # Step 4: Title-only path
     if not audio_url and title:
         for query_var in build_query_variants(title, artist, ''):
-            _s4_result = fetch_saavn_parallel(query_var, title=title, artist=artist, language=_play_lang)
-            if _s4_result and _s4_result.get('url'):
-                result     = _s4_result   # keep `result` in sync for Step 7 artwork lookup
-                audio_url  = _s4_result['url']
-                quality    = _s4_result.get('quality', 'unknown')
+            result = fetch_saavn_parallel(query_var, title=title, artist=artist, language=_play_lang)
+            if result and result.get('url'):
+                audio_url  = result['url']
+                quality    = result.get('quality', 'unknown')
                 source     = 'saavn'
-                confidence = float(_s4_result.get('_confidence', _s4_result.get('score', 0.5)))
-                log.info(f"[Play] ✓ Saavn title='{_s4_result['title']}' q={quality}")
+                confidence = float(result.get('_confidence', result.get('score', 0.5)))
+                log.info(f"[Play] ✓ Saavn title='{result['title']}' q={quality}")
                 break
 
     # Step 5: Scored parallel fallbacks
@@ -1375,7 +1322,7 @@ def play_song():
         # Phase 2: All remaining sources
         if not audio_url:
             log.info(f"[Play] Phase1 miss → Phase2 all-sources: '{title}'")
-            _COLLECT_WINDOW  = 1.5
+            _COLLECT_WINDOW  = 2.5  # FIX: was 1.5s — too short for slow networks
 
             _all_fb_futures = {
                 _executor.submit(fetch_from_ytmusic,    title, artist):              'ytmusic',
@@ -1411,7 +1358,7 @@ def play_song():
 
             if not _fb_candidates:
                 try:
-                    for future in as_completed(_all_fb_futures, timeout=8):
+                    for future in as_completed(_all_fb_futures, timeout=5):  # FIX: was 8s
                         try:
                             res = future.result()
                             if res and res.get('url'):
@@ -1498,81 +1445,18 @@ def play_song():
     if title: _conf_tuner.record_accept(title, artist, confidence)
     _src_perf.record(source, 0, True)
 
-    # Step 7: Async cache writes — THUMBNAIL 100% FIX (iTunes Priority)
+    # Step 7: Async cache writes
     _best_art = ''
-
-    # Priority 1: artwork cache (best quality, already validated)
     if title:
         _best_art = _get_artwork(title, artist)
+        if not _best_art and audio_url:
+            for _src_key in [f"saavn_q:{normalize(title)}", _play_ck]:
+                _art_hit = _l1_saavn.get(_src_key)
+                if _art_hit and _art_hit.get('image'):
+                    _best_art = _art_hit['image']
+                    break
     elif song_id:
-        _best_art = _get_artwork(song_id, artist)
-
-    # Priority 2: iTunes API — guaranteed 600x600 artwork for almost every song
-    # Non-blocking: run in background thread, wait max 1.5s so audio isn't delayed
-    if not _best_art and title:
-        _itunes_future = _executor_bg.submit(_fetch_itunes_artwork, title, artist)
-        try:
-            _itunes_art = _itunes_future.result(timeout=1.5)
-            if _itunes_art:
-                _best_art = _itunes_art
-                _store_artwork(title, artist, _best_art, 2)
-                log.debug(f'[Artwork] iTunes P2 hit for "{title}"')
-        except Exception:
-            # Timed out or failed — audio stream won't be blocked
-            pass
-
-    # Priority 3: image directly from the result that just won
-    # Used if iTunes miss (rare) — winner result already has image field
-    if not _best_art:
-        _winner_image = ''
-        if not _winner_image and 'result' in locals() and isinstance(result, dict):
-            _winner_image = result.get('image', '')
-        if not _winner_image and '_p1_res' in locals() and isinstance(_p1_res, dict):
-            _winner_image = _p1_res.get('image', '')
-        if not _winner_image and '_winner_res' in locals() and isinstance(_winner_res, dict):
-            _winner_image = _winner_res.get('image', '')
-        if not _winner_image and 'l2_hit' in locals() and isinstance(l2_hit, dict):
-            _winner_image = l2_hit.get('image', '')
-        if not _winner_image and 'l1_hit' in locals() and isinstance(l1_hit, dict):
-            _winner_image = l1_hit.get('image', '')
-        if not _winner_image and '_verified_hit' in locals() and isinstance(_verified_hit, dict):
-            _winner_image = _verified_hit.get('image', '')
-        if _winner_image and _winner_image.startswith('http'):
-            _best_art = _winner_image
-            if title:
-                _art_prio = (
-                    1 if source in ('saavn', 'jiosavan') else
-                    2 if source == 'itunes' else
-                    4 if source == 'ytmusic' else 5
-                )
-                _store_artwork(title, artist, _best_art, _art_prio)
-
-    # Priority 4: L1 saavn cache scan
-    if not _best_art and title:
-        for _src_key in [f"saavn_q:{normalize(title)}", _play_ck_title, _play_ck_id, _play_ck]:
-            if not _src_key:
-                continue
-            _art_hit = _l1_saavn.get(_src_key)
-            if _art_hit and _art_hit.get('image'):
-                _best_art = _art_hit['image']
-                break
-
-    # Priority 5: YouTube thumbnail (guaranteed for YT sources)
-    if not _best_art and source in ('youtube', 'youtube-broad', 'piped', 'invidious'):
-        _yt_match = re.search(r'(?:v=|youtu\.be/|/vi?/)([A-Za-z0-9_-]{11})', audio_url or '')
-        if not _yt_match and '_winner_res' in locals() and isinstance(_winner_res, dict):
-            _yt_match = re.search(r'(?:v=|youtu\.be/|/vi?/)([A-Za-z0-9_-]{11})',
-                                  _winner_res.get('url', ''))
-        if _yt_match:
-            _best_art = f'https://img.youtube.com/vi/{_yt_match.group(1)}/mqdefault.jpg'
-            if title:
-                _store_artwork(title, artist, _best_art, 6)
-
-    # Priority 6: verified store
-    if not _best_art and song_id:
-        _vhit = _get_verified(song_id=song_id)
-        if _vhit and _vhit.get('image'):
-            _best_art = _vhit['image']
+        _best_art = _get_artwork(title or song_id, artist)
 
     _cache_payload = {
         'url': audio_url, 'quality': quality, 'source': source,
