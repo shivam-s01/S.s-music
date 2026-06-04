@@ -1,3 +1,6 @@
+# match_engine.py — Title/artist matching, text helpers, confidence scoring
+# Imported by: fetchers.py, server.py
+
 import re
 from typing import Optional, Dict, Any, List, Tuple
 from core import (
@@ -11,9 +14,11 @@ from core import (
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # VERSION DNA — PERMANENT MISMATCH PREVENTION
+# Ye sabse pehla gate hai — text similarity se pehle check hota hai
+# Koi bhi version word result mein ho aur user ne nahi manga → REJECT
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Definite version words — any of these in result → REJECT when user didn't ask
+# Definite version words — in mein se koi bhi ho toh instantly reject
 _VERSION_DNA = {
     # Lofi / slowed
     'lofi', 'lo-fi', 'lo fi', 'slowed', 'reverb', 'slowed reverb',
@@ -27,43 +32,27 @@ _VERSION_DNA = {
     'minus one',
     # Live / Session
     'live version', 'live at', 'live from', 'live session',
-    'acoustic version',
-    # BUG-48 FIX: 'unplugged' moved here from _AMBIGUOUS_DNA — it is ALWAYS a version
-    'unplugged', 'stripped',
+    'acoustic version', 'unplugged', 'stripped',
     'coke studio', 'mtv unplugged', 'nescafe basement',
     'velo sound', 'tiny desk', 'spotify session', 'studio session',
     # Extended / Club
     'extended mix', 'extended version', 'club mix', 'dance mix',
-    'radio edit', 'club version', 'club edit',
-    'festival mix', 'party mix',
+    'radio edit', 'club version', 'club edit', 'festival mix',
+    'party mix',
     # Indian specific
     'jhankar', 'jhankar beats', 'tapori mix', 'dhol mix',
     'wedding mix', 'bhangra mix', 'dandiya mix', 'garba mix',
     'beats version',
-    # Lyric video (not the actual song)
+    # Lyric video (not actual song)
     'lyric video', 'lyrics video',
-    # ── BUG-02 FIX: Gender versions were missing — these are DIFFERENT songs ──
-    'female version', 'male version', 'girl version', 'boy version',
-    'female cover', 'male cover',
-    # Speed-altered
-    'slow version', 'fast version', 'speed version',
-    # Additional missed patterns (BUG-38 FIX)
-    'slowed + reverb', 'slowed+reverb', 'lofi remix', 'chill beats',
-    'sad version', 'trending version', 'latest version',
-    # BUG-45 FIX: 'remastered' moved here — it is always a different audio release
-    'remastered', 'remastered version', 'anniversary edition',
-    'ost version', 'film version', 'movie version',
-    'promo version', 'title track version',
 }
 
-# DJ word boundary check (special case — avoids matching words like 'djinn')
+# DJ word boundary check (special case — 'djinn' jaisi words avoid karne ke liye)
 _DJ_WORD_RE = re.compile(r'\bdj\b', re.IGNORECASE)
 
-# Context-dependent words — only flag when a version-context word is nearby
-# BUG-03 FIX: Added bracket-only guard for standalone "live", "acoustic", etc.
-# BUG-44/45 FIX: 'unplugged', 'stripped', 'remastered' removed — now in _VERSION_DNA
+# Context-dependent words — sirf version context mein flag karo
 _AMBIGUOUS_DNA = {
-    'live', 'acoustic', 'cover', 'edit',
+    'live', 'acoustic', 'cover', 'edit', 'stripped',
     'concert', 'performance', 'tribute',
 }
 _VERSION_CONTEXT_RE = re.compile(
@@ -74,28 +63,19 @@ _VERSION_CONTEXT_RE = re.compile(
 
 def get_song_dna(title: str) -> set:
     """
-    Extract version DNA from song title.
-    Returns: set of version types found {'lofi', 'remix', 'live', etc.}
+    Song ke title se version DNA extract karo.
+    Return: set of version types found {'lofi', 'remix', 'live', etc.}
     Empty set = clean original song.
-
-    BUG-02 FIX: Now detects 'female version', 'male version', etc.
-    BUG-03 FIX: Ambiguous words now require bracket OR context guard.
-    BUG-39 FIX: 'jhankar' bare word now always flagged (it's always a version).
     """
     t = title.lower().strip()
     found = set()
 
-    # DJ check (word boundary)
+    # DJ check
     if _DJ_WORD_RE.search(title):
         found.add('remix')
 
-    # BUG-39 FIX: jhankar is NEVER an original song — always flag it
-    if re.search(r'\bjhankar\b', t):
-        found.add('jhankar')
-
     # Definite version words
     for word in _VERSION_DNA:
-        if word == 'jhankar': continue  # already handled above
         if ' ' in word:
             if word in t:
                 found.add(word)
@@ -103,18 +83,14 @@ def get_song_dna(title: str) -> set:
             if re.search(r'\b' + re.escape(word) + r'\b', t):
                 found.add(word)
 
-    # Ambiguous words — require either:
-    # (a) explicit version-context word nearby, OR
-    # (b) word appears after dash/pipe at end of title, OR
-    # (c) word is inside brackets/parentheses
+    # Ambiguous words with context
     for word in _AMBIGUOUS_DNA:
         if re.search(r'\b' + re.escape(word) + r'\b', t):
-            _has_context  = bool(_VERSION_CONTEXT_RE.search(t))
-            _has_dash_end = bool(re.search(r'[-–|]\s*' + re.escape(word) + r'\s*$', t))
-            _has_bracket  = bool(re.search(r'[\(\[]\s*' + re.escape(word) + r'\s*[\)\]]', t))
-            # BUG-10 FIX: Also flag if it's the ONLY word in brackets at end
-            _has_paren_end = bool(re.search(r'\(\s*' + re.escape(word) + r'\s*\)\s*$', t))
-            if _has_context or _has_dash_end or _has_bracket or _has_paren_end:
+            if _VERSION_CONTEXT_RE.search(t):
+                found.add(word)
+            elif re.search(r'[-–|]\s*' + re.escape(word) + r'\s*$', t):
+                found.add(word)
+            elif re.search(r'[\(\[]\s*' + re.escape(word) + r'\s*[\)\]]', t):
                 found.add(word)
 
     return found
@@ -123,35 +99,29 @@ def get_song_dna(title: str) -> set:
 def dna_compatible(query_title: str, result_title: str) -> bool:
     """
     PERMANENT MISMATCH PREVENTION:
-    Query and result DNA must be compatible.
+    Query aur result ka DNA match karna chahiye.
 
-    - User asked for normal song → any version in result = REJECT
-    - User asked for remix → result must have remix DNA
-    - User asked for lofi → result must have lofi DNA
+    - User ne lofi manga → lofi result chahiye
+    - User ne normal song manga → koi bhi version NAHI chahiye
+    - User ne remix manga → remix chahiye, lofi nahi
 
-    BUG-01 FIX: Previously "Tum Live" (bare word "live" in title without
-    context) was not detected as a version. Now uses the corrected get_song_dna
-    which requires bracket/context/dash guard for ambiguous words —
-    preventing false positives on song titles that legitimately contain
-    ambiguous words (e.g., "Live and Let Die" is NOT a live version).
-
-    BUG-10 FIX: Empty q_dna now correctly checks r_dna is also empty.
-    This function is NEVER bypassed — always runs before confidence scoring.
+    Ye function KABHI bypass nahi hoga — confidence score se pehle check hota hai.
     """
     q_dna = get_song_dna(query_title)
     r_dna = get_song_dna(result_title)
 
-    # User asked for clean original song
+    # User ne clean song manga
     if not q_dna:
-        # ANY version word in result → REJECT
+        # Result mein koi bhi version word = REJECT
         return len(r_dna) == 0
 
-    # User asked for a specific version → result must share that version type
+    # User ne koi specific version manga
+    # Result mein woh version hona chahiye
     return bool(q_dna & r_dna)
 
 
 def has_version_words(title: str) -> bool:
-    """Quick check — does title contain any version word."""
+    """Quick check — koi bhi version word hai ya nahi."""
     return len(get_song_dna(title)) > 0
 
 
@@ -160,23 +130,11 @@ def has_version_words(title: str) -> bool:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def clean_query(text):
-    """
-    Strip metadata noise from query text.
-    BUG-07 FIX: Now also strips 'female version', 'male version', etc.
-    """
     text = re.sub(r'\(From\s+["\u201c\u201d\u2018\u2019]?[^)]*["\u201c\u201d\u2018\u2019]?\)', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\[.*?\]', '', text)
-    text = re.sub(
-        r'\(\s*(OST|official|audio|video|lyrics|full\s*song|feat\.?.*?|ft\.?.*?|'
-        r'Hindi|English|Version|Remix|Cover|HD|HQ|Original|Soundtrack|Remastered|'
-        r'Extended|Radio\s*Edit)\s*\)',
-        '', text, flags=re.IGNORECASE
-    )
-    text = re.sub(r'\s*[-–]\s*(official|audio|video|lyrics|full\s*song|hd|hq|remastered).*$',
-                  '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\(\s*(OST|official|audio|video|lyrics|full\s*song|feat\.?.*?|ft\.?.*?|Hindi|English|Version|Remix|Cover|HD|HQ|Original|Soundtrack|Remastered|Extended|Radio\s*Edit)\s*\)', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s*[-–]\s*(official|audio|video|lyrics|full\s*song|hd|hq|remastered).*$', '', text, flags=re.IGNORECASE)
     text = re.sub(r'["\u201c\u201d\u2018\u2019\'()]', '', text)
-
-    # BUG-07 FIX: Added female/male version patterns
     _BARE_VERSION_PATTERN = (
         r'\s+(?:lofi|lo[- ]fi|slowed|reverb|slowed\s*reverb|reverb\s*slowed|'
         r'nightcore|sped\s*up|speed\s*up|bass\s*boosted|8d\s*audio|'
@@ -192,9 +150,7 @@ def clean_query(text):
         r'jhankar|jhankar\s*beats|beats\s*version|'
         r'tapori\s*mix|dhol\s*mix|wedding\s*mix|'
         r'bhangra\s*mix|dandiya\s*mix|garba\s*mix|'
-        r'lyric\s*video|lyrics\s*video|full\s*video|'
-        r'female\s*version|male\s*version|girl\s*version|boy\s*version|'
-        r'female\s*cover|male\s*cover|slow\s*version|fast\s*version'
+        r'lyric\s*video|lyrics\s*video|full\s*video'
         r')\b.*$'
     )
     text = re.sub(_BARE_VERSION_PATTERN, '', text, flags=re.IGNORECASE)
@@ -233,8 +189,6 @@ def build_query_variants(title, artist='', fallback=''):
     if artist_first and len(words) > 1: add(f"{words[0]} {words[1]} {artist_first}")
 
     try:
-        # BUG-47 FIX: Pass already-cleaned title_c to translit, not raw title.
-        # Raw title may contain brackets/parens that break word-boundary regexes.
         t_translit = _hindi_translit_normalize(title_c)
         if t_translit and t_translit != title_c:
             add(t_translit)
@@ -251,58 +205,29 @@ def build_query_variants(title, artist='', fallback=''):
     return variants
 
 
-# BUG-08 FIX: Transliteration rules applied with word-boundary regex
-# Previously some rules matched mid-word (e.g., 'aa' inside 'baad')
 _HINDI_TRANSLIT = [
-    ('pyaar', 'pyar'),   # multi-char replacements first
-    ('dill',  'dil'),
-    ('ishk',  'ishq'),
-    ('hain',  'hai'),
-    ('nah',   'na'),
-    ('aa',    'a'),
-    ('ee',    'i'),
-    ('oo',    'u'),
-    ('ae',    'ai'),
-    ('ph',    'f'),
-    ('bh',    'b'),
-    ('gh',    'g'),
-    ('kh',    'k'),
-    ('th',    't'),
-    ('dh',    'd'),
-    ('sh',    's'),
-    ('ch',    'c'),
-    ('ie',    'i'),
-    ('ey',    'ai'),
-    ('ay',    'ai'),
-    ('oi',    'oy'),
-    ('ou',    'u'),
-    ('ue',    'u'),
-    ('hai',   'he'),
-    ('ho',    'hu'),
-    ('ki',    'ke'),
-    ('ko',    'ku'),
+    ('aa', 'a'), ('ee', 'i'), ('oo', 'u'), ('ae', 'ai'),
+    ('ph', 'f'), ('bh', 'b'), ('gh', 'g'), ('kh', 'k'),
+    ('th', 't'), ('dh', 'd'), ('sh', 's'), ('ch', 'c'),
+    ('ie', 'i'), ('ey', 'ai'), ('ay', 'ai'), ('oi', 'oy'),
+    ('ou', 'u'), ('ue', 'u'),
+    ('hain', 'he'), ('hai', 'he'),
+    ('ho', 'hu'),
+    ('ki', 'ke'),
+    ('ko', 'ku'),
+    ('nah', 'na'),
+    ('pyaar', 'pyar'),
+    ('dill', 'dil'),
+    ('ishk', 'ishq'),
 ]
 
 
 def _hindi_translit_normalize(text: str) -> str:
-    """
-    BUG-08 FIX: Longer patterns applied first to avoid partial matches.
-    Word boundary \b added where safe. Short vowel pairs (aa→a, ee→i)
-    applied only when bounded by non-alpha characters to avoid corrupting
-    words like 'baad' → 'bad' incorrectly (baad IS 'bad' in Hindi so this
-    is actually correct, but 'saavn' should not become 'svn').
-    """
     t = text.lower().strip()
     t = re.sub(r'[^a-z0-9\s]', '', t)
     t = re.sub(r'\s+', ' ', t).strip()
     for src, dst in _HINDI_TRANSLIT:
-        if len(src) >= 3:
-            # Longer patterns: word boundary safe
-            t = re.sub(r'\b' + re.escape(src) + r'\b', dst, t)
-        else:
-            # Short vowel digraphs: only at word boundaries to avoid
-            # corrupting internal vowel clusters
-            t = re.sub(r'(?<=\b)' + re.escape(src) + r'(?=\b)', dst, t)
+        t = re.sub(r'\b' + re.escape(src) + r'\b', dst, t)
     return t
 
 
@@ -325,30 +250,18 @@ def levenshtein(s1, s2):
 
 
 def fuzzy_word_match(qw, tw):
-    """
-    BUG-05 FIX: Threshold was 0.55 → caused "Dil" to match "Dal", "Teri" to
-    match "Tere", and other short-word collisions producing wrong-song hits.
-    Raised to 0.80 for short words (≤4 chars) and 0.75 for longer words.
-    Prefix match and substring match kept as high-confidence fast paths.
-    """
     if tw.startswith(qw): return 1.0
     if qw in tw: return 0.85
     max_len = max(len(qw), len(tw))
     if max_len == 0: return 0.0
     ratio = 1.0 - (levenshtein(qw, tw) / max_len)
-    # Stricter floor for short words where one edit = big ratio drop
-    min_ratio = 0.80 if max_len <= 4 else 0.75
-    return ratio if ratio >= min_ratio else 0.0
+    # FIX: 0.55 → 0.75 — "Dil" vs "Dal" jaisi false matches band
+    return ratio if ratio >= 0.75 else 0.0
 
 
 def title_score(query, song_title, song_artist=''):
-    """
-    BUG-04 FIX: song_artist parameter was accepted but mixed into title scoring
-    logic in some call sites. This function now ONLY scores the title match.
-    Artist scoring is always done separately in compute_confidence().
-    The parameter is kept for API compatibility but has no effect on scoring.
-    """
     q, t = normalize(query), normalize(song_title)
+    # FIX: Artist ko title scoring se hataya — artist mixing wrong songs pass karta tha
     if not q: return 0.0
     if q == t: return 3.0
     q_words = q.split(); t_words = t.split()
@@ -363,42 +276,25 @@ def title_score(query, song_title, song_artist=''):
 
 
 def dynamic_min_score(query):
-    """
-    BUG-09 FIX: Single/double character queries had floor of 0.20 which is
-    dangerously low and caused any random song to pass. Raised floors:
-    - ≤2 chars: 0.40  (was 0.20 — practically no filter)
-    - ≤5 chars: 0.50  (was 0.40)
-    - ≤10 chars: 0.60  (was 0.55)
-    - >10 chars: 0.68  (was 0.65)
-    """
     length = len(normalize(query).replace(' ', ''))
-    if length <= 2:    return 0.40   # BUG-09 FIX: was 0.20
-    elif length <= 5:  return 0.50   # BUG-09 FIX: was 0.40
-    elif length <= 10: return 0.60   # BUG-09 FIX: was 0.55
-    else:              return 0.68   # BUG-09 FIX: was 0.65
+    if length <= 2:    return 0.20
+    elif length <= 5:  return 0.40
+    elif length <= 10: return 0.55
+    else:              return 0.65
 
 
 def has_word_match(query, song_title):
-    """
-    BUG-06 FIX: Threshold was 0.55 — same problem as fuzzy_word_match.
-    Raised to 0.75 to prevent wrong short-word songs from passing the
-    word-match gate that precedes confidence scoring.
-    BUG-46 FIX: Single short-word queries (≤4 chars) now require the first
-    title word to START WITH the query word, preventing "Kal" matching "Dil".
-    """
     q_words = normalize(query).split()
     t_words = normalize(song_title).split()
     if not q_words or not t_words: return True
     q_main  = [w for w in q_words if len(w) >= 3]
     t_main  = [w for w in t_words if len(w) >= 3]
     if not q_main: return True
-    # BUG-46 FIX: Single short query word — require strong prefix match on t_words[0]
-    if len(q_main) == 1 and len(q_main[0]) <= 4:
-        return t_main and t_main[0].startswith(q_main[0])
     if t_main and q_main[0] == t_main[0]: return True
     for qw in q_main:
         for tw in t_main:
-            if fuzzy_word_match(qw, tw) >= 0.75: return True  # BUG-06 FIX: was 0.55
+            # FIX: 0.55 → 0.75 — low threshold wrong matches pass karta tha
+            if fuzzy_word_match(qw, tw) >= 0.75: return True
     return False
 
 
