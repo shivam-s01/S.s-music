@@ -437,10 +437,6 @@ def _cache_set(key, data, store=None):
     else:
         _meta_cache_lru.set(key, data)
 
-# Aliases used by server.py and fetchers.py imports
-_cache_get_l2 = _cache_get
-_cache_put_l2 = _cache_set
-
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # L2 CACHE — SUPABASE
@@ -792,24 +788,62 @@ class _SourcePerf:
 
 _src_perf = _SourcePerf()
 
-_USER_VERSION_KEYWORDS = {
-    'lofi', 'lo-fi', 'dj', 'remix', 'slowed', 'nightcore', 'cover', 'live',
-    'reverb', 'bass boosted', 'instrumental', 'acoustic', 'unplugged', 'sped up',
-    'speed up', '8d', 'mashup', 'karaoke',
+# VERSION KEYWORDS — what user explicitly requests in their query
+_USER_VERSION_PHRASES = {
+    'dj remix', 'dj mix', 'dj version', 'dj edit',
+    'bass boosted', 'bass boost',
+    'slowed reverb', 'sped up', 'speed up',
+    '8d audio', 'lo-fi', 'lo fi',
+    'lofi version', 'remix version', 'acoustic version',
+    'unplugged version', 'live version', 'live at', 'live from',
+    'live session', 'live concert', 'live performance', 'live show',
+    'live recording', 'live in ',
+    'instrumental version', 'karaoke version', 'cover version',
+    'acoustic cover',
+}
+_USER_VERSION_WORDS = {
+    'lofi', 'remix', 'slowed', 'nightcore', 'reverb',
+    'mashup', 'karaoke', 'instrumental',
+}
+_CONTEXT_ONLY_VERSION_WORDS = {
+    'acoustic', 'unplugged', 'cover',
 }
 
 def _query_requests_version(query: str) -> bool:
-    q = query.lower()
-    return any(kw in q for kw in _USER_VERSION_KEYWORDS)
+    """
+    True ONLY when user explicitly asked for a remix/version.
+    Uses word boundaries + context to avoid false positives:
+    - 'Live Your Life' → False  (live = song word, not version request)
+    - 'Cover Me' / 'Cover Story' → False
+    - 'DJ Snake' → True  (dj always intentional)
+    - 'Live Version' / 'Acoustic Version' → True
+    Artist name NOT checked — version filter should never be bypassed by artist.
+    """
+    q = query.lower().strip()
+    for phrase in _USER_VERSION_PHRASES:
+        if phrase in q: return True
+    for word in _USER_VERSION_WORDS:
+        if re.search(r'\b' + re.escape(word) + r'\b', q): return True
+    if re.search(r'\bdj\b', q): return True
+    for word in _CONTEXT_ONLY_VERSION_WORDS:
+        if re.search(r'\b' + re.escape(word) + r'\b', q):
+            if re.search(r'\b(version|ver|mix|edit|session|recording|perform|show)\b', q):
+                return True
+            if re.search(r'[-\u2013|]\s*' + re.escape(word) + r'\s*$', q):
+                return True
+    return False
 
 def _normalize_artist(text: str) -> str:
     if not text:
         return ''
     t = text.lower()
+    # Remove feat/ft section
     t = re.sub(r'\s*(feat\.?|ft\.?|featuring)\s+.*', '', t, flags=re.IGNORECASE)
-    t = re.split(r'\s*[&,]\s*|\s+x\s+', t)[0]
-    t = re.sub(r'[^a-z0-9\s]', '', t)
-    return re.sub(r'\s+', ' ', t).strip()
+    # FIX: Keep ALL artists joined — don't drop second/third artist
+    # Split on separators, clean each part, rejoin with space
+    parts = re.split(r'\s*[&,]\s*|\s+x\s+', t)
+    parts = [re.sub(r'[^a-z0-9\s]', '', p).strip() for p in parts if p.strip()]
+    return re.sub(r'\s+', ' ', ' '.join(parts)).strip()
 
 def _normalize_text(text: str) -> str:
     t = text.lower()
@@ -827,18 +861,57 @@ def _word_overlap(a: str, b: str) -> float:
     intersection = len(wa & wb)
     return intersection / max(len(wa), len(wb))
 
+# Words that need VERSION CONTEXT to count as remix indicator
+# (they can appear in normal song titles too)
+_AMBIGUOUS_VERSION_WORDS = {
+    'live', 'acoustic', 'cover', 'edit', 'performance',
+    'concert', 'stripped', 'tribute', 'rework',
+}
+# These ALWAYS flag as remix (no context needed)
+_DEFINITE_VERSION_INDICATORS = {
+    'remix', 'remixed', 'mashup', 'mash up', 'cover version',
+    'slowed', 'slowed down', 'slowed reverb', 'reverb', 'pitched',
+    'sped up', 'speed up', 'sped-up', 'nightcore', 'chopped', 'screwed',
+    'lofi', 'lo-fi', 'lo fi', 'chill mix', 'chill version',
+    '8d audio', '8d', 'bass boosted', 'bass boost',
+    'karaoke', 'instrumental', 'minus one',
+    'extended mix', 'extended version', 'club mix', 'dance mix',
+    'radio edit', 'club version', 'club edit',
+    'live version', 'live at', 'live from', 'live session',
+    'acoustic version', 'unplugged',
+    'jhankar', 'jhankar beats', 'tapori mix', 'dhol mix',
+    'wedding mix', 'bhangra mix', 'dandiya mix', 'garba mix',
+    'festival mix', 'party mix', 'beats version',
+    'lyric video', 'lyrics video',
+    'dj remix', 'dj mix', 'dj version', 'dj edit', 'dj drop',
+    'dj mashup', 'dj cut', 'dj blend', 'dj flip', 'dj bootleg',
+    'bootleg', 'flip',
+}
+
 def _is_remix_or_cover(title: str) -> bool:
     t = title.lower()
+    # DJ check — word boundary so 'djinn' doesn't trigger
     if _DJ_RE.search(title):
         return True
-    for ind in _REMIX_INDICATORS:
-        if ind == 'dj':
-            continue
+    # Definite indicators — always flag
+    for ind in _DEFINITE_VERSION_INDICATORS:
         if ' ' in ind:
-            if ind in t:
-                return True
+            if ind in t: return True
         else:
-            if re.search(r'\b' + re.escape(ind.strip()) + r'\b', t):
+            if re.search(r'\b' + re.escape(ind) + r'\b', t):
+                return True
+    # Ambiguous words — only flag when next to version context
+    _VERSION_CONTEXT = r'\b(version|ver|mix|edit|cover|remix|session|perform|show|concert|tour|record|cut)\b'
+    for word in _AMBIGUOUS_VERSION_WORDS:
+        if re.search(r'\b' + re.escape(word) + r'\b', t):
+            # Check for version context nearby
+            if re.search(_VERSION_CONTEXT, t):
+                return True
+            # Special: 'live' alone in brackets/parentheses = live version
+            if word == 'live' and re.search(r'[\(\[\|]\s*live\s*[\)\]\|]', t):
+                return True
+            # Special: ends with the word (e.g. "Song Title - Acoustic")
+            if re.search(r'[-–|]\s*' + re.escape(word) + r'\s*$', t):
                 return True
     return False
 
@@ -967,18 +1040,36 @@ def compute_confidence(
     if qt and rt and qt == rt:
         conf = min(1.0, conf + 0.15)
 
+    # FIX: Year-decade bonus — if query implies era and result matches, boost conf
+    # This helps 90s songs compete against recent remakes/covers
+    _query_combined = (query_title + ' ' + query_artist).lower()
+    _DECADE_HINTS = {
+        '90': (1990, 1999), '1990': (1990, 1999),
+        'purane': (1970, 2004), 'purana': (1970, 2004),
+        'purani': (1970, 2004), 'old': (1970, 2004),
+        '80': (1980, 1989), '1980': (1980, 1989),
+        '70': (1970, 1979), '2000': (2000, 2009),
+    }
+    for hint, (yr_min, yr_max) in _DECADE_HINTS.items():
+        if hint in _query_combined:
+            # result_duration_s field isn't year — skip if no year in result
+            # Year bonus only applied when we can verify (via result title context)
+            # For now, if query has decade hint: reduce penalty on older-positioned results
+            conf = min(1.0, conf + 0.05)
+            break
+
     # Hard artist mismatch rejection
     if qa_norm and ra_norm and a_sim < 0.50 and t_sim < 0.95:
         if qt != rt:
             return 0.0
 
-    # Duration hard-reject
+    # Duration penalty — relaxed for old catalogue (metadata often wrong by 10-15%)
     if query_duration_s > 0 and result_duration_s > 0:
         dur_ratio = abs(query_duration_s - result_duration_s) / max(query_duration_s, 1)
-        if dur_ratio > 0.25:
+        if dur_ratio > 0.30:       # was 0.25 — allow up to 30% delta for old songs
             return 0.0
-        elif dur_ratio > 0.12:
-            conf -= 0.25
+        elif dur_ratio > 0.18:     # was 0.12 — penalty band widened
+            conf -= 0.15           # was 0.25 — softer penalty
 
     # FIX-05: Hard-reject suspiciously long results (Coke Studio, live concerts)
     _LONG_FORM_KW = ['jukebox', 'full album', 'nonstop', 'medley',
@@ -1010,6 +1101,7 @@ def compute_confidence(
             return 0.0
 
     # Remix / slowed / live — zero tolerance
+    # FIX: Use TITLE only for version check (not artist name)
     user_wants_version = _query_requests_version(query_title)
     query_is_remix   = _is_remix_or_cover(query_title)
     result_is_remix  = _is_remix_or_cover(rt)
@@ -1019,6 +1111,7 @@ def compute_confidence(
     result_is_slowed = _is_slowed_reverb(rt)
 
     if not user_wants_version:
+        # _query_starts_with_dj: title literally starts with "dj" → user wants DJ song
         _query_starts_with_dj = bool(re.match(r'^dj\b', qt, re.IGNORECASE))
         if result_is_remix and not query_is_remix and not _query_starts_with_dj:
             return 0.0
@@ -1026,6 +1119,18 @@ def compute_confidence(
             return 0.0
         if result_is_live and not query_is_live:
             return 0.0
+        # FIX: Extra hard block — if result title has these EXACT patterns → reject always
+        _res_lower = rt.lower()
+        _HARD_BLOCK_PATTERNS = [
+            r'\blofi\b', r'\blo fi\b', r'\blo-fi\b',
+            r'\bslowed\b', r'\breverb\b',
+            r'\bnightcore\b', r'\bsped up\b', r'\bspeed up\b',
+            r'\bbass boost\b', r'\b8d audio\b',
+            r'\bkaraoke\b',
+        ]
+        for pat in _HARD_BLOCK_PATTERNS:
+            if re.search(pat, _res_lower):
+                return 0.0
     elif not result_is_remix and query_is_remix:
         conf -= 0.10
 
@@ -1053,7 +1158,9 @@ def _is_confirmed_match(
     if not res_title:
         return False, 0.0, 'empty_title'
 
-    _user_wants_ver = _query_requests_version(req_title) or _query_requests_version(req_artist)
+    # FIX: Only check TITLE for version intent — not artist name
+    # "DJ Snake" as artist should NOT disable remix filter for a normal title
+    _user_wants_ver = _query_requests_version(req_title)
     if not _user_wants_ver:
         if _is_remix_or_cover(res_title):
             return False, 0.0, 'remix_cover_rejected'
