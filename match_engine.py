@@ -1,5 +1,6 @@
 # match_engine.py — Title/artist matching, text helpers, confidence scoring
 # Imported by: fetchers.py, server.py
+# PATCH: DJ standalone fix, stronger version DNA, MB optimization
 
 import re
 from typing import Optional, Dict, Any, List, Tuple
@@ -14,43 +15,43 @@ from core import (
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # VERSION DNA — PERMANENT MISMATCH PREVENTION
-# Ye sabse pehla gate hai — text similarity se pehle check hota hai
-# Koi bhi version word result mein ho aur user ne nahi manga → REJECT
+# PATCH: 'dj' standalone added, Bhojpuri DJ titles fix,
+#        extra definite version words added
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Definite version words — in mein se koi bhi ho toh instantly reject
 _VERSION_DNA = {
-    # Lofi / slowed
+    # ── Lofi / slowed ──
     'lofi', 'lo-fi', 'lo fi', 'slowed', 'reverb', 'slowed reverb',
     'nightcore', 'sped up', 'speed up', 'pitched', 'chopped', 'screwed',
     '8d audio', '8d', 'bass boosted', 'bass boost',
-    # Remix / DJ
+    # ── Remix / DJ ──
+    'dj',           # <── PATCH: standalone dj word — "DJ Wala", "DJ Drop" etc.
     'remix', 'dj remix', 'dj mix', 'dj version', 'dj edit', 'dj drop',
     'mashup', 'mash up', 'bootleg', 'flip', 'rework',
-    # Cover / Karaoke
+    # ── Cover / Karaoke ──
     'cover', 'cover version', 'tribute', 'karaoke', 'instrumental',
     'minus one',
-    # Live / Session
+    # ── Live / Session ──
     'live version', 'live at', 'live from', 'live session',
     'acoustic version', 'unplugged', 'stripped',
     'coke studio', 'mtv unplugged', 'nescafe basement',
     'velo sound', 'tiny desk', 'spotify session', 'studio session',
-    # Extended / Club
+    # ── Extended / Club ──
     'extended mix', 'extended version', 'club mix', 'dance mix',
     'radio edit', 'club version', 'club edit', 'festival mix',
     'party mix',
-    # Indian specific
+    # ── Indian specific ──
     'jhankar', 'jhankar beats', 'tapori mix', 'dhol mix',
     'wedding mix', 'bhangra mix', 'dandiya mix', 'garba mix',
     'beats version',
-    # Lyric video (not actual song)
+    # ── Lyric video ──
     'lyric video', 'lyrics video',
 }
 
-# DJ word boundary check (special case — 'djinn' jaisi words avoid karne ke liye)
+# DJ word boundary check — 'djinn', 'dja' jaisi words avoid
 _DJ_WORD_RE = re.compile(r'\bdj\b', re.IGNORECASE)
 
-# Context-dependent words — sirf version context mein flag karo
+# Context-dependent words — sirf version context mein flag
 _AMBIGUOUS_DNA = {
     'live', 'acoustic', 'cover', 'edit', 'stripped',
     'concert', 'performance', 'tribute',
@@ -63,19 +64,21 @@ _VERSION_CONTEXT_RE = re.compile(
 
 def get_song_dna(title: str) -> set:
     """
-    Song ke title se version DNA extract karo.
-    Return: set of version types found {'lofi', 'remix', 'live', etc.}
-    Empty set = clean original song.
+    Song title se version DNA extract karo.
+    Return: set of version types found — empty = clean original song.
+    PATCH: 'dj' standalone word checked via _DJ_WORD_RE first.
     """
     t = title.lower().strip()
     found = set()
 
-    # DJ check
+    # PATCH: DJ check FIRST — word boundary se, 'djinn' avoid
     if _DJ_WORD_RE.search(title):
-        found.add('remix')
+        found.add('dj')
 
     # Definite version words
     for word in _VERSION_DNA:
+        if word == 'dj':
+            continue  # already handled above
         if ' ' in word:
             if word in t:
                 found.add(word)
@@ -98,21 +101,44 @@ def get_song_dna(title: str) -> set:
 
 def dna_compatible(query_title: str, result_title: str) -> bool:
     """
-    PERMANENT MISMATCH PREVENTION:
-    Query aur result ka DNA match karna chahiye.
+    PERMANENT MISMATCH PREVENTION — confidence score se PEHLE check.
+    PATCH: DJ songs properly blocked — "Pawan Singh DJ Mix" user ne nahi manga
+           toh reject, even if title similarity high ho.
+    PATCH2: Empty result title = always reject (prevent silent bypass)
+    PATCH3: Parenthetical version check — "Song (Dhol Mix)" type titles
 
-    - User ne lofi manga → lofi result chahiye
-    - User ne normal song manga → koi bhi version NAHI chahiye
-    - User ne remix manga → remix chahiye, lofi nahi
-
-    Ye function KABHI bypass nahi hoga — confidence score se pehle check hota hai.
+    - User ne clean song manga → koi bhi version NAHI chahiye (DJ bhi nahi)
+    - User ne DJ remix manga → DJ remix chahiye, lofi nahi
+    - User ne lofi manga → lofi chahiye, remix nahi
     """
+    # PATCH2: Empty title = reject, never pass
+    if not result_title or not result_title.strip():
+        return False
+
     q_dna = get_song_dna(query_title)
     r_dna = get_song_dna(result_title)
+
+    # PATCH3: Extra parenthetical check — "Ooh La La (Dhol Mix)" type
+    # get_song_dna se alag — bracket content ko explicitly check karo
+    _paren_content = re.findall(r'[\(\[](.*?)[\)\]]', result_title.lower())
+    for _pc in _paren_content:
+        _pc = _pc.strip()
+        # Check against VERSION_DNA phrases
+        for vword in _VERSION_DNA:
+            if ' ' in vword:
+                if vword in _pc:
+                    r_dna.add(vword)
+            else:
+                if re.search(r'\b' + re.escape(vword) + r'\b', _pc):
+                    r_dna.add(vword)
+        # DJ check inside brackets
+        if _DJ_WORD_RE.search(_pc):
+            r_dna.add('dj')
 
     # User ne clean song manga
     if not q_dna:
         # Result mein koi bhi version word = REJECT
+        # PATCH: DJ word bhi block — Bhojpuri DJ songs bypass fix
         return len(r_dna) == 0
 
     # User ne koi specific version manga
@@ -255,13 +281,11 @@ def fuzzy_word_match(qw, tw):
     max_len = max(len(qw), len(tw))
     if max_len == 0: return 0.0
     ratio = 1.0 - (levenshtein(qw, tw) / max_len)
-    # FIX: 0.55 → 0.75 — "Dil" vs "Dal" jaisi false matches band
     return ratio if ratio >= 0.75 else 0.0
 
 
 def title_score(query, song_title, song_artist=''):
     q, t = normalize(query), normalize(song_title)
-    # FIX: Artist ko title scoring se hataya — artist mixing wrong songs pass karta tha
     if not q: return 0.0
     if q == t: return 3.0
     q_words = q.split(); t_words = t.split()
@@ -293,7 +317,6 @@ def has_word_match(query, song_title):
     if t_main and q_main[0] == t_main[0]: return True
     for qw in q_main:
         for tw in t_main:
-            # FIX: 0.55 → 0.75 — low threshold wrong matches pass karta tha
             if fuzzy_word_match(qw, tw) >= 0.75: return True
     return False
 
@@ -317,15 +340,28 @@ def pick_best_quality(urls):
 
 
 def pick_image(song):
+    """
+    PATCH: image pick karo — 500x500 force, fallback chain improved.
+    """
     images = song.get('image') or []
     if isinstance(images, list) and images:
+        # Highest resolution last mein hoti hai saavn mein
         for item in reversed(images):
             url = item.get('url') or item.get('link') or ''
-            if url.startswith('http'):
+            if url and url.startswith('http'):
+                # Force 500x500
                 url = re.sub(r'\b(50|150|250)x(50|150|250)\b', '500x500', url)
+                # saavncdn quality fix
+                url = re.sub(r'-\d+x\d+\.jpg', '-500x500.jpg', url)
                 return url
     if isinstance(images, str) and images.startswith('http'):
-        return re.sub(r'\b(50|150|250)x(50|150|250)\b', '500x500', images)
+        url = re.sub(r'\b(50|150|250)x(50|150|250)\b', '500x500', images)
+        url = re.sub(r'-\d+x\d+\.jpg', '-500x500.jpg', url)
+        return url
+    # artworkUrl100 fallback (iTunes)
+    art = song.get('artworkUrl100', '')
+    if art and art.startswith('http'):
+        return re.sub(r'\b\d+x\d+\b', '600x600', art)
     return ''
 
 
