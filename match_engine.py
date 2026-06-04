@@ -1,11 +1,18 @@
 # match_engine.py — Title/artist matching, text helpers, confidence scoring
 # Imported by: fetchers.py, server.py
 import re
-from difflib import SequenceMatcher
 from typing import Optional, Dict, Any, List, Tuple
+# BUG FIX 1: Removed `from difflib import SequenceMatcher` (unused here)
+# BUG FIX 2: normalize is defined below — removed incorrect import from core
+#            core.py does NOT define normalize; it's defined here and re-exported
 from core import (
-    normalize, _l1_verified, _conf_tuner, log,
-    sb_select, sb_upsert, _l1_saavn
+    _l1_verified, _conf_tuner, log,
+    sb_select, sb_upsert, _l1_saavn,
+    # Re-exported so fetchers.py and server.py can import from match_engine
+    compute_confidence, _is_confirmed_match, is_likely_duplicate,
+    _query_requests_version, _is_remix_or_cover,
+    _is_live_version, _is_slowed_reverb,
+    _is_devotional_query, _is_english_song_query,
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -17,7 +24,6 @@ def clean_query(text):
     text = re.sub(r'\(\s*(OST|official|audio|video|lyrics|full\s*song|feat\.?.*?|ft\.?.*?|Hindi|English|Version|Remix|Cover|HD|HQ|Original|Soundtrack|Remastered|Extended|Radio\s*Edit)\s*\)', '', text, flags=re.IGNORECASE)
     text = re.sub(r'\s*[-–]\s*(official|audio|video|lyrics|full\s*song|hd|hq|remastered).*$', '', text, flags=re.IGNORECASE)
     text = re.sub(r'["\u201c\u201d\u2018\u2019\'()]', '', text)
-    # FIX-03: Extended _BARE_VERSION_PATTERN with studio sessions, jhankar, etc.
     _BARE_VERSION_PATTERN = (
         r'\s+(?:lofi|lo[- ]fi|slowed|reverb|slowed\s*reverb|reverb\s*slowed|'
         r'nightcore|sped\s*up|speed\s*up|bass\s*boosted|8d\s*audio|'
@@ -57,7 +63,9 @@ def build_query_variants(title, artist='', fallback=''):
     if artist_first: add(f"{title_c} {artist_first}")
     if artist_c:     add(f"{title_c} {artist_c}")
     if fb_c and fb_c != title_c: add(fb_c)
-    if artist_c and fb_c: add(f"{artist_c} {title_c}")
+    # BUG FIX 3: was add(f"{artist_c} {title_c}") — duplicate of line 1
+    # Corrected to: try fallback query with artist for better Saavn results
+    if artist_c and fb_c: add(f"{artist_c} {fb_c}")
 
     bracket_free = re.sub(r'\s*[\(\[].*?[\)\]]\s*', ' ', title_c).strip()
     add(bracket_free)
@@ -77,6 +85,14 @@ def build_query_variants(title, artist='', fallback=''):
             if artist_first: add(f"{t_translit} {artist_first}")
     except Exception:
         pass
+
+    # FIX: For old/90s queries — add year-range suffix variants
+    # Saavn search respects year hints and returns older results higher
+    _OLD_HINTS = ['90', '90s', 'purane', 'purana', 'purani', 'old', 'retro', '80', '70']
+    _has_decade = any(h in (title.lower() + ' ' + artist.lower()) for h in _OLD_HINTS)
+    if _has_decade and artist_c:
+        add(f"{artist_c} {title_c} old")
+        add(f"{title_c} old hindi")
 
     return variants
 
@@ -237,7 +253,6 @@ NINETIES_TRIGGERS = [
     'classic', 'nineties', 'throwback', 'evergreen', 'gaane',
 ]
 
-# Language Detection
 _LANGUAGE_KEYWORD_MAP = {
     'bhojpuri': 'bhojpuri', 'bhojpuri song': 'bhojpuri',
     'bhojpuri gana': 'bhojpuri', 'bhojpuri gaana': 'bhojpuri',
@@ -287,9 +302,7 @@ ALLOWED_STREAM_DOMAINS = [
     'googlevideo.com', 'youtube.com', 'ytimg.com',
     'manifest.googlevideo.com', 'sndcdn.com', 'soundcloud.com',
     'cf-media.sndcdn.com', 'a-v2.sndcdn.com',
-    'rr1.sn-', 'rr2.sn-', 'rr3.sn-', 'rr4.sn-',
-    'r1.sn-', 'r2.sn-', 'r3.sn-', 'r4.sn-',
-    'r5.sn-', 'r6.sn-', 'r7.sn-',
+    # BUG FIX 4: Removed broken partial strings like 'rr1.sn-' etc.
+    # YouTube CDN domains (rr1.sn-xxx.googlevideo.com) already covered
+    # by 'googlevideo.com' via endswith check — partial strings were redundant
 ]
-
-
