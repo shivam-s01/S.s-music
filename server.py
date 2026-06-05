@@ -57,6 +57,7 @@ from fetchers import (
     _do_prefetch, _auto_prefetch_search_results,
     _url_refresh_queue,
     _l1_artwork, _l1_verified,
+    _fetch_itunes_artwork,
 )
 
 # ── Supabase header helper ────────────────────────────────────────────────────
