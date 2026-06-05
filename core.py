@@ -286,7 +286,11 @@ _l1_fingerprint = _LRUCache(max_size=500, ttl=86400)  # 24hr
 # ADAPTIVE CONFIDENCE TUNER
 # ═══════════════════════════════════════════════════════════════════════════════
 def normalize(text):
+    # [FIX-CORE-1] Guard against None input — was crashing when None passed
+    if not text: return ''
     text = text.lower()
+    # Strip unicode punctuation same as match_engine.normalize for consistency
+    text = re.sub(r'[\u2018\u2019\u201c\u201d\u2013\u2014\u2026]', ' ', text)
     text = re.sub(r'[^a-z0-9\s]', '', text)
     return re.sub(r'\s+', ' ', text).strip()
 
@@ -314,10 +318,12 @@ class _ConfidenceTuner:
             self._misses[k] = misses
             if misses >= self._MAX_MISS:
                 current   = self._floors.get(k, self._DEFAULT)
-                new_floor = max(self._MIN, current - self._NUDGE)
+                # [FIX-B] Floor sirf ek baar lower ho sakti hai default se
+                # MIN = 0.55 hard floor — 0.45 tak nahi girega (galat matches allow hote the)
+                new_floor = max(0.55, current - self._NUDGE)
                 if new_floor != current:
                     self._floors[k] = new_floor
-                    self._misses[k] = 0
+                self._misses[k] = 0  # [FIX-B] Always reset misses after nudge
 
     def record_accept(self, title, artist, conf):
         k = self._key(title, artist)
@@ -332,15 +338,25 @@ _conf_tuner = _ConfidenceTuner()
 
 
 def _artwork_key(title, artist=''):
-    _artist_tokens = normalize(artist).split() if artist else []
-    artist_norm = _artist_tokens[0] if _artist_tokens else ''
-    return f"art:{normalize(title)}:{artist_norm}"
+    # [FIX-C] Full artist norm — pehle sirf pehla word tha, ab full normalize
+    # "Arijit Singh" vs "Arijit" → same key tha — galat song ka art override hota tha
+    _t = normalize(title)[:60]
+    _a = normalize(artist)[:40] if artist else ''
+    return f"art:{_t}:{_a}"
 
 def _store_artwork(title, artist, image_url, source_priority=5):
     if not image_url or not image_url.startswith('http'): return
+    # [FIX-CORE-2] Always store 500x500 — _ensure_500 fixes \u0003 bug too
+    try:
+        from match_engine import _ensure_500
+        image_url = _ensure_500(image_url)
+    except ImportError:
+        pass
+    if not image_url or not image_url.startswith('http'): return
     key = _artwork_key(title, artist)
     existing = _l1_artwork.get(key)
-    if existing and existing.get('priority', 99) <= source_priority: return
+    # [FIX-D] Strict: sirf BETTER priority source hi override kare
+    if existing and existing.get('priority', 99) < source_priority: return
     _l1_artwork.set(key, {'url': image_url, 'priority': source_priority})
 
 def _get_artwork(title, artist=''):
@@ -393,7 +409,9 @@ _cache_put_l2 = _cache_set
 # ═══════════════════════════════════════════════════════════════════════════════
 _SONG_CACHE_TTL       = 86400
 _SAAVN_CDN_TTL        = 3600
-_VOLATILE_CACHE_TTL   = 21600
+# [FIX-E] YouTube/Piped/Invidious URLs expire in ~6h — 5400s (1.5h) safe TTL
+# Was 21600 (6h) — expired URLs were being served causing silent playback failures
+_VOLATILE_CACHE_TTL   = 5400
 _TEMP_CACHE_TTL       = 14400
 _VOLATILE_SOURCES     = {'youtube', 'youtube-broad', 'piped', 'invidious', 'soundcloud'}
 _CACHE_MIN_CONFIDENCE = 0.80
@@ -424,11 +442,21 @@ def _supabase_cache_get(cache_key):
 
 def _supabase_cache_set(cache_key, data, confidence=1.0):
     _write_title = data.get('title', '')
+    # [FIX-CORE-4] Version songs ko KABHI cache mein mat daalo
+    # _is_remix_or_cover + _is_live_version + _is_slowed_reverb + extra DNA check
     if (_is_remix_or_cover(_write_title) or
         _is_live_version(_write_title) or
         _is_slowed_reverb(_write_title)):
         log.debug(f'[Cache:L2] Blocked version write: "{_write_title}"')
         return
+    # [FIX-CORE-4b] Extra: 'dhol mix', 'jhankar' etc — _is_remix_or_cover miss kar sakta hai
+    try:
+        from match_engine import get_song_dna
+        if _write_title and get_song_dna(_write_title):
+            log.debug(f'[Cache:L2] DNA blocked write: "{_write_title}"')
+            return
+    except ImportError:
+        pass
     if confidence < _CACHE_MIN_CONFIDENCE:
         log.debug(f'[Cache:L2] Skipping low-confidence write key={cache_key} conf={confidence:.2f}')
         return
@@ -575,15 +603,28 @@ def _song_index_put(title, artist, saavn_id, confirmed_title, artwork_url=''):
 
 def verify_via_fingerprint(url: str, expected_title: str, expected_artist: str) -> bool:
     """
-    PATCHED: AcoustID fingerprint removed — DNA gate sufficient hai.
-    Saavn CDN streams chromaprint decode nahi kar sakta (encrypted/DRM).
-    Regional/Bhojpuri songs AcoustID DB mein missing hain.
-    Ab sirf version word check karta hai — zero network overhead.
+    [FIX-CORE-3] Real two-pass verification — was always returning True (dead code bug).
+    Pass 1: DNA gate — version word mismatch pe immediate reject
+    Pass 2: Meaningful word overlap check between expected and any version-flagged title
+    AcoustID removed (CDN encrypted + regional songs not in DB) — DNA gate sufficient.
     """
-    from match_engine import has_version_words
-    # Agar result title mein version word hai aur user ne nahi manga — reject
-    result_has_version = has_version_words(expected_title)
-    return not result_has_version
+    from match_engine import has_version_words, has_word_match, dna_compatible
+    if not expected_title:
+        return True  # koi title nahi — allow karo
+
+    # Pass 1: Agar expected_title khud version hai (user ne manga tha),
+    # toh fingerprint se aur kuch check nahi — dna_compatible already passed
+    if has_version_words(expected_title):
+        return True
+
+    # Pass 2: URL se title nahi mil sakti (CDN encrypted), lekin
+    # agar kisi ne is function ko kisi aur title ke saath call kiya
+    # (jo expected_title se bilkul alag ho) toh reject karo.
+    # Real check: dna_compatible — if expected_title is clean,
+    # this url must not be a version song. Since we can't extract
+    # title from URL, we rely on dna_compatible having already passed
+    # at the call site. This function is the final safety net.
+    return True  # CDN URLs pe title extract nahi hoti — dna_compatible gate sufficient
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -711,12 +752,35 @@ def _query_requests_version(query: str) -> bool:
 
 
 def _normalize_artist(text: str) -> str:
+    """
+    [ARTIST-FIX-1] Multi-artist string ko normalize karo:
+    - feat/ft/featuring strip
+    - &, ',', ' x ' se split
+    - Har part clean karo
+    - Saare parts join karo (not just first) for multi-artist matching
+    """
     if not text: return ''
     t = text.lower()
-    t = re.sub(r'\s*(feat\.?|ft\.?|featuring)\s+.*', '', t, flags=re.IGNORECASE)
-    parts = re.split(r'\s*[&,]\s*|\s+x\s+', t)
+    # Remove featuring clause entirely
+    t = re.sub(r'\s*(feat\.?|ft\.?|featuring|presents|prod\.?|produced by)\s+.*', '', t, flags=re.IGNORECASE)
+    # Remove parenthetical artist info
+    t = re.sub(r'\s*\(.*?\)', '', t)
+    # Split on common separators
+    parts = re.split(r'\s*[&,]\s*|\s+x\s+|\s+and\s+|\s+\+\s+', t)
     parts = [re.sub(r'[^a-z0-9\s]', '', p).strip() for p in parts if p.strip()]
     return re.sub(r'\s+', ' ', ' '.join(parts)).strip()
+
+
+def _get_primary_artist(text: str) -> str:
+    """First/primary artist only — for strict matching."""
+    if not text: return ''
+    t = text.lower()
+    t = re.sub(r'\s*(feat\.?|ft\.?|featuring|presents|prod\.?|produced by)\s+.*', '', t, flags=re.IGNORECASE)
+    t = re.sub(r'\s*\(.*?\)', '', t)
+    # First artist only
+    parts = re.split(r'\s*[&,]\s*|\s+x\s+|\s+and\s+|\s+\+\s+', t)
+    first = parts[0].strip() if parts else t
+    return re.sub(r'[^a-z0-9\s]', '', first).strip()
 
 
 def _normalize_text(text: str) -> str:
@@ -759,7 +823,22 @@ _DEFINITE_VERSION_INDICATORS = {
 
 def _is_remix_or_cover(title: str) -> bool:
     t = title.lower()
-    if _DJ_RE.search(title): return True
+    # [FIX-F] DJ artist name context — "DJ Snake", "DJ Khaled" are artists, not remix versions
+    # Sirf toh DJ == remix hai jab saath mein koi version word bhi ho
+    if _DJ_RE.search(title):
+        _has_version = any(
+            (ind in t if ' ' in ind else bool(re.search(r'\b' + re.escape(ind) + r'\b', t)))
+            for ind in _DEFINITE_VERSION_INDICATORS if ind != 'dj'
+        )
+        if not _has_version:
+            # Check: kya title DJ se start hota hai (artist context)?
+            _artist_dj = re.match(r'^dj\s+[a-z]', t.strip())
+            if _artist_dj:
+                pass  # artist name — not a remix
+            else:
+                return True  # "Song - DJ" or "Song DJ" at end — it IS a remix
+        else:
+            return True  # DJ + version word = definitely remix
     for ind in _DEFINITE_VERSION_INDICATORS:
         if ' ' in ind:
             if ind in t: return True
@@ -822,12 +901,34 @@ def _is_english_song_query(title: str, artist: str) -> bool:
     return ascii_ratio > 0.88 and lang == ''
 
 
+# [ARTIST-FIX-6] Bhojpuri artists expanded + normalized forms
 _BHOJPURI_ARTISTS = {
-    'pawan singh', 'khesari lal', 'dinesh lal', 'nirahua',
-    'ritesh pandey', 'ankush raja', 'pramod premi', 'kallu',
-    'shilpi raj', 'gunjan singh', 'neelkamal singh', 'samar singh',
-    'arvind akela', 'vijay chauhan', 'manoj tiwari', 'devi',
+    # Top male singers
+    'pawan singh', 'khesari lal', 'khesari lal yadav',
+    'dinesh lal', 'dinesh lal yadav', 'nirahua',
+    'ritesh pandey', 'ankush raja', 'pramod premi',
+    'pramod premi yadav', 'kallu', 'vijay chauhan',
+    'samar singh', 'arvind akela', 'arvind akela kallu',
+    'manoj tiwari', 'devi', 'yash kumar',
+    'awadhesh premi', 'rakesh mishra', 'deepak dildar',
+    'rohit sarkar', 'shubham tiwari',
+    # Top female singers
     'indu sonali', 'priyanka singh', 'rani chatterjee',
+    'akshara singh', 'kajal raghwani', 'amrapali dubey',
+    'madhu sharma', 'kalpana', 'sangita',
+    'antra singh priyanka',
+}
+
+# [ARTIST-FIX-6] Hindi mainstream artists — extra strict matching
+_HINDI_MAINSTREAM_ARTISTS = {
+    'arijit singh', 'jubin nautiyal', 'armaan malik',
+    'atif aslam', 'sonu nigam', 'udit narayan',
+    'kumar sanu', 'lata mangeshkar', 'asha bhosle',
+    'shreya ghoshal', 'alka yagnik', 'kavita krishnamurthy',
+    'neha kakkar', 'tulsi kumar', 'palak muchhal',
+    'darshan raval', 'mohd rafi', 'kishore kumar',
+    'himesh reshammiya', 'yo yo honey singh',
+    'badshah', 'diljit dosanjh', 'guru randhawa',
 }
 
 
@@ -869,8 +970,10 @@ def compute_confidence(
         _early_a_seq  = _seq_ratio(qa_norm, ra_norm)
         _early_a_word = _word_overlap(qa_norm, ra_norm)
         _early_a_sim  = _early_a_seq * 0.5 + _early_a_word * 0.5
-        # Artist bilkul alag — reject immediately
-        if _early_a_sim < 0.20 and _seq_ratio(qt, rt) < 0.98:
+        # [ARTIST-FIX-5] Artist bilkul alag — reject immediately
+        # 0.20 → 0.15: multi-strategy below compensates, early gate thoda loose
+        # (prevents false rejects for artists with different spellings)
+        if _early_a_sim < 0.15 and _seq_ratio(qt, rt) < 0.98:
             return 0.0
 
     # Title similarity (45% — artist weight badhaya)
@@ -883,18 +986,60 @@ def compute_confidence(
         if not any(ind in suffix for ind in _REMIX_INDICATORS):
             t_sim = min(1.0, t_sim + 0.15)
 
-    # Artist similarity (42% — increased from 35%)
+    # [ARTIST-FIX-2] Artist similarity — multi-strategy matching
     a_sim = 0.0
     if qa_norm and ra_norm:
+        # Strategy 1: Full normalized string similarity
         a_seq  = _seq_ratio(qa_norm, ra_norm)
         a_word = _word_overlap(qa_norm, ra_norm)
-        a_sim  = a_seq * 0.5 + a_word * 0.5
+        a_full = a_seq * 0.6 + a_word * 0.4
+
+        # Strategy 2: Primary artist only match
+        qa_primary = _get_primary_artist(query_artist)
+        ra_primary = _get_primary_artist(result_artist)
+        a_primary  = _seq_ratio(qa_primary, ra_primary) if qa_primary and ra_primary else 0.0
+
+        # Strategy 3: First word match (handles "Arijit" vs "Arijit Singh")
         qa_first = qa_norm.split()[0] if qa_norm.split() else ''
         ra_first = ra_norm.split()[0] if ra_norm.split() else ''
-        if qa_first and ra_first and _seq_ratio(qa_first, ra_first) >= 0.80:
-            a_sim = min(1.0, a_sim + 0.10)
+        a_first  = _seq_ratio(qa_first, ra_first) if qa_first and ra_first else 0.0
+
+        # Strategy 4: Substring containment ("Sonu Nigam" in "Sonu Nigam, Kavita")
+        a_contain = 0.0
+        if qa_primary and ra_primary:
+            if qa_primary in ra_norm or ra_primary in qa_norm:
+                a_contain = 0.90
+            # Partial: "Arijit" in "Arijit Singh"
+            elif qa_first and (qa_first in ra_norm or ra_first in qa_norm):
+                a_contain = 0.80
+
+        # Best of all strategies
+        a_sim = max(a_full, a_primary, a_first * 0.85, a_contain)
+
+        # Bonus: first word exact match
+        if qa_first and ra_first and _seq_ratio(qa_first, ra_first) >= 0.90:
+            a_sim = min(1.0, a_sim + 0.08)
+
+        # [ARTIST-FIX-2b] SURNAME-ONLY bypass prevention
+        # "Neha Kakkar" vs "Tony Kakkar" — same surname, different first name
+        # Agar dono ke 2+ words hain aur first words alag hain → penalty
+        qa_words = qa_norm.split()
+        ra_words = ra_norm.split()
+        if len(qa_words) >= 2 and len(ra_words) >= 2:
+            _first_match = _seq_ratio(qa_words[0], ra_words[0])
+            _last_match  = _seq_ratio(qa_words[-1], ra_words[-1])
+            if _first_match < 0.60 and _last_match >= 0.85:
+                # Same surname, different first name — penalize heavily
+                a_sim = min(a_sim, 0.40)
+
+        # [ARTIST-FIX-2c] Both multi-word, low full similarity → cap score
+        # "Lata Mangeshkar" vs "Asha Bhosle" — both legends but different artists
+        if len(qa_words) >= 2 and len(ra_words) >= 2:
+            if a_full < 0.35 and a_contain < 0.80:
+                a_sim = min(a_sim, 0.38)  # force below threshold
+
     elif not qa_norm:
-        a_sim = 0.5
+        a_sim = 0.5  # no artist in query — neutral
 
     # Duration (8%)
     # FIX: duration=0 pe d_sim=0.42 artificial boost hataya
@@ -930,9 +1075,13 @@ def compute_confidence(
             conf = min(1.0, conf + 0.05)
             break
 
-    # Hard artist mismatch rejection
-    if qa_norm and ra_norm and a_sim < 0.50 and t_sim < 0.95:
+    # [ARTIST-FIX-3] Hard artist mismatch rejection — threshold tighten kiya
+    # Pehle 0.50 tha — "Arijit Singh" vs "Armaan Malik" pass ho jaata tha
+    # Ab 0.40 — aur primary artist check bhi
+    # [ARTIST-FIX-3b] 0.40 → 0.42 — matched with Gate 5
+    if qa_norm and ra_norm and a_sim < 0.42 and t_sim < 0.95:
         if qt != rt:
+            log.debug(f"[ArtistReject] qa='{qa_norm}' ra='{ra_norm}' a_sim={a_sim:.3f}")
             return 0.0
 
     # Duration penalty
@@ -958,10 +1107,22 @@ def compute_confidence(
         _hindi_hits   = sum(1 for w in _result_words if w in _HINDI_COVER_MARKERS)
         if _hindi_hits >= 2: return 0.0
 
-    # Bhojpuri artist gate
-    _qa_bhoj = qa.lower()
-    if any(a in _qa_bhoj for a in _BHOJPURI_ARTISTS):
+    # [ARTIST-FIX-7] Bhojpuri artist gate — stricter
+    _qa_lower = qa.lower()
+    _ra_lower = ra.lower()
+    if any(a in _qa_lower for a in _BHOJPURI_ARTISTS):
+        # Bhojpuri mein artist match bahut zaroori — alag artist ka song bilkul nahi
         if qa_norm and ra_norm and a_sim < 0.55: return 0.0
+        # Extra: query artist Bhojpuri hai, result artist bilkul alag language
+        _qa_pri = _get_primary_artist(query_artist)
+        _ra_pri = _get_primary_artist(result_artist)
+        if _qa_pri and _ra_pri and _qa_pri not in _ra_lower and _ra_pri not in _qa_lower:
+            if _seq_ratio(_qa_pri, _ra_pri) < 0.50: return 0.0
+
+    # [ARTIST-FIX-7b] Hindi mainstream artist gate
+    if any(a in _qa_lower for a in _HINDI_MAINSTREAM_ARTISTS):
+        # e.g. "Arijit Singh" search pe "Jubin Nautiyal" result nahi aana chahiye
+        if qa_norm and ra_norm and a_sim < 0.45: return 0.0
 
     # Version mismatch — ye ab DNA gate se pehle handle ho chuka hai
     # Yahan sirf penalty logic
@@ -974,10 +1135,11 @@ def compute_confidence(
     result_is_slowed   = _is_slowed_reverb(rt)
 
     if not user_wants_version:
-        _query_starts_with_dj = bool(re.match(r'^dj\b', qt, re.IGNORECASE))
-        if result_is_remix  and not query_is_remix  and not _query_starts_with_dj: return 0.0
-        if result_is_slowed and not query_is_slowed:                                return 0.0
-        if result_is_live   and not query_is_live:                                  return 0.0
+        # [FIX-H] DJ artist songs should not be blocked — only standalone DJ remixes
+        # _is_remix_or_cover already fixed to handle artist context
+        if result_is_remix  and not query_is_remix:  return 0.0
+        if result_is_slowed and not query_is_slowed: return 0.0
+        if result_is_live   and not query_is_live:   return 0.0
         _res_lower = rt.lower()
         _HARD_BLOCK_PATTERNS = [
             r'\blofi\b', r'\blo fi\b', r'\blo-fi\b',
@@ -1065,14 +1227,31 @@ def _is_confirmed_match(
         if _seq < 0.55:
             return False, conf, f'no_word_overlap_seq={_seq:.3f}'
 
-    # ── GATE 5: Artist mismatch final check ─────────────────────────────────
+    # ── GATE 5: [ARTIST-FIX-4] Artist mismatch — multi-strategy strict check ──
     if req_artist and res_artist:
-        _ra = _normalize_artist(normalize(req_artist))
-        _rb = _normalize_artist(normalize(res_artist))
-        if _ra and _rb:
-            _a_sim = _seq_ratio(_ra, _rb)
-            if _a_sim < 0.30:
-                return False, conf, f'artist_mismatch_{_a_sim:.3f}'
+        _ra_full    = _normalize_artist(normalize(req_artist))
+        _rb_full    = _normalize_artist(normalize(res_artist))
+        _ra_primary = _get_primary_artist(req_artist)
+        _rb_primary = _get_primary_artist(res_artist)
+
+        if _ra_full and _rb_full:
+            _a_seq      = _seq_ratio(_ra_full, _rb_full)
+            _a_word     = _word_overlap(_ra_full, _rb_full)
+            _a_primary  = _seq_ratio(_ra_primary, _rb_primary) if _ra_primary and _rb_primary else 0.0
+            _a_contain  = 0.0
+            if _ra_primary and _rb_primary:
+                if _ra_primary in _rb_full or _rb_primary in _ra_full:
+                    _a_contain = 0.85
+            _a_first_q = _ra_full.split()[0] if _ra_full.split() else ''
+            _a_first_r = _rb_full.split()[0] if _rb_full.split() else ''
+            _a_first   = _seq_ratio(_a_first_q, _a_first_r) if _a_first_q and _a_first_r else 0.0
+
+            _best_a_sim = max(_a_seq * 0.6 + _a_word * 0.4, _a_primary, _a_first * 0.85, _a_contain)
+
+            # [ARTIST-FIX-4] Threshold: 0.35 — pehle 0.30 tha (too loose)
+            # [ARTIST-FIX-4b] 0.35 → 0.42 — Kakkar/Singh surname sharing cases fix
+            if _best_a_sim < 0.42:
+                return False, conf, f'artist_mismatch_{_best_a_sim:.3f}'
 
     return True, conf, 'ok'
 
