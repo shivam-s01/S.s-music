@@ -1,14 +1,15 @@
-# server.py — Flask routes (API endpoints)
-# Entry point: run with gunicorn or `python server.py`
 import os
 import re
 import hmac
 import hashlib
 import time
+import random
+import threading
 import secrets
 import string
 import logging
 import requests
+from concurrent.futures import as_completed
 from flask import request, jsonify, send_file, Response, stream_with_context
 from urllib.parse import urlparse, quote
 from datetime import datetime, timedelta
@@ -24,21 +25,55 @@ from core import (
     _get_artwork, _store_artwork,
     _get_verified, _store_verified,
     _song_index_get, _song_index_put,
-    _executor, _executor_bg,
+    _executor, _executor_bg, _executor_cache,
+    _supabase_cache_get_with_refresh, _supabase_cache_set,
+    _CACHE_MIN_CONFIDENCE,
+    _is_remix_or_cover, _is_live_version, _is_slowed_reverb,
+    compute_confidence,
 )
 from match_engine import (
     normalize, clean_query, build_query_variants,
     _detect_language, _is_devotional_query,
     _query_requests_version, NINETIES_TRIGGERS, NINETIES_SEEDS,
-    ALLOWED_STREAM_DOMAINS,
+    ALLOWED_STREAM_DOMAINS, dna_compatible,
+    _safe_year, _pick_low_quality,
 )
 from sources import (
-    SAAVN_MIRRORS, _best_mirrors, _health,
+    SAAVN_MIRRORS, PIPED_INSTANCES, INVIDIOUS_INSTANCES,
+    _best_mirrors, _health,
+    _mirror_lock, _piped_lock, _invidious_lock, _sc_client_id_lock,
+    SOUNDCLOUD_CLIENT_ID,
     _discover_mirrors, _heal_piped, _heal_invidious,
     _refresh_soundcloud_client_id,
     _maybe_reactive_heal,
 )
-from fetchers import *
+from fetchers import (
+    fetch_saavn_parallel, fetch_from_ytmusic, fetch_from_ytdlp,
+    fetch_from_soundcloud, fetch_from_piped, fetch_from_invidious,
+    fetch_from_jiosavan,
+    _fetch_saavn_search_parallel, _normalize_saavn_songs,
+    _resolve_itunes_to_saavn, _fetch_itunes_artwork,
+    _is_allowed_domain, is_likely_duplicate,
+    _do_prefetch, _auto_prefetch_search_results,
+    _url_refresh_queue,
+    _l1_artwork, _l1_verified,
+)
+
+# ── Supabase header helper ────────────────────────────────────────────────────
+def _sb_headers():
+    return {
+        'apikey':        SUPABASE_KEY,
+        'Authorization': f'Bearer {SUPABASE_KEY}',
+        'Content-Type':  'application/json',
+    }
+
+# ── Legacy cache stubs (kept for compat — L1/L2 already handle this) ─────────
+def _cache_get(key):
+    return _l1_meta.get(f"legacy:{key}")
+
+def _cache_set(key, value):
+    _l1_meta.set(f"legacy:{key}", value)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # /api/songs
@@ -46,19 +81,17 @@ from fetchers import *
 @app.route('/api/songs')
 @limiter.limit("60 per minute")
 def get_songs():
-    q       = request.args.get('q', 'top bollywood songs').strip()
-    era     = request.args.get('era', '').strip()
-    is_90s  = (era == '90s') or any(t in q.lower() for t in NINETIES_TRIGGERS)
+    q          = request.args.get('q', 'top bollywood songs').strip()
+    era        = request.args.get('era', '').strip()
+    is_90s     = (era == '90s') or any(t in q.lower() for t in NINETIES_TRIGGERS)
     search_term = random.choice(NINETIES_SEEDS) if is_90s else q
 
     cache_key = f"songs:{search_term.lower()}"
     cached    = _l1_meta.get(cache_key)
     if cached is not None:
+        # [SPEED-S1] Even on cache hit — prefetch in case L1 audio expired
+        _executor_bg.submit(_auto_prefetch_search_results, cached)
         return jsonify({'results': cached, '_cached': True})
-
-    legacy_cached = _cache_get(cache_key)
-    if legacy_cached is not None:
-        return jsonify({'results': legacy_cached, '_cached': True})
 
     itunes_results = []
     saavn_results  = []
@@ -82,7 +115,6 @@ def get_songs():
                 candidates = [s for s in results if s.get('trackName')][:30]
 
             resolve_futures = {
-                # BUG-7 FIX: use _executor_bg so play requests aren't blocked during browse
                 _executor_bg.submit(_resolve_itunes_to_saavn, s): s
                 for s in candidates
             }
@@ -107,7 +139,7 @@ def get_songs():
             if raw:
                 normalized = _normalize_saavn_songs(raw)
                 if is_90s:
-                    filtered = [s for s in normalized if 1990 <= _safe_year(s.get('releaseDate')) <= 1999]
+                    filtered   = [s for s in normalized if 1990 <= _safe_year(s.get('releaseDate')) <= 1999]
                     normalized = filtered if len(filtered) >= 5 else normalized
                     random.shuffle(normalized)
                 saavn_results = normalized[:30]
@@ -127,7 +159,8 @@ def get_songs():
 
     if merged:
         _l1_meta.set(cache_key, merged)
-        _cache_set(cache_key, merged)
+        # [SPEED-S1] Prefetch top 3 songs immediately after search — next play = L1 hit
+        _executor_bg.submit(_auto_prefetch_search_results, merged)
         return jsonify({'results': merged})
 
     return jsonify({'results': [], 'error': 'No results found'})
@@ -143,6 +176,7 @@ def get_90s_songs():
     cache_key = f"songs:{seed.lower()}"
     cached    = _l1_meta.get(cache_key)
     if cached is not None:
+        _executor_bg.submit(_auto_prefetch_search_results, cached)
         return jsonify({'results': cached, 'seed': seed, '_cached': True})
 
     raw = _fetch_saavn_search_parallel(seed)
@@ -152,7 +186,8 @@ def get_90s_songs():
         result     = (filtered if len(filtered) >= 5 else normalized)[:30]
         random.shuffle(result)
         _l1_meta.set(cache_key, result)
-        _cache_set(cache_key, result)
+        # [SPEED-S2] Prefetch immediately
+        _executor_bg.submit(_auto_prefetch_search_results, result)
         return jsonify({'results': result, 'seed': seed})
 
     try:
@@ -168,7 +203,6 @@ def get_90s_songs():
         candidates = filtered[:30]
 
         resolve_futures = {
-            # BUG-7 FIX: background pool, not audio pool
             _executor_bg.submit(_resolve_itunes_to_saavn, s): s for s in candidates
         }
         resolved = []
@@ -182,7 +216,7 @@ def get_90s_songs():
 
         result = resolved[:30]
         _l1_meta.set(cache_key, result)
-        _cache_set(cache_key, result)
+        _executor_bg.submit(_auto_prefetch_search_results, result)
         return jsonify({'results': result, 'seed': seed})
     except Exception as e:
         return jsonify({'results': [], 'error': str(e)})
@@ -204,50 +238,50 @@ def get_saavn_song():
 
     _ck   = f"saavn:{normalize(q)}:{normalize(artist)}"
     _lang = _detect_language(q + ' ' + artist)
-    # BUG-1 FIX: helper to reject cached remix/live/slowed versions
+
     def _saavn_cache_valid(entry):
         if not entry or not entry.get('url'): return None
         _user_wants_ver = _query_requests_version(q) or _query_requests_version(artist)
         _ct = entry.get('title', '')
-        if not _user_wants_ver and (
-            _is_remix_or_cover(_ct) or
-            _is_live_version(_ct) or
-            _is_slowed_reverb(_ct)
-        ):
-            log.info(f"[Cache:/api/saavn] VERSION REJECTED: '{_ct}' for query='{q}'")
-            return None
+        # DNA check — version mismatch reject
+        if not _user_wants_ver:
+            if (_is_remix_or_cover(_ct) or _is_live_version(_ct) or _is_slowed_reverb(_ct)):
+                log.info(f"[Cache:/api/saavn] VERSION REJECTED: '{_ct}' for query='{q}'")
+                return None
+            if _ct and not dna_compatible(q, _ct):
+                log.info(f"[Cache:/api/saavn] DNA REJECTED: '{_ct}' for query='{q}'")
+                return None
         return entry
 
     if not low_quality:
         l1_hit = _saavn_cache_valid(_l1_saavn.get(_ck))
         if l1_hit:
             log.info(f"[Cache:L1] HIT saavn: '{q}'")
-            _best_art = _get_artwork(q, artist)
-            if not _best_art and l1_hit.get('image'):
-                _best_art = l1_hit['image']
-            if _best_art:
-                l1_hit = dict(l1_hit); l1_hit['image'] = _best_art
+            _best_art = _get_artwork(q, artist) or l1_hit.get('image', '')
+            if _best_art: l1_hit = dict(l1_hit); l1_hit['image'] = _best_art
             return jsonify({'success': True, 'token': token, **l1_hit})
         elif _l1_saavn.get(_ck):
-            _l1_saavn.delete(_ck)  # invalidate poisoned cache
+            _l1_saavn.delete(_ck)
 
-    _cached = _saavn_cache_valid(_supabase_cache_get_with_refresh(_ck))
-    if _cached and not low_quality:
-        log.info(f"[Cache:L2] HIT saavn: '{q}'")
-        _best_art = _get_artwork(q, artist)
-        if not _best_art and _cached.get('image'):
-            _best_art = _cached['image']
-        if _best_art:
-            _cached = dict(_cached); _cached['image'] = _best_art
-        _l1_saavn.set(_ck, _cached)
-        return jsonify({'success': True, 'token': token, **_cached})
+    # [SPEED-S3] L2 Supabase async — 0.2s window, non-blocking
+    if not low_quality:
+        _l2_fut = _executor_cache.submit(_supabase_cache_get_with_refresh, _ck)
+        try:
+            _l2_raw = _l2_fut.result(timeout=0.20)
+            _cached = _saavn_cache_valid(_l2_raw)
+            if _cached:
+                log.info(f"[Cache:L2] HIT saavn: '{q}'")
+                _best_art = _get_artwork(q, artist) or _cached.get('image', '')
+                if _best_art: _cached = dict(_cached); _cached['image'] = _best_art
+                _l1_saavn.set(_ck, _cached)
+                return jsonify({'success': True, 'token': token, **_cached})
+        except Exception:
+            pass
 
     def _best_image(res_img):
-        """Get best artwork: cache → result image → iTunes fallback."""
         art = _get_artwork(q, artist)
         if art: return art
         if res_img and res_img.startswith('http'): return res_img
-        # iTunes fallback — non-blocking, 1.5s max
         try:
             _f = _executor_bg.submit(_fetch_itunes_artwork, q, artist)
             _a = _f.result(timeout=1.5)
@@ -272,8 +306,7 @@ def get_saavn_song():
     if ytm and ytm.get('url'):
         conf = float(ytm.get('_confidence', 0.0))
         ytm['image'] = _best_image(ytm.get('image', ''))
-        if conf >= _CACHE_MIN_CONFIDENCE:
-            _l1_saavn.set(_ck, ytm)
+        if conf >= _CACHE_MIN_CONFIDENCE: _l1_saavn.set(_ck, ytm)
         _executor_cache.submit(_supabase_cache_set, _ck, ytm, conf)
         return jsonify({'success': True, 'token': token, **ytm})
 
@@ -281,8 +314,7 @@ def get_saavn_song():
     if yt and yt.get('url'):
         conf = float(yt.get('_confidence', 0.0))
         yt['image'] = _best_image(yt.get('image', ''))
-        if conf >= _CACHE_MIN_CONFIDENCE:
-            _l1_saavn.set(_ck, yt)
+        if conf >= _CACHE_MIN_CONFIDENCE: _l1_saavn.set(_ck, yt)
         _executor_cache.submit(_supabase_cache_set, _ck, yt, conf)
         return jsonify({'success': True, 'token': token, **yt})
 
@@ -290,8 +322,7 @@ def get_saavn_song():
     if sc and sc.get('url'):
         conf = float(sc.get('_confidence', 0.0))
         sc['image'] = _best_image(sc.get('image', ''))
-        if conf >= _CACHE_MIN_CONFIDENCE:
-            _l1_saavn.set(_ck, sc)
+        if conf >= _CACHE_MIN_CONFIDENCE: _l1_saavn.set(_ck, sc)
         _executor_cache.submit(_supabase_cache_set, _ck, sc, conf)
         return jsonify({'success': True, 'token': token, **sc})
 
@@ -321,52 +352,28 @@ def resolve_song():
                 'success': True, 'token': token,
                 'url':     f"/api/stream?url={quote(result['url'], safe='')}",
                 'quality': result['quality'], 'title': result['title'],
-                'artist':  result['artist'], 'image': _rart,
+                'artist':  result['artist'],  'image': _rart,
                 'source':  'saavn',
             })
 
-    ytm = fetch_from_ytmusic(q, artist)
-    if ytm and ytm.get('url'):
-        _rart = _get_artwork(q, artist) or ytm.get('image', '')
-        return jsonify({'success': True, 'token': token,
-                        'url':    f"/api/stream?url={quote(ytm['url'], safe='')}",
-                        'quality': ytm['quality'], 'title': ytm['title'],
-                        'artist':  ytm['artist'], 'image': _rart,
-                        'source':  'ytmusic'})
-
-    yt = fetch_from_ytdlp(q, artist)
-    if yt and yt.get('url'):
-        _rart = _get_artwork(q, artist) or yt.get('image', '')
-        return jsonify({'success': True, 'token': token,
-                        'url':    f"/api/stream?url={quote(yt['url'], safe='')}",
-                        'quality': yt['quality'], 'title': yt['title'],
-                        'artist':  yt['artist'], 'image': _rart,
-                        'source':  'youtube'})
-
-    sc = fetch_from_soundcloud(q, artist)
-    if sc and sc.get('url'):
-        _rart = _get_artwork(q, artist) or sc.get('image', '')
-        return jsonify({'success': True, 'token': token,
-                        'url':    f"/api/stream?url={quote(sc['url'], safe='')}",
-                        'quality': sc['quality'], 'title': sc['title'],
-                        'artist':  sc['artist'], 'image': _rart,
-                        'source':  'soundcloud'})
-
-    piped = fetch_from_piped(q, title=q, artist=artist)
-    if piped and piped.get('url'):
-        return jsonify({'success': True, 'token': token,
-                        'url':    piped['url'],
-                        'quality': piped['quality'], 'title': piped['title'],
-                        'artist':  piped['artist'], 'image': _get_artwork(q, artist) or piped.get('image', ''),
-                        'source':  'piped'})
-
-    inv = fetch_from_invidious(q, title=q, artist=artist)
-    if inv and inv.get('url'):
-        return jsonify({'success': True, 'token': token,
-                        'url':    inv['url'],
-                        'quality': inv['quality'], 'title': inv['title'],
-                        'artist':  inv['artist'], 'image': _get_artwork(q, artist) or inv.get('image', ''),
-                        'source':  'invidious'})
+    for fetcher, src_name in [
+        (lambda: fetch_from_ytmusic(q, artist),            'ytmusic'),
+        (lambda: fetch_from_ytdlp(q, artist),              'youtube'),
+        (lambda: fetch_from_soundcloud(q, artist),         'soundcloud'),
+        (lambda: fetch_from_piped(q, title=q, artist=artist), 'piped'),
+        (lambda: fetch_from_invidious(q, title=q, artist=artist), 'invidious'),
+    ]:
+        res = fetcher()
+        if res and res.get('url'):
+            _rart = _get_artwork(q, artist) or res.get('image', '')
+            url_val = (f"/api/stream?url={quote(res['url'], safe='')}"
+                       if src_name in ('ytmusic', 'youtube', 'soundcloud') else res['url'])
+            return jsonify({
+                'success': True, 'token': token,
+                'url': url_val, 'quality': res['quality'],
+                'title': res['title'], 'artist': res['artist'],
+                'image': _rart, 'source': src_name,
+            })
 
     return jsonify({'success': False, 'url': None, 'token': token})
 
@@ -374,12 +381,6 @@ def resolve_song():
 # ═══════════════════════════════════════════════════════════════════════════════
 # STREAM PROXY
 # ═══════════════════════════════════════════════════════════════════════════════
-def _is_allowed_domain(domain):
-    for allowed in ALLOWED_STREAM_DOMAINS:
-        if domain == allowed or domain.endswith('.' + allowed):
-            return True
-    return False
-
 @app.route('/api/stream')
 @limiter.limit("200 per minute")
 def stream_audio():
@@ -401,7 +402,8 @@ def stream_audio():
         }
         range_header = request.headers.get('Range')
         if range_header: req_headers['Range'] = range_header
-        upstream     = requests.get(url, headers=req_headers, stream=True, timeout=(10, None), allow_redirects=True)
+        upstream     = requests.get(url, headers=req_headers, stream=True,
+                                    timeout=(10, None), allow_redirects=True)
         excluded     = {'content-encoding', 'transfer-encoding', 'connection'}
         resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in excluded}
         resp_headers.update({
@@ -506,7 +508,7 @@ def download_song():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# GODMODE-08: /api/godmode/status — full system brain dump (admin only)
+# /api/godmode/status
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/godmode/status')
 @limiter.limit("10 per minute")
@@ -515,19 +517,19 @@ def godmode_status():
     if not secret or not hmac.compare_digest(secret, ADMIN_KEY):
         return jsonify({'error': 'Unauthorized'}), 401
     return jsonify({
-        'circuit_breakers': _cb.status(),
-        'source_performance': _src_perf.status(),
-        'conf_tuner_floors': _conf_tuner.status(),
-        'url_refresh_pending': list(_url_refresh_queue),
+        'circuit_breakers':     _cb.status(),
+        'source_performance':   _src_perf.status(),
+        'conf_tuner_floors':    _conf_tuner.status(),
+        'url_refresh_pending':  list(_url_refresh_queue),
         'mirror_count': len(SAAVN_MIRRORS),
         'piped_count':  len(PIPED_INSTANCES),
         'inv_count':    len(INVIDIOUS_INSTANCES),
         'cache_sizes': {
-            'l1_saavn':   _l1_saavn.size(),
-            'l1_audio':   _l1_audio.size(),
-            'l1_artwork': _l1_artwork.size(),
-            'l1_verified':_l1_verified.size(),
-            'l1_meta':    _l1_meta.size(),
+            'l1_saavn':    _l1_saavn.size(),
+            'l1_audio':    _l1_audio.size(),
+            'l1_artwork':  _l1_artwork.size(),
+            'l1_verified': _l1_verified.size(),
+            'l1_meta':     _l1_meta.size(),
         },
         'timestamp': round(time.time()),
     })
@@ -546,30 +548,28 @@ def health_status():
     def summarize(urls):
         return sorted(
             [_health.summary(u) for u in urls],
-            key=lambda x: x['reputation'],
-            reverse=True,
+            key=lambda x: x['reputation'], reverse=True,
         )
 
     with _sc_client_id_lock:
         sc_id = SOUNDCLOUD_CLIENT_ID
 
     return jsonify({
-        'saavn':     {'count': len(saavn_list),  'instances': summarize(saavn_list)},
-        'piped':     {'count': len(piped_list),  'instances': summarize(piped_list)},
-        'invidious': {'count': len(inv_list),    'instances': summarize(inv_list)},
+        'saavn':      {'count': len(saavn_list),  'instances': summarize(saavn_list)},
+        'piped':      {'count': len(piped_list),  'instances': summarize(piped_list)},
+        'invidious':  {'count': len(inv_list),    'instances': summarize(inv_list)},
         'soundcloud': {'client_id_prefix': sc_id[:8] + '...' if sc_id else 'missing'},
         'cache': {
-            'l1_meta_size':    _l1_meta.size(),
-            'l1_audio_size':   _l1_audio.size(),
-            'l1_popular_size': _l1_popular.size(),
-            'l1_saavn_size':   _l1_saavn.size(),
-            'l1_artwork_size': _l1_artwork.size(),
+            'l1_meta_size':     _l1_meta.size(),
+            'l1_audio_size':    _l1_audio.size(),
+            'l1_popular_size':  _l1_popular.size(),
+            'l1_saavn_size':    _l1_saavn.size(),
+            'l1_artwork_size':  _l1_artwork.size(),
             'l1_verified_size': _l1_verified.size(),
         },
-        # GODMODE-07: godmode system health
-        'circuit_breakers': _cb.status(),
-        'source_performance': _src_perf.status(),
-        'conf_tuner_floors': _conf_tuner.status(),
+        'circuit_breakers':       _cb.status(),
+        'source_performance':     _src_perf.status(),
+        'conf_tuner_floors':      _conf_tuner.status(),
         'url_refresh_queue_size': len(_url_refresh_queue),
         'timestamp': round(time.time()),
     })
@@ -600,8 +600,7 @@ def handle_google_auth():
 
     log.info(f"[Auth] User saved: {profile.get('email', '')} | pic: {bool(profile.get('picture'))}")
     return jsonify({
-        'success': True,
-        'sub':     sub,
+        'success': True, 'sub': sub,
         'name':    profile.get('name', ''),
         'email':   profile.get('email', ''),
         'picture': profile.get('picture', ''),
@@ -626,7 +625,6 @@ def save_playback_state():
     if not song_id: return jsonify({'status': 'ignored'}), 200
 
     raw_art_url = str(data.get('artUrl', '') or '').strip()
-    # BUG-8 FIX: whitelist artwork domains — reject arbitrary URLs
     _ART_ALLOWED = (
         'saavncdn.com', 'cf.saavncdn.com', 'c.saavncdn.com',
         'aac.saavncdn.com', 'static.saavncdn.com', 'h.saavncdn.com',
@@ -644,14 +642,11 @@ def save_playback_state():
         except Exception:
             pass
 
-    song_title = str(data.get('songTitle', '') or '')[:200]
-    artist_val = str(data.get('artist', '') or '')[:100]
-
     sb_upsert('playback_state', {
         'google_sub': sub,
         'song_id':    song_id[:100],
-        'song_title': song_title,
-        'artist':     artist_val,
+        'song_title': str(data.get('songTitle', '') or '')[:200],
+        'artist':     str(data.get('artist', '') or '')[:100],
         'art_url':    art_url,
         'progress':   progress,
         'device':     device,
@@ -707,7 +702,9 @@ def poll_tv_pairing():
     now_str = datetime.utcnow().isoformat()
     if not code: return jsonify({'status': 'pending'}), 400
 
-    url = f"{SUPABASE_URL}/rest/v1/tv_pairing?pairing_code=eq.{quote(code, safe='')}&expires_at=gt.{quote(now_str, safe='')}"
+    url = (f"{SUPABASE_URL}/rest/v1/tv_pairing"
+           f"?pairing_code=eq.{quote(code, safe='')}"
+           f"&expires_at=gt.{quote(now_str, safe='')}")
     try:
         r    = requests.get(url, headers=_sb_headers(), timeout=10)
         rows = r.json() if r.status_code == 200 else []
@@ -740,7 +737,9 @@ def mobile_verify_tv():
     now_str = datetime.utcnow().isoformat()
     if not code: return jsonify({'success': False, 'error': 'Missing code'}), 400
 
-    url = f"{SUPABASE_URL}/rest/v1/tv_pairing?pairing_code=eq.{quote(code, safe='')}&expires_at=gt.{quote(now_str, safe='')}"
+    url = (f"{SUPABASE_URL}/rest/v1/tv_pairing"
+           f"?pairing_code=eq.{quote(code, safe='')}"
+           f"&expires_at=gt.{quote(now_str, safe='')}")
     try:
         r    = requests.get(url, headers=_sb_headers(), timeout=10)
         rows = r.json() if r.status_code == 200 else []
@@ -768,7 +767,7 @@ def verify_ghost_pin():
     h_input = hashlib.pbkdf2_hmac(
         'sha256', pin.encode('utf-8'), sub.encode('utf-8'), iterations=300_000
     ).hex()
-    rows     = sb_select('users', {'google_sub': sub}, columns='ghost_pin_hash')
+    rows = sb_select('users', {'google_sub': sub}, columns='ghost_pin_hash')
     if not rows: return jsonify({'success': False}), 404
 
     stored_hash = rows[0].get('ghost_pin_hash')
@@ -799,7 +798,6 @@ def admin_users():
 _ARTWORK_ALLOWED_DOMAINS = [
     'saavncdn.com', 'cf.saavncdn.com', 'c.saavncdn.com', 'aac.saavncdn.com',
     'static.saavncdn.com', 'h.saavncdn.com',
-    # iTunes/Apple Music CDN — all subdomains of mzstatic.com
     'is1-ssl.mzstatic.com', 'is2-ssl.mzstatic.com', 'is3-ssl.mzstatic.com',
     'is4-ssl.mzstatic.com', 'is5-ssl.mzstatic.com',
     'a1.mzstatic.com', 'a2.mzstatic.com', 'a3.mzstatic.com',
@@ -812,34 +810,28 @@ _ARTWORK_ALLOWED_DOMAINS = [
 @limiter.limit("300 per minute")
 def artwork_proxy():
     url = request.args.get('url', '').strip()
-    if not url:
-        return jsonify({'error': 'Missing url'}), 400
+    if not url: return jsonify({'error': 'Missing url'}), 400
     try:
         parsed = urlparse(url)
-        if parsed.scheme not in ('http', 'https'):
-            return jsonify({'error': 'Invalid scheme'}), 400
-        domain = parsed.netloc.lower().split(':')[0]
+        if parsed.scheme not in ('http', 'https'): return jsonify({'error': 'Invalid scheme'}), 400
+        domain  = parsed.netloc.lower().split(':')[0]
         allowed = any(domain == d or domain.endswith('.' + d) for d in _ARTWORK_ALLOWED_DOMAINS)
-        if not allowed:
-            return jsonify({'error': 'Domain not allowed'}), 403
+        if not allowed: return jsonify({'error': 'Domain not allowed'}), 403
     except Exception:
         return jsonify({'error': 'Invalid URL'}), 400
     try:
         r = requests.get(url, timeout=8, headers={'User-Agent': 'Mozilla/5.0'}, stream=True)
-        if not r.ok:
-            return jsonify({'error': f'Upstream {r.status_code}'}), 502
+        if not r.ok: return jsonify({'error': f'Upstream {r.status_code}'}), 502
         content_type = r.headers.get('Content-Type', 'image/jpeg')
         def generate():
             try:
                 for chunk in r.iter_content(chunk_size=32768):
                     if chunk: yield chunk
-            finally:
-                r.close()
+            finally: r.close()
         return Response(stream_with_context(generate()), status=200,
                         content_type=content_type,
                         headers={
                             'Access-Control-Allow-Origin': '*',
-                            # FIX: Aggressive browser caching for artwork
                             'Cache-Control': 'public, max-age=604800, immutable',
                         })
     except Exception as e:
@@ -847,7 +839,7 @@ def artwork_proxy():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# HEALTH
+# /health
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/health')
 def health():
@@ -856,7 +848,7 @@ def health():
         'sources': ['saavn', 'jiosavan', 'ytmusic', 'piped', 'invidious', 'soundcloud', 'youtube'],
         'auth':    'google-oauth',
         'db':      'supabase',
-        'version': '3.0',
+        'version': '3.1',
     })
 
 
