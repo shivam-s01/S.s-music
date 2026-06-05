@@ -1659,3 +1659,71 @@ def _is_allowed_domain(domain: str) -> bool:
         domain == d or domain.endswith('.' + d)
         for d in ALLOWED_STREAM_DOMAINS
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AUTO PREFETCH FUNCTIONS FOR server.py
+# ═══════════════════════════════════════════════════════════════════════════════
+_url_refresh_queue = set()
+
+def _auto_prefetch_search_results(results):
+    """Automatically prefetch top songs from search results"""
+    if not results:
+        return
+    try:
+        for song in results[:3]:
+            song_id = song.get('trackId') or song.get('id') or ''
+            song_title = song.get('trackName') or song.get('title') or ''
+            song_artist = song.get('artistName') or song.get('artist') or ''
+            if song_id or song_title:
+                _do_prefetch_song({'id': song_id, 'title': song_title, 'artist': song_artist})
+    except Exception as e:
+        log.debug(f"[AutoPrefetch] Error: {e}")
+
+def _do_prefetch_song(song):
+    """Single song prefetch - wrapper for existing logic"""
+    try:
+        _id = str(song.get('id', '')).strip()[:100]
+        _title = str(song.get('title', '')).strip()[:200]
+        _artist = str(song.get('artist', '')).strip()[:100]
+        if not _id and not _title:
+            return
+        _ck = f"play:{_id or normalize(_title)}:{normalize(_artist)}"
+        if _l1_saavn.get(_ck):
+            return
+        if _id:
+            result = _fetch_saavn_by_id(_id, _title, _artist)
+            if result and result.get('url'):
+                _r_title = result.get('title', '') or _title
+                _r_artist = result.get('artist', '') or _artist
+                if _title:
+                    _ok, _conf, _reason = _is_confirmed_match(
+                        _title, _artist, _r_title, _r_artist,
+                        source='saavn', min_conf=0.70,
+                    )
+                    if not _ok:
+                        return
+                    _real_conf = _conf
+                else:
+                    _real_conf = 0.90
+                _payload = {
+                    **result,
+                    'source': 'saavn',
+                    'confidence': round(_real_conf, 3),
+                    'title': _title or _r_title,
+                    'artist': _artist or _r_artist,
+                }
+                _l1_saavn.set(_ck, _payload)
+                return
+        if _title:
+            _lang = _detect_language(_title + ' ' + _artist)
+            for _qv in build_query_variants(_title, _artist, '')[:2]:
+                _res = fetch_saavn_parallel(_qv, title=_title, artist=_artist, language=_lang)
+                if _res and _res.get('url'):
+                    _l1_saavn.set(_ck, _res)
+                    return
+    except Exception as e:
+        log.debug(f"[Prefetch] Error: {e}")
+
+# Alias for backward compatibility
+_do_prefetch = _do_prefetch_song
