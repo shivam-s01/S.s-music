@@ -296,7 +296,7 @@ def normalize(text):
 
 
 class _ConfidenceTuner:
-    _DEFAULT = 0.65; _MIN = 0.45; _MAX = 0.80
+    _DEFAULT = 0.70; _MIN = 0.60; _MAX = 0.85  # [FIX-MISMATCH-2] stricter defaults
     _NUDGE   = 0.03; _MAX_MISS = 3
 
     def __init__(self):
@@ -369,7 +369,7 @@ def _verified_key(song_id='', title='', artist=''):
     return f"verified:{normalize(title)}:{normalize(artist)}"
 
 def _store_verified(song_id, title, artist, data, confidence):
-    if confidence < 0.90: return
+    if confidence < 0.92: return  # [FIX-MISMATCH-3] only very high conf verified
     if song_id: _l1_verified.set(_verified_key(song_id=song_id), data)
     if title:   _l1_verified.set(_verified_key(title=title, artist=artist), data)
     image = data.get('image', '')
@@ -414,7 +414,7 @@ _SAAVN_CDN_TTL        = 3600
 _VOLATILE_CACHE_TTL   = 5400
 _TEMP_CACHE_TTL       = 14400
 _VOLATILE_SOURCES     = {'youtube', 'youtube-broad', 'piped', 'invidious', 'soundcloud'}
-_CACHE_MIN_CONFIDENCE = 0.80
+_CACHE_MIN_CONFIDENCE = 0.85  # [FIX-MISMATCH-1] wrong songs cache nahi honge
 
 def _supabase_cache_get(cache_key):
     l1_hit = _l1_saavn.get(f"sb:{cache_key}")
@@ -441,7 +441,29 @@ def _supabase_cache_get(cache_key):
         return None
 
 def _supabase_cache_set(cache_key, data, confidence=1.0):
-    _write_title = data.get('title', '')
+    _write_title  = data.get('title', '')
+    _write_artist = data.get('artist', '').lower()
+
+    # [FIX-MISMATCH-4] Bhojpuri songs higher confidence require karte hain
+    # Warna Hindi/Bhakti same-title songs Bhojpuri cache ko contaminate karte hain
+    if any(a in _write_artist for a in _BHOJPURI_ARTISTS):
+        if confidence < 0.88:
+            log.debug(f'[Cache:L2] Bhojpuri low-conf skip: "{_write_title}" conf={confidence:.2f}')
+            return
+
+    # [FIX-MISMATCH-4b] Language cross-contamination block
+    # Bhakti/devotional songs Bhojpuri cache key pe nahi jayenge
+    if _write_title and _is_devotional_query(_write_title):
+        _cache_lang = ''
+        try:
+            from match_engine import _detect_language
+            _cache_lang = _detect_language(_write_title + ' ' + _write_artist)
+        except ImportError:
+            pass
+        if _cache_lang not in ('bhojpuri', 'hindi', ''):
+            log.debug(f'[Cache:L2] Devotional cross-lang block: "{_write_title}"')
+            return
+
     # [FIX-CORE-4] Version songs ko KABHI cache mein mat daalo
     # _is_remix_or_cover + _is_live_version + _is_slowed_reverb + extra DNA check
     if (_is_remix_or_cover(_write_title) or
@@ -1110,7 +1132,14 @@ def compute_confidence(
     # [ARTIST-FIX-7] Bhojpuri artist gate — stricter
     _qa_lower = qa.lower()
     _ra_lower = ra.lower()
-    if any(a in _qa_lower for a in _BHOJPURI_ARTISTS):
+
+    # [FIX-MISMATCH-5] Bhojpuri title-only detection
+    # Agar query artist Bhojpuri hai YA result artist Bhojpuri hai lekin query nahi
+    # → cross-language mismatch → 0.0
+    _query_is_bhojpuri = any(a in _qa_lower for a in _BHOJPURI_ARTISTS)
+    _result_is_bhojpuri = any(a in _ra_lower for a in _BHOJPURI_ARTISTS)
+
+    if _query_is_bhojpuri:
         # Bhojpuri mein artist match bahut zaroori — alag artist ka song bilkul nahi
         if qa_norm and ra_norm and a_sim < 0.55: return 0.0
         # Extra: query artist Bhojpuri hai, result artist bilkul alag language
@@ -1118,6 +1147,13 @@ def compute_confidence(
         _ra_pri = _get_primary_artist(result_artist)
         if _qa_pri and _ra_pri and _qa_pri not in _ra_lower and _ra_pri not in _qa_lower:
             if _seq_ratio(_qa_pri, _ra_pri) < 0.50: return 0.0
+        # [FIX-MISMATCH-5b] Bhojpuri query pe Hindi mainstream result block
+        if any(a in _ra_lower for a in _HINDI_MAINSTREAM_ARTISTS):
+            if a_sim < 0.60: return 0.0
+    elif _result_is_bhojpuri and not _query_is_bhojpuri:
+        # [FIX-MISMATCH-5c] Query Bhojpuri nahi, result Bhojpuri hai → reject
+        # "Siya Sewa Kare" Hindi bhakti query pe Bhojpuri same-title song nahi aana chahiye
+        if qa_norm and ra_norm and a_sim < 0.70: return 0.0
 
     # [ARTIST-FIX-7b] Hindi mainstream artist gate
     if any(a in _qa_lower for a in _HINDI_MAINSTREAM_ARTISTS):
@@ -1195,6 +1231,15 @@ def _is_confirmed_match(
         if _is_remix_or_cover(res_title):  return False, 0.0, 'remix_cover_rejected'
         if _is_slowed_reverb(res_title):   return False, 0.0, 'slowed_reverb_rejected'
         if _is_live_version(res_title):    return False, 0.0, 'live_version_rejected'
+        # [FIX-MISMATCH-7] Extra DJ/version patterns jo _is_remix_or_cover miss kar sakta hai
+        _res_t_lower = res_title.lower()
+        _EXTRA_BLOCK = ['dhol mix', 'tapori', 'jhankar', 'dj drop', 'dj cut',
+                        'club mix', 'dance mix', 'party mix', 'wedding mix',
+                        'bhangra mix', 'dandiya', 'garba mix', 'bass boosted',
+                        'lofi mix', 'slowed mix', 'reverb mix']
+        for _blk in _EXTRA_BLOCK:
+            if _blk in _res_t_lower:
+                return False, 0.0, f'extra_version_block:{_blk}'
 
     # ── GATE 2: Devotional remix block ──────────────────────────────────────
     if _is_devotional_query(req_title + ' ' + req_artist):
@@ -1203,6 +1248,33 @@ def _is_confirmed_match(
         _res_lower = res_title.lower()
         if any(w in _res_lower for w in ['dj', 'club', 'party', 'dance', 'rave']):
             return False, 0.0, 'devotional_club_rejected'
+
+    # ── GATE 2b: [FIX-MISMATCH-6] Bhojpuri/Hindi cross-language hard gate ──
+    # "Siya Sewa Kare" Bhojpuri hai, lekin Hindi bhakti same title bhi hoti hai
+    # Artist mismatch se pehle language mismatch pakad lo
+    _req_a_lower = req_artist.lower() if req_artist else ''
+    _res_a_lower = res_artist.lower() if res_artist else ''
+    _req_is_bhojpuri = any(a in _req_a_lower for a in _BHOJPURI_ARTISTS)
+    _res_is_bhojpuri = any(a in _res_a_lower for a in _BHOJPURI_ARTISTS)
+    if _req_is_bhojpuri and not _res_is_bhojpuri and res_artist:
+        # Bhojpuri request pe non-Bhojpuri artist result — artist must match well
+        _b_ra = _normalize_artist(normalize(req_artist))
+        _b_rb = _normalize_artist(normalize(res_artist))
+        if _b_ra and _b_rb:
+            _b_sim = max(
+                _seq_ratio(_b_ra, _b_rb),
+                _seq_ratio(_get_primary_artist(req_artist), _get_primary_artist(res_artist))
+            )
+            if _b_sim < 0.55:
+                return False, 0.0, f'bhojpuri_cross_lang_{_b_sim:.3f}'
+    if _res_is_bhojpuri and not _req_is_bhojpuri and req_artist:
+        # Result Bhojpuri but request non-Bhojpuri — strong mismatch signal
+        _b_ra = _normalize_artist(normalize(req_artist))
+        _b_rb = _normalize_artist(normalize(res_artist))
+        if _b_ra and _b_rb:
+            _b_sim = _seq_ratio(_b_ra, _b_rb)
+            if _b_sim < 0.65:
+                return False, 0.0, f'result_bhojpuri_query_not_{_b_sim:.3f}'
 
     # ── GATE 3: Confidence score ─────────────────────────────────────────────
     # Use tuner floor — adaptive threshold
