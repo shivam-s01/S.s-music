@@ -26,8 +26,7 @@ from core import (
     _is_live_version, _is_slowed_reverb,
     _is_devotional_query, verify_via_fingerprint,
     app, limiter, get_real_ip,
-    # [FIX-FETCH-1] _conf_tuner/_src_perf duplicate import removed —
-    # already imported above, second import was redundant and confusing
+    _conf_tuner, _src_perf,
 )
 from match_engine import (
     compute_confidence, _is_confirmed_match, is_likely_duplicate,
@@ -204,9 +203,8 @@ def _normalize_saavn_songs(raw_songs):
         # [FIX-3] Devotional/classical songs 18+ min tak ho sakte hain — 1080s limit removed for those
         from core import _is_devotional_query
         _is_devotional = _is_devotional_query(title + ' ' + artist)
-        # [FIX-FETCH-2] Single duration cap — pehle 1800 check kabhi trigger nahi hota tha
-        # kyunki 1080 wala already reject kar deta tha. Ab: 1080s hard cap only.
         if dur_s == 0: continue
+        if dur_s > 1800 and not _is_devotional: continue  # 30min hard cap
         if dur_s > 1080 and not _is_devotional: continue  # 18min cap for non-devotional
         raw_urls = song.get('downloadUrl') or song.get('download_url') or []
         if isinstance(raw_urls, str):
@@ -242,8 +240,7 @@ def _resolve_itunes_to_saavn(itunes_song: dict) -> Optional[dict]:
             r'\b\d+x\d+\b', '600x600', itunes_song['artworkUrl100'])
         _store_artwork(title, artist, itunes_song['artworkUrl100'], 2)
 
-    # [SPEED-E] mirrors 6→3 — faster iTunes resolution
-    mirrors = _best_mirrors(n=3)
+    mirrors = _best_mirrors(n=6)
 
     for query in build_query_variants(title, artist, ''):
         for mirror in mirrors[:6]:
@@ -675,9 +672,11 @@ def _fetch_saavn_by_id(song_id, expected_title='', expected_artist=''):
     cached = _l1_saavn.get(l1_key)
     if cached: return cached
 
-    # [SPEED-A] mirrors 6→3, endpoints 5→2 most common only — cuts ID path latency by ~60%
-    mirrors   = _best_mirrors(n=3)
-    endpoints = [f'/api/songs/{song_id}', f'/api/songs?id={song_id}']
+    mirrors   = _best_mirrors(n=6)
+    endpoints = [
+        f'/api/songs/{song_id}', f'/songs/{song_id}',
+        f'/api/songs?id={song_id}', f'/song?id={song_id}', f'/api/song?id={song_id}',
+    ]
 
     def try_mirror(mirror):
         for endpoint in endpoints:
@@ -751,8 +750,7 @@ def _fetch_saavn_by_id(song_id, expected_title='', expected_artist=''):
 
     futures = {_executor.submit(try_mirror, m): m for m in mirrors}
     try:
-        # [SPEED-B] timeout 6s→3s — best mirror should respond in <2s
-        for future in as_completed(futures, timeout=3):
+        for future in as_completed(futures, timeout=6):
             try:
                 result = future.result()
                 if result:
@@ -853,15 +851,13 @@ def fetch_saavn_parallel(query, title='', artist='', language=''):
         _lang = language
 
     threshold = dynamic_min_score(query)
-    # [FIX-FETCH-5] Mirror count 8→4 — bandwidth/requests halved; early exit catches best result
-    mirrors   = _best_mirrors(n=4)
+    mirrors   = _best_mirrors(n=8)
     futures   = {_executor.submit(fetch_from_mirror, m, query, threshold, title, artist, _lang): m
                  for m in mirrors}
     all_results = []
-    _EARLY_EXIT_CONF = 0.75  # [SPEED-C] 0.80→0.75 — exit even sooner on good match
+    _EARLY_EXIT_CONF = 0.88
     try:
-        # [SPEED-C] timeout 4s→2s — if best mirror doesn't respond in 2s, pick what we have
-        for future in as_completed(futures, timeout=2):
+        for future in as_completed(futures, timeout=4):
             try:
                 result = future.result()
                 if result:
@@ -1105,13 +1101,7 @@ def fetch_from_jiosavan(title, artist='', language=''):
         jiosavan_quality = _best_quality or '320kbps'
 
         image = best.get('image', '')
-        # [FIX-FETCH-4] Use _ensure_500 for consistent 500x500 upgrade (not inline regex)
-        if image:
-            try:
-                from match_engine import _ensure_500
-                image = _ensure_500(image)
-            except ImportError:
-                image = re.sub(r'\b(50|150|250)x(50|150|250)\b', '500x500', image)
+        if image: image = re.sub(r'\b(50|150|250)x(50|150|250)\b', '500x500', image)
 
         result = {
             'url': media_url, 'quality': jiosavan_quality,
@@ -1232,46 +1222,24 @@ def play_song():
                 # Wrong song cache mein tha — hatao
                 _invalidate_cache_keys(_ck)
 
-    # ─── Step 2: L2 Supabase cache — NON-BLOCKING ───────────────────────────
-    # [SPEED-D] Supabase L2 ko async fire karo — 0.2s window mein result aaya toh use karo
-    # Nahi aaya toh pipeline aage badhta hai, L2 result baad mein L1 mein store ho jaata hai
+    # ─── Step 2: L2 Supabase cache ───────────────────────────────────────────
     if not audio_url:
-        _l2_futures = {
-            _ck: _executor_cache.submit(_supabase_cache_get_with_refresh, _ck)
-            for _ck in filter(None, [_play_ck_id, _play_ck_title, _play_ck])
-        }
-        try:
-            for future in as_completed(_l2_futures.values(), timeout=0.20):
-                _ck_hit = next((k for k,v in _l2_futures.items() if v is future), None)
-                try:
-                    raw_hit = future.result()
-                    l2_hit  = _check_cache_entry(raw_hit)
-                    if l2_hit:
-                        audio_url  = l2_hit['url']
-                        quality    = l2_hit.get('quality', 'unknown')
-                        source     = l2_hit.get('source', 'unknown')
-                        confidence = float(l2_hit.get('confidence', 1.0))
-                        if not title:  title  = l2_hit.get('title', '')
-                        if not artist: artist = l2_hit.get('artist', '')
-                        for _wk in filter(None, [_play_ck_id, _play_ck_title, _play_ck]):
-                            _l1_saavn.set(_wk, l2_hit)
-                        break
-                    elif raw_hit and not l2_hit:
-                        _invalidate_cache_keys(_ck_hit)
-                except Exception: pass
-        except Exception: pass
-        # Background: L2 results jo 0.2s mein nahi aaye unhe L1 mein store karo
-        def _bg_l2_store(fmap):
-            for ck, fut in fmap.items():
-                try:
-                    r = fut.result(timeout=5)
-                    h = _check_cache_entry(r)
-                    if h:
-                        for wk in filter(None, [_play_ck_id, _play_ck_title, _play_ck]):
-                            _l1_saavn.set(wk, h)
-                except Exception: pass
-        if not audio_url:
-            _executor_bg.submit(_bg_l2_store, _l2_futures)
+        for _ck in filter(None, [_play_ck_id, _play_ck_title, _play_ck]):
+            raw_hit = _supabase_cache_get_with_refresh(_ck)
+            l2_hit  = _check_cache_entry(raw_hit)
+            if l2_hit:
+                audio_url  = l2_hit['url']
+                quality    = l2_hit.get('quality', 'unknown')
+                source     = l2_hit.get('source', 'unknown')
+                confidence = float(l2_hit.get('confidence', 1.0))
+                if not title:  title  = l2_hit.get('title', '')
+                if not artist: artist = l2_hit.get('artist', '')
+                for _wk in filter(None, [_play_ck_id, _play_ck_title, _play_ck]):
+                    _l1_saavn.set(_wk, l2_hit)
+                break
+            elif raw_hit and not l2_hit:
+                # Wrong song L2 mein tha — hatao
+                _invalidate_cache_keys(_ck)
 
     # ─── Step 3: Song index fast path ────────────────────────────────────────
     if not audio_url and title:
@@ -1371,8 +1339,10 @@ def play_song():
                 _executor.submit(fetch_from_ytmusic,    title, artist):        'ytmusic',
                 _executor.submit(fetch_from_ytdlp,      title, artist):        'youtube',
                 _executor.submit(fetch_from_soundcloud, title, artist):        'soundcloud',
-                _executor.submit(fetch_from_piped,      title, artist):        'piped',
-                _executor.submit(fetch_from_invidious,  title, artist):        'invidious',
+                _executor.submit(fetch_from_piped,      title, title=title,
+                                 artist=artist):                               'piped',
+                _executor.submit(fetch_from_invidious,  title, title=title,
+                                 artist=artist):                               'invidious',
             }
 
             _fb_candidates = []; _arrival_idx = 0
@@ -1533,13 +1503,11 @@ def play_song():
         5. Background fetch via Saavn ID
         Returns 500x500 guaranteed URL or empty string.
         """
-        from match_engine import pick_image as _pick_img, _ensure_500 as _me_ensure_500
+        from match_engine import pick_image as _pick_img
         def _ensure_500(url):
-            # [FIX-FETCH-3] Delegate to match_engine._ensure_500 — correct \3 backref
-            return _me_ensure_500(url)
-        if False:  # dummy — keep indentation consistent
+            if not url or not url.startswith('http'): return ''
             if 'saavncdn.com' in url or 'jiocdn.com' in url:
-                url = re.sub(r'-(\d+)x(\d+)\.(jpg|jpeg|webp|png)', r'-500x500.\3', url)  # [FIX-FETCH-3] was \x03 (corrupt) now \3 (correct backref)
+                url = re.sub(r'-(\d+)x(\d+)\.(jpg|jpeg|webp|png)', r'-500x500.', url)
                 url = re.sub(r'\b(50|150|250)x(50|150|250)\b', '500x500', url)
             elif re.search(r'\b(50|150|250)x(50|150|250)\b', url):
                 url = re.sub(r'\b(50|150|250)x(50|150|250)\b', '500x500', url)
@@ -1723,24 +1691,7 @@ def prefetch_songs():
     for song in queue:
         _executor_bg.submit(_do_prefetch, song)
     return jsonify({'status': 'prefetching', 'count': len(queue)})
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# /api/search — SPEED: prefetch top results in background immediately
-# ═══════════════════════════════════════════════════════════════════════════════
-def _auto_prefetch_search_results(songs: list):
-    """
-    [SPEED-F] Search results aate hi top 3 songs ka audio URL resolve karo background mein.
-    Jab user click karega tab L1 cache mein already hoga → ~0ms play time.
-    """
-    for song in songs[:3]:
-        _id     = str(song.get('_saavnId') or song.get('trackId') or '').strip()[:100]
-        _title  = str(song.get('trackName') or song.get('title') or '').strip()[:200]
-        _artist = str(song.get('artistName') or song.get('artist') or '').strip()[:100]
-        if not _id and not _title: continue
-        _ck = f"play:{_id or normalize(_title)}:{normalize(_artist)}"
-        if _l1_saavn.get(_ck): continue  # already cached — skip
-        _executor_bg.submit(_do_prefetch, {'id': _id, 'title': _title, 'artist': _artist})
+    
 # ═══════════════════════════════════════════════════════════════════════════════
 # MISSING EXPORTS — server.py imports
 # ═══════════════════════════════════════════════════════════════════════════════
