@@ -1,5 +1,3 @@
-# sources.py — Saavn mirrors, Piped, Invidious, SoundCloud instance management
-# Imported by: fetchers.py, server.py
 import re
 import os
 import time
@@ -9,7 +7,7 @@ import requests
 from concurrent.futures import as_completed
 from typing import Dict
 from core import (
-    log, _executor_bg, _health, _LRUCache,
+    log, _executor_bg, _LRUCache,
     SUPABASE_URL, SUPABASE_KEY
 )
 
@@ -588,5 +586,4 @@ def _master_heal_loop():
 
 threading.Thread(target=_master_heal_loop, daemon=True).start()
 log.info('[StrongHeal] Strong master heal loop started (60s interval)')
-
 
