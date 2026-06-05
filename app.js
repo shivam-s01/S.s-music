@@ -391,7 +391,30 @@ async function _upgradeAudio(proxyUrl, d, song, autoplay, ctrl, requested) {
   _currentSaavnQuality = d?.quality || 'unknown';
   if (d?.quality) _updateDlSheetQuality(d.quality);
 
-  // FIX 3: preload timeout 6s (was 14s)
+  // ── ARTWORK FIX: X-Artwork-URL header se thumbnail read karo ──
+  try {
+    const _artResp = await fetch(proxyUrl, {
+      method: 'GET',
+      headers: { 'Range': 'bytes=0-0' }
+    });
+    const _artUrl = _artResp.headers.get('X-Artwork-URL');
+    if (_artUrl && _artUrl.startsWith('http')) {
+      if (currentTrack && String(currentTrack.trackId) === String(requested.trackId)) {
+        currentTrack.artworkUrl100 = _artUrl;
+        currentTrack.image         = _artUrl;
+        song.artworkUrl100         = _artUrl;
+        song.image                 = _artUrl;
+        updatePlayerUI();
+      }
+    }
+    const _qHeader = _artResp.headers.get('X-Audio-Quality');
+    if (_qHeader && !_currentSaavnQuality) {
+      _currentSaavnQuality = _qHeader;
+      _updateDlSheetQuality(_qHeader);
+    }
+  } catch(_artErr) { /* silent */ }
+
+  // preload timeout 6s
   const preAudio = new Audio();
   preAudio.preload     = 'auto';
   preAudio.crossOrigin = 'anonymous';
@@ -430,7 +453,7 @@ async function _upgradeAudio(proxyUrl, d, song, autoplay, ctrl, requested) {
   if (sbEl) sbEl.classList.add('full-active');
   _cleanupPre();
 
-  // GODMODE: NEVER overwrite trackName/artistName — causes wrong song in player
+  // GODMODE: NEVER overwrite trackName/artistName
   if (d) {
     if (d.quality) _currentSaavnQuality = d.quality;
   }
@@ -453,6 +476,7 @@ async function _upgradeAudio(proxyUrl, d, song, autoplay, ctrl, requested) {
     updateQualityLabel(); updatePlayerUI();
   }
 }
+
 
 function _fallbackToPreview(song) {
   if (!song?.previewUrl) return;
