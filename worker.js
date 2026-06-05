@@ -1,5 +1,5 @@
 const ORIGINS = [
-  'https://aurum-wave.up.railway.app/',   // PRIMARY - Railway
+  'https://aurumusic.up.railway.app/',   // PRIMARY - Railway
   'https://s-s-music-0uxa.onrender.com',  // FALLBACK - Render
 ];
 
