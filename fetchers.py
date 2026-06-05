@@ -1741,14 +1741,15 @@ def _auto_prefetch_search_results(songs: list):
         _ck = f"play:{_id or normalize(_title)}:{normalize(_artist)}"
         if _l1_saavn.get(_ck): continue  # already cached — skip
         _executor_bg.submit(_do_prefetch, {'id': _id, 'title': _title, 'artist': _artist})
-        # ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 # MISSING EXPORTS — server.py imports
 # ═══════════════════════════════════════════════════════════════════════════════
 from core import _l1_artwork, _l1_verified
-from match_engine import is_likely_duplicate, ALLOWED_STREAM_DOMAINS
+from match_engine import ALLOWED_STREAM_DOMAINS
 from urllib.parse import urlparse
 
 _url_refresh_queue = set()
+
 
 def _fetch_itunes_artwork(query, artist='', limit=1):
     try:
@@ -1768,54 +1769,9 @@ def _fetch_itunes_artwork(query, artist='', limit=1):
         pass
     return ''
 
+
 def _is_allowed_domain(domain: str) -> bool:
     return any(
         domain == d or domain.endswith('.' + d)
         for d in ALLOWED_STREAM_DOMAINS
     )
-
-def _do_prefetch(s: dict):
-    _id     = str(s.get('id', '')).strip()[:100]
-    _title  = str(s.get('title', '')).strip()[:200]
-    _artist = str(s.get('artist', '')).strip()[:100]
-    if not _id and not _title: return
-    _ck = f"play:{_id or normalize(_title)}:{normalize(_artist)}"
-    if _l1_saavn.get(_ck): return
-    if _id:
-        result = _fetch_saavn_by_id(_id, _title, _artist)
-        if result and result.get('url'):
-            _r_title  = result.get('title', '') or _title
-            _r_artist = result.get('artist', '') or _artist
-            if _title:
-                _ok, _conf, _reason = _is_confirmed_match(
-                    _title, _artist, _r_title, _r_artist,
-                    source='saavn', min_conf=0.70,
-                )
-                if not _ok: return
-                _real_conf = _conf
-            else:
-                _real_conf = 0.90
-            _l1_saavn.set(_ck, {
-                **result, 'source': 'saavn',
-                'confidence': round(_real_conf, 3),
-                'title': _title or _r_title,
-                'artist': _artist or _r_artist,
-            })
-            return
-    if _title:
-        _lang = _detect_language(_title + ' ' + _artist)
-        for _qv in build_query_variants(_title, _artist, '')[:2]:
-            _res = fetch_saavn_parallel(_qv, title=_title, artist=_artist, language=_lang)
-            if _res and _res.get('url'):
-                _l1_saavn.set(_ck, _res)
-                return
-
-def _auto_prefetch_search_results(songs: list):
-    for song in songs[:3]:
-        _id     = str(song.get('_saavnId') or song.get('trackId') or '').strip()[:100]
-        _title  = str(song.get('trackName') or song.get('title') or '').strip()[:200]
-        _artist = str(song.get('artistName') or song.get('artist') or '').strip()[:100]
-        if not _id and not _title: continue
-        _ck = f"play:{_id or normalize(_title)}:{normalize(_artist)}"
-        if _l1_saavn.get(_ck): continue
-        _executor_bg.submit(_do_prefetch, {'id': _id, 'title': _title, 'artist': _artist})
