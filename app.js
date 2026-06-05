@@ -209,7 +209,7 @@ window._aurumAudio = audio;
 let _currentSaavnUrl     = null;
 let _currentSaavnQuality = null;
 
-const _VERSION_KW = ['remix','lofi','lo-fi','lo fi','slowed','reverb','nightcore','cover','acoustic','live version','live at','mashup','instrumental','dj remix','dj mix','bass boost','8d audio','sped up','speed up','karaoke','unplugged','stripped','deep house','chillout','extended mix','club mix'];
+const _VERSION_KW = ['remix','lofi','lo-fi','lo fi','slowed','reverb','nightcore','cover','acoustic','live version','live at','mashup','instrumental','dj remix','dj mix','bass boost','8d audio','sped up','speed up','karaoke','unplugged','stripped','deep house','chillout','extended mix','club mix','dhol mix','tapori','jhankar','wedding mix','bhangra mix','dandiya','garba mix','party mix','dance mix'];
 function _isVersionSong(t) { return !!t && _VERSION_KW.some(kw => t.toLowerCase().includes(kw)); }
 function _userWantsVersion(t, a) { return _VERSION_KW.some(kw => ((t||'')+' '+(a||'')).toLowerCase().includes(kw)); }
 
@@ -324,14 +324,18 @@ async function _autoFetchFullSong(song, autoplay = true) {
   const requested = song;
 
   try {
-    // ── FIX 1: Saavn-sourced song → direct ID play, NO search at all ──
-    if (song._source === 'saavn' && song._saavnId) {
-      const proxyUrl = `/api/play?id=${encodeURIComponent(song._saavnId)}`;
+    // ── FIX: _saavnId already hai toh fresh search mat karo ──
+    // Search results mein correct ID already resolve ho chuka hota hai
+    // Direct ID use karo — yahi mismatch ki jad thi
+    if (song._saavnId) {
+      const proxyUrl = `/api/play?id=${encodeURIComponent(song._saavnId)}`
+        + `&title=${encodeURIComponent(song.trackName || '')}`
+        + `&artist=${encodeURIComponent(song.artistName || '')}`;
       await _upgradeAudio(proxyUrl, null, song, autoplay, ctrl, requested);
       return;
     }
 
-    // ── FIX 2: Single API call only — removed duplicate /api/resolve ──
+    // ── iTunes song: title+artist se search ──
     const cleanTitle  = (song.trackName  || '').replace(/\(.*?\)|\[.*?\]/g, '').trim();
     const cleanArtist = (song.artistName || '').split(/[&,]|feat\.|ft\./i)[0].trim();
     const movieMatch  = (song.trackName  || '').match(/\(From\s+[\u201c\u201d""]?(.+?)[\u201c\u201d""]?\)/i);
@@ -342,7 +346,6 @@ async function _autoFetchFullSong(song, autoplay = true) {
 
     let d = null, proxyUrl = null;
 
-    // FIX: sirf EK call — /api/saavn hi kaafi hai
     try {
       const r = await fetch(
         `/api/saavn?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`,
@@ -352,15 +355,18 @@ async function _autoFetchFullSong(song, autoplay = true) {
         const j = await r.json();
         if (j.success && j.url) {
           const _wV = _userWantsVersion(requested.trackName, requested.artistName || '');
+
+          // Version block — remix/lofi etc reject karo agar user ne nahi manga
           if (_isVersionSong(j.title || '') && !_wV) {
             console.info('[AutoFetch] REJECTED version: ' + j.title);
           } else if (j.source === 'saavn' || _titleMatches(j.title, requested.trackName)) {
             d = j;
-            proxyUrl = j.source === 'saavn'
-              ? `/api/play?id=${encodeURIComponent(j._saavnId || '')}`
-              : `/api/stream?url=${encodeURIComponent(j.url)}`;
-            // Fallback agar saavnId nahi mila
-            if (j.source === 'saavn' && !j._saavnId) {
+            // _saavnId prefer karo — direct ID path reliable hai
+            if (j._saavnId) {
+              proxyUrl = `/api/play?id=${encodeURIComponent(j._saavnId)}`
+                + `&title=${encodeURIComponent(requested.trackName || '')}`
+                + `&artist=${encodeURIComponent(requested.artistName || '')}`;
+            } else {
               proxyUrl = `/api/stream?url=${encodeURIComponent(j.url)}`;
             }
           }
@@ -384,6 +390,7 @@ async function _autoFetchFullSong(song, autoplay = true) {
     if (e.name !== 'AbortError') console.info('[AutoFetch] Error:', e.message);
   }
 }
+
 
 // ── Helper: preload + swap audio ─────────────────────────────────────────────
 async function _upgradeAudio(proxyUrl, d, song, autoplay, ctrl, requested) {
@@ -2018,10 +2025,8 @@ async function doSearch(q) {
     saveRecentSearch(q);
     let songs = (d.results || []).filter(s => s.previewUrl || s._source === 'saavn');
     if (!_userWantsVersion(q, '')) {
-      const _o = songs.filter(s => !_isVersionSong(s.trackName || ''));
-      const _v = songs.filter(s =>  _isVersionSong(s.trackName || ''));
-      songs = [..._o, ..._v];
-    }
+  songs = songs.filter(s => !_isVersionSong(s.trackName || ''));
+}
     renderSearchResults(songs, q);
   } catch(e) {
     const body = document.getElementById('search-body');
