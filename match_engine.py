@@ -64,7 +64,9 @@ _HARD_VERSION_WORDS = {
     'festival mix', 'club mix', 'dance mix', 'extended mix', 'extended version',
     'radio edit', 'club version', 'club edit', 'beats version',
     'dj remix', 'dj mix', 'dj version', 'dj edit', 'dj drop',
-    'cover version', 'tribute', 'lyric video', 'lyrics video',
+    # [FIX-COVER] plain 'cover' bhi hard reject — 'cover version' already tha
+    # "Tum Hi Ho (Cover)" clean query pe nahi aana chahiye
+    'cover', 'cover version', 'tribute', 'lyric video', 'lyrics video',
 }
 
 
