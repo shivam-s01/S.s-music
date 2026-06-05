@@ -1695,7 +1695,12 @@ def prefetch_songs():
 # ═══════════════════════════════════════════════════════════════════════════════
 # MISSING EXPORTS — server.py imports
 # ═══════════════════════════════════════════════════════════════════════════════
-from core import _l1_artwork, _l1_verified
+try:
+    from core import _l1_artwork, _l1_verified
+except ImportError:
+    from cachetools import TTLCache
+    _l1_artwork  = TTLCache(maxsize=500, ttl=3600)
+    _l1_verified = TTLCache(maxsize=500, ttl=3600)
 from match_engine import ALLOWED_STREAM_DOMAINS
 from urllib.parse import urlparse
 
