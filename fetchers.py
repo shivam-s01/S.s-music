@@ -189,8 +189,11 @@ def _fetch_saavn_search_parallel(search_term, language=''):
     except Exception: pass
     return []
 
-def _normalize_saavn_songs(raw_songs):
+def _normalize_saavn_songs(raw_songs, query=''):
     normalized = []
+    # [FIX-SEARCH-FILTER] Query mein version request hai ya nahi
+    _query_wants_ver = _query_requests_version(query) if query else False
+
     for song in raw_songs:
         song_id = song.get('id', '').strip()
         if not song_id: continue
@@ -205,6 +208,28 @@ def _normalize_saavn_songs(raw_songs):
         if dur_s == 0: continue
         if dur_s > 1800 and not _is_devotional: continue
         if dur_s > 1080 and not _is_devotional: continue
+
+        # [FIX-SEARCH-FILTER] Lofi/Remix/Cover/Instrumental search results mein nahi aane chahiye
+        # Jab tak user explicitly "lofi" ya "remix" type na kare query mein
+        if not _query_wants_ver:
+            if _is_remix_or_cover(title):
+                log.debug(f"[SearchFilter] REMIX/COVER blocked: '{title}'")
+                continue
+            if _is_slowed_reverb(title):
+                log.debug(f"[SearchFilter] SLOWED/REVERB blocked: '{title}'")
+                continue
+            if _is_live_version(title):
+                log.debug(f"[SearchFilter] LIVE blocked: '{title}'")
+                continue
+            # Extra: has_version_words check — "Instrumental", "Karaoke", "Flip" etc
+            if has_version_words(title):
+                log.debug(f"[SearchFilter] VERSION WORD blocked: '{title}'")
+                continue
+            # Query se title DNA match — "Bahara" search pe "Badra Bahaar" ya "Bahara X" block
+            if query and not dna_compatible(query, title):
+                log.debug(f"[SearchFilter] DNA MISMATCH blocked: '{title}' for query='{query}'")
+                continue
+
         raw_urls = song.get('downloadUrl') or song.get('download_url') or []
         if isinstance(raw_urls, str):
             raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
@@ -848,13 +873,13 @@ def fetch_saavn_parallel(query, title='', artist='', language=''):
         _lang = language
 
     threshold = dynamic_min_score(query)
-    mirrors   = _best_mirrors(n=8)
+    mirrors   = _best_mirrors(n=6)   # 8→6: top 6 healthy mirrors kaafi hain
     futures   = {_executor.submit(fetch_from_mirror, m, query, threshold, title, artist, _lang): m
                  for m in mirrors}
     all_results = []
-    _EARLY_EXIT_CONF = 0.88
+    _EARLY_EXIT_CONF = 0.82  # 0.88→0.82: zyada wait nahi, pehla good match le lo
     try:
-        for future in as_completed(futures, timeout=4):
+        for future in as_completed(futures, timeout=2.5):  # 4s→2.5s
             try:
                 result = future.result()
                 if result:
@@ -1308,7 +1333,7 @@ def play_song():
         }
         _phase1_candidates = []
         try:
-            for future in as_completed(_phase1_futures, timeout=3.0):
+            for future in as_completed(_phase1_futures, timeout=1.5):  # 3.0→1.5s
                 try:
                     res = future.result()
                     if res and res.get('url'):
@@ -1340,10 +1365,10 @@ def play_song():
             }
 
             _fb_candidates = []; _arrival_idx = 0
-            _deadline      = time.time() + 2.5
+            _deadline      = time.time() + 1.8  # 2.5→1.8s
 
             try:
-                for future in as_completed(_all_fb_futures, timeout=2.5):
+                for future in as_completed(_all_fb_futures, timeout=1.8):  # 2.5→1.8s
                     try:
                         res = future.result()
                         if res and res.get('url'):
