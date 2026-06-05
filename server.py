@@ -52,7 +52,7 @@ from fetchers import (
     fetch_from_soundcloud, fetch_from_piped, fetch_from_invidious,
     fetch_from_jiosavan,
     _fetch_saavn_search_parallel, _normalize_saavn_songs,
-    _resolve_itunes_to_saavn, _fetch_itunes_artwork,
+    _resolve_itunes_to_saavn,
     _is_allowed_domain, is_likely_duplicate,
     _do_prefetch, _auto_prefetch_search_results,
     _url_refresh_queue,
@@ -89,7 +89,6 @@ def get_songs():
     cache_key = f"songs:{search_term.lower()}"
     cached    = _l1_meta.get(cache_key)
     if cached is not None:
-        # [SPEED-S1] Even on cache hit — prefetch in case L1 audio expired
         _executor_bg.submit(_auto_prefetch_search_results, cached)
         return jsonify({'results': cached, '_cached': True})
 
@@ -159,7 +158,6 @@ def get_songs():
 
     if merged:
         _l1_meta.set(cache_key, merged)
-        # [SPEED-S1] Prefetch top 3 songs immediately after search — next play = L1 hit
         _executor_bg.submit(_auto_prefetch_search_results, merged)
         return jsonify({'results': merged})
 
@@ -186,7 +184,6 @@ def get_90s_songs():
         result     = (filtered if len(filtered) >= 5 else normalized)[:30]
         random.shuffle(result)
         _l1_meta.set(cache_key, result)
-        # [SPEED-S2] Prefetch immediately
         _executor_bg.submit(_auto_prefetch_search_results, result)
         return jsonify({'results': result, 'seed': seed})
 
@@ -243,7 +240,6 @@ def get_saavn_song():
         if not entry or not entry.get('url'): return None
         _user_wants_ver = _query_requests_version(q) or _query_requests_version(artist)
         _ct = entry.get('title', '')
-        # DNA check — version mismatch reject
         if not _user_wants_ver:
             if (_is_remix_or_cover(_ct) or _is_live_version(_ct) or _is_slowed_reverb(_ct)):
                 log.info(f"[Cache:/api/saavn] VERSION REJECTED: '{_ct}' for query='{q}'")
@@ -263,7 +259,6 @@ def get_saavn_song():
         elif _l1_saavn.get(_ck):
             _l1_saavn.delete(_ck)
 
-    # [SPEED-S3] L2 Supabase async — 0.2s window, non-blocking
     if not low_quality:
         _l2_fut = _executor_cache.submit(_supabase_cache_get_with_refresh, _ck)
         try:
