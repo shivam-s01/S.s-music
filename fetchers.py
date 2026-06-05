@@ -266,6 +266,12 @@ def _resolve_itunes_to_saavn(itunes_song: dict) -> Optional[dict]:
                         song_artist = (song.get('primaryArtists') or
                                        song.get('primary_artists') or '')
                         song_dur = int(song.get('duration', 0) or 0)
+                        # [FIX-ITUNES-DNA] Direct dna_compatible pre-filter
+                        # _is_confirmed_match internally calls it but early exit saves cycles
+                        # aur cover/lofi/remix iTunes se bhi block hoga
+                        if not dna_compatible(title, song_title):
+                            log.debug(f"[iTunesResolve] DNA MISMATCH: '{song_title}'")
+                            continue
                         _ok, _conf, _reason = _is_confirmed_match(
                             title, artist, song_title, song_artist,
                             source='saavn', duration_s=itunes_dur, res_dur_s=song_dur,
@@ -783,7 +789,10 @@ def fetch_from_mirror(mirror, query, min_score=0.4, title='', artist='', languag
                     log.debug(f"[Mirror] DNA MISMATCH: '{song_title}'")
                     continue
 
-                if not has_word_match(query, song_title): continue
+                # [FIX-QUERY-TITLE] query (variant) nahi, _conf_title (original) use karo
+                # query = build_query_variants se generated form hota hai
+                # _conf_title = actual song title — isi se word match check hona chahiye
+                if not has_word_match(_conf_title, song_title): continue
                 dur = int(song.get('duration', 999) or 999)
                 if dur > 1080: continue
 
@@ -1148,6 +1157,18 @@ def play_song():
                 log.info(f"[Cache] DNA MISMATCH — invalidating cached='{_ct}'")
                 return None
 
+        # [FIX-CACHE-ARTIST] Artist mismatch fast reject — same title different artist
+        # compute_confidence internally check karta hai lekin duration=0 force se
+        # false pass ho sakta tha. Yahan explicit fast reject.
+        _cached_artist = entry.get('artist', '')
+        if artist and _cached_artist:
+            from core import _seq_ratio, _normalize_artist, normalize as _cn
+            _qa = _normalize_artist(_cn(artist))
+            _ra = _normalize_artist(_cn(_cached_artist))
+            if _qa and _ra and _seq_ratio(_qa, _ra) < 0.35:
+                log.info(f"[Cache] ARTIST MISMATCH — invalidating cached artist='{_cached_artist}' req='{artist}'")
+                return None
+
         if title and _ct:
             _recheck_conf = compute_confidence(
                 title, artist, _ct, entry.get('artist', ''),
@@ -1215,6 +1236,18 @@ def play_song():
         _indexed_id = _song_index_get(title, artist)
         if _indexed_id and _indexed_id != song_id:
             _idx_result = _fetch_saavn_by_id(_indexed_id, expected_title=title, expected_artist=artist)
+            if _idx_result and _idx_result.get('url'):
+                # [FIX-INDEX-STALE] Song index mein purana ID ho sakta hai same-title different-artist ka
+                # _fetch_saavn_by_id ke andar 0.65 conf check hoti hai lekin
+                # yahan stricter 0.75 + explicit confirm — stale index entry block karo
+                _ok, _idx_conf, _idx_reason = _is_confirmed_match(
+                    title, artist,
+                    _idx_result.get('title', ''), _idx_result.get('artist', ''),
+                    source='saavn', min_conf=0.75,
+                )
+                if not _ok:
+                    log.warning(f"[SongIndex] Stale ID rejected: req='{title}' got='{_idx_result.get('title')}' reason={_idx_reason}")
+                    _idx_result = None
             if _idx_result and _idx_result.get('url'):
                 audio_url  = _idx_result['url']
                 quality    = _idx_result.get('quality', 'unknown')
@@ -1613,6 +1646,22 @@ def prefetch_songs():
             for _qv in build_query_variants(_title, _artist, '')[:2]:
                 _res = fetch_saavn_parallel(_qv, title=_title, artist=_artist, language=_lang)
                 if _res and _res.get('url'):
+                    # [FIX-PREFETCH-CACHE] Validate before cache write — prevent cache pollution
+                    # fetch_saavn_parallel internal confidence check hoti hai lekin
+                    # yahan explicit DNA + confirm = wrong song cache mein nahi jayega
+                    _res_title  = _res.get('title', '')
+                    _res_artist = _res.get('artist', '')
+                    if _title and _res_title:
+                        if not dna_compatible(_title, _res_title):
+                            log.warning(f"[Prefetch] DNA MISMATCH cache write blocked: '{_res_title}'")
+                            continue
+                        _ok, _pconf, _reason = _is_confirmed_match(
+                            _title, _artist, _res_title, _res_artist,
+                            source='saavn', min_conf=0.72,
+                        )
+                        if not _ok:
+                            log.warning(f"[Prefetch] Cache write rejected: '{_res_title}' {_reason}")
+                            continue
                     _l1_saavn.set(_ck, _res)
                     return
 
@@ -1720,6 +1769,21 @@ def _do_prefetch_song(song):
             for _qv in build_query_variants(_title, _artist, '')[:2]:
                 _res = fetch_saavn_parallel(_qv, title=_title, artist=_artist, language=_lang)
                 if _res and _res.get('url'):
+                    # [FIX-PREFETCH-CACHE] Same fix as inline _do_prefetch
+                    # Cache pollution prevent karo — wrong song cache mein nahi jayega
+                    _res_title  = _res.get('title', '')
+                    _res_artist = _res.get('artist', '')
+                    if _title and _res_title:
+                        if not dna_compatible(_title, _res_title):
+                            log.warning(f"[PrefetchSong] DNA MISMATCH blocked: '{_res_title}'")
+                            continue
+                        _ok, _pconf, _reason = _is_confirmed_match(
+                            _title, _artist, _res_title, _res_artist,
+                            source='saavn', min_conf=0.72,
+                        )
+                        if not _ok:
+                            log.warning(f"[PrefetchSong] Cache write rejected: '{_res_title}' {_reason}")
+                            continue
                     _l1_saavn.set(_ck, _res)
                     return
     except Exception as e:
