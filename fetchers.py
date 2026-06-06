@@ -27,6 +27,9 @@ from core import (
     _is_devotional_query, verify_via_fingerprint,
     app, limiter, get_real_ip,
     _conf_tuner, _src_perf,
+    # ── TVE Match Cache + Saavn Anchor ──────────────────────────────────────
+    tve_match_get, tve_match_get_verified, tve_match_set, tve_match_invalidate,
+    store_saavn_anchor, get_saavn_anchor,
 )
 from match_engine import (
     compute_confidence, _is_confirmed_match, is_likely_duplicate,
@@ -38,6 +41,10 @@ from match_engine import (
     QUALITY_RANK, NINETIES_SEEDS, NINETIES_TRIGGERS,
     ALLOWED_STREAM_DOMAINS,
     dna_compatible, get_song_dna, has_version_words,
+    # ── Track Verification Engine ──────────────────────────────────────────
+    tve_validate, tve_validate_anchored, tve_pick_best,
+    tve_tier1_duration, clean_metadata,
+    tve_tier4_language, tve_tier5_artist_hard,
 )
 from sources import (
     SAAVN_MIRRORS, PIPED_INSTANCES, INVIDIOUS_INSTANCES,
@@ -66,6 +73,72 @@ def _cache_cleanup_loop():
             log.warning(f'[Cache:Cleanup] Error: {e}')
 
 threading.Thread(target=_cache_cleanup_loop, daemon=True).start()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ARTIST SIMILARITY HELPER — used by fetch_from_mirror + _normalize_saavn_songs
+# ═══════════════════════════════════════════════════════════════════════════════
+def _best_artist_similarity(req_artist: str, result_artist: str) -> float:
+    """
+    Multi-strategy artist similarity.
+    Returns 0.0–1.0. Used as hard gate: < 0.55 with explicit artist = reject.
+
+    Strategies:
+    1. Full normalized string token_sort_ratio
+    2. Primary artist partial_ratio (handles "Arijit Singh" in "Arijit Singh, Shreya")
+    3. First-word match (handles transliteration variants)
+    4. Substring containment
+    """
+    if not req_artist or not result_artist:
+        return 0.5  # unknown — neutral, cannot reject
+
+    def _norm(t):
+        t = t.lower()
+        # Strip featuring clause
+        t = re.sub(r'\s*(feat\.?|ft\.?|featuring|presents|prod\.?)\s+.*', '', t)
+        t = re.sub(r'\s*\(.*?\)', '', t)
+        t = re.sub(r'[^a-z0-9\s]', '', t)
+        return re.sub(r'\s+', ' ', t).strip()
+
+    def _primary(t):
+        parts = re.split(r'\s*[&,]\s*|\s+x\s+|\s+and\s+|\s+\+\s+', _norm(t))
+        return parts[0].strip() if parts else _norm(t)
+
+    rq = _norm(req_artist)
+    rr = _norm(result_artist)
+    pq = _primary(req_artist)
+    pr = _primary(result_artist)
+
+    try:
+        from rapidfuzz import fuzz as _rf
+        s1 = _rf.token_sort_ratio(rq, rr) / 100.0
+        s2 = _rf.partial_ratio(pq, rr)    / 100.0
+        s3 = _rf.partial_ratio(rq, pr)    / 100.0
+    except ImportError:
+        from difflib import SequenceMatcher as _SM
+        s1 = _SM(None, rq, rr).ratio()
+        s2 = _SM(None, pq, rr).ratio()
+        s3 = _SM(None, rq, pr).ratio()
+
+    # First word match bonus
+    fq = rq.split()[0] if rq.split() else ''
+    fr = rr.split()[0] if rr.split() else ''
+    s4 = 0.0
+    if fq and fr:
+        try:
+            from rapidfuzz import fuzz as _rf
+            s4 = _rf.ratio(fq, fr) / 100.0
+        except ImportError:
+            from difflib import SequenceMatcher as _SM
+            s4 = _SM(None, fq, fr).ratio()
+
+    # Substring containment — "Narendra Chanchal" in "Pt. Narendra Chanchal"
+    s5 = 0.0
+    if pq and pq in rr: s5 = 0.90
+    if pr and pr in rq: s5 = max(s5, 0.90)
+
+    return max(s1, s2, s3, s4 * 0.85, s5)
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -194,6 +267,15 @@ def _normalize_saavn_songs(raw_songs, query=''):
     # [FIX-SEARCH-FILTER] Query mein version request hai ya nahi
     _query_wants_ver = _query_requests_version(query) if query else False
 
+    # Extract request artist from query if present (format: "artist title" or "title artist")
+    # Used for soft artist pre-filter on search results
+    _req_artist_hint = ''
+    if query:
+        # If query looks like it has an artist (contains known artist patterns), extract it
+        # But we don't want to be too aggressive here — this is search, not play
+        # So we use a loose threshold: 0.45 (vs 0.55 in fetch_from_mirror)
+        pass  # artist hint extracted per-song below
+
     for song in raw_songs:
         song_id = song.get('id', '').strip()
         if not song_id: continue
@@ -292,11 +374,15 @@ def _resolve_itunes_to_saavn(itunes_song: dict) -> Optional[dict]:
                                        song.get('primary_artists') or '')
                         song_dur = int(song.get('duration', 0) or 0)
                         # [FIX-ITUNES-DNA] Direct dna_compatible pre-filter
-                        # _is_confirmed_match internally calls it but early exit saves cycles
-                        # aur cover/lofi/remix iTunes se bhi block hoga
                         if not dna_compatible(title, song_title):
                             log.debug(f"[iTunesResolve] DNA MISMATCH: '{song_title}'")
                             continue
+                        # HARD ARTIST GATE
+                        if artist and song_artist:
+                            _art_sim = _best_artist_similarity(artist, song_artist)
+                            if _art_sim < 0.55:
+                                log.debug(f"[iTunesResolve] ARTIST REJECT: req='{artist}' got='{song_artist}' sim={_art_sim:.2f}")
+                                continue
                         _ok, _conf, _reason = _is_confirmed_match(
                             title, artist, song_title, song_artist,
                             source='saavn', duration_s=itunes_dur, res_dur_s=song_dur,
@@ -427,6 +513,20 @@ def _ytm_get_stream_url(video_id):
     l1_key = f"ytm_stream:{video_id}"
     cached = _l1_audio.get(l1_key)
     if cached: return cached.get('url'), cached.get('quality')
+    url, quality, _ = _ytm_get_stream_with_duration(video_id)
+    return url, quality
+
+
+def _ytm_get_stream_with_duration(video_id):
+    """
+    Stream URL + actual duration — fixes YTM Tier 1 duration gap.
+    YTMusic search API returns duration=0; this fetches the real value.
+    Returns (url, quality, duration_s).
+    """
+    l1_key = f"ytm_stream:{video_id}"
+    cached = _l1_audio.get(l1_key)
+    if cached:
+        return cached.get('url'), cached.get('quality'), int(cached.get('duration_s', 0))
     ydl_opts = {
         'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
         'quiet': True, 'no_warnings': True, 'socket_timeout': 12,
@@ -436,7 +536,8 @@ def _ytm_get_stream_url(video_id):
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f'https://music.youtube.com/watch?v={video_id}', download=False)
-            if not info: return None, None
+            if not info: return None, None, 0
+            actual_dur = int(info.get('duration', 0) or 0)
             formats = info.get('formats', [])
             audio_formats = [f for f in formats
                              if f.get('acodec') not in ('none', None, '')
@@ -444,18 +545,21 @@ def _ytm_get_stream_url(video_id):
             if not audio_formats:
                 audio_formats = [f for f in formats
                                  if f.get('acodec') not in ('none', None, '') and f.get('url')]
-            if not audio_formats: return None, None
+            if not audio_formats: return None, None, actual_dur
             best    = max(audio_formats, key=lambda f: f.get('abr') or f.get('tbr') or 0)
             abr     = best.get('abr') or best.get('tbr') or 0
             quality = f"{int(abr)}kbps" if abr else 'unknown'
             url     = best['url']
-            _l1_audio.set(l1_key, {'url': url, 'quality': quality})
-            return url, quality
+            _l1_audio.set(l1_key, {'url': url, 'quality': quality, 'duration_s': actual_dur})
+            return url, quality, actual_dur
     except Exception as e:
         log.warning(f'[YTMusic] stream extract error {video_id}: {e}')
-        return None, None
-
-def fetch_from_ytmusic(title, artist=''):
+        return None, None, 0
+def fetch_from_ytmusic(title, artist='', anchor=None):
+    """
+    anchor: Saavn ground-truth metadata dict — if provided, TVE uses
+    tve_validate_anchored (language/duration from Saavn, not guessed).
+    """
     if not _cb.is_allowed('ytmusic'):
         log.debug('[CB] ytmusic OPEN — skipping'); return None
     l1_key = f"ytmusic:{normalize(title)}:{normalize(artist)}"
@@ -464,27 +568,69 @@ def fetch_from_ytmusic(title, artist=''):
 
     clean_title  = re.sub(r'\(.*?\)|\[.*?\]', '', title).strip()
     clean_artist = artist.split(',')[0].split('&')[0].strip() if artist else ''
-    query = f"{clean_artist} {clean_title}".strip() if clean_artist else clean_title
+
+    # Anchor-based search query — more specific than generic "title artist"
+    if anchor:
+        year  = anchor.get('year', '')
+        lang  = anchor.get('language', '')
+        query = f"{clean_artist} {clean_title}".strip() if clean_artist else clean_title
+        if year and int(year or 0) < 2020:
+            query += f" {year}"
+        if lang and lang in ('hindi', 'punjabi', 'bhojpuri'):
+            query += f" {lang}"
+    else:
+        query = f"{clean_artist} {clean_title}".strip() if clean_artist else clean_title
+
     results = _ytm_search(query, limit=8)
     if not results: results = _ytm_search(clean_title, limit=5)
     if not results: return None
 
-    best = None; best_conf = -1.0
-    for item in results:
-        if not dna_compatible(title, item.get('title', '')):
-            log.debug(f"[YTMusic] DNA block: '{item.get('title')}'"); continue
-        _ok, _conf, _reason = _is_confirmed_match(
-            title, artist, item.get('title', ''), item.get('artist', ''),
-            source='ytmusic', min_conf=0.60,
-        )
-        if not _ok:
-            log.debug(f"[YTMusic] Rejected '{item.get('title')}': {_reason}"); continue
-        if _conf > best_conf: best_conf = _conf; best = item
+    # ── TVE: build candidate list (duration=0 initially — fixed post-selection) ──
+    tve_candidates = [
+        {'title': item.get('title', ''), 'artist': item.get('artist', ''),
+         'duration_s': 0, '_item': item}
+        for item in results[:5]
+    ]
 
-    if not best or best_conf < 0.60: return None
+    _saavn_dur  = anchor.get('duration_s', 0) if anchor else 0
+    _saavn_lang = anchor.get('language', '')  if anchor else ''
+
+    best_candidate, scores = tve_pick_best(
+        saavn_title=title, saavn_artist=artist, saavn_duration_s=_saavn_dur,
+        candidates=tve_candidates, max_candidates=5,
+        saavn_language=_saavn_lang, source='ytmusic', anchor=anchor,
+    )
+
+    if best_candidate is None:
+        log.warning(f"[YTMusic] TVE all candidates failed for '{title}': "
+                    f"{scores.get('message', 'no verified track')}")
+        return None
+
+    best     = best_candidate['_item']
     video_id = best['videoId']
-    url, quality = _ytm_get_stream_url(video_id)
+
+    # ── Real duration fetch — fixes Tier 1 YTM duration=0 gap ────────────────
+    url, quality, actual_dur = _ytm_get_stream_with_duration(video_id)
     if not url: return None
+
+    # Post-stream Tier 1 re-check with actual duration
+    if _saavn_dur > 0 and actual_dur > 0:
+        if not tve_tier1_duration(_saavn_dur, actual_dur):
+            log.warning(
+                f"[YTMusic] Real duration gate FAILED: saavn={_saavn_dur}s "
+                f"yt={actual_dur}s '{best.get('title')}'"
+            )
+            return None
+
+    # Legacy confidence cross-check
+    _ok, _conf, _reason = _is_confirmed_match(
+        title, artist, best.get('title', ''), best.get('artist', ''),
+        source='ytmusic', min_conf=0.60,
+    )
+    if not _ok:
+        log.debug(f"[YTMusic] Legacy gate rejected '{best.get('title')}': {_reason}")
+        return None
+    best_conf = _conf
 
     if not verify_via_fingerprint(url, title, artist):
         log.warning(f"[YTMusic] Fingerprint FAILED: '{best.get('title')}'")
@@ -505,10 +651,12 @@ def fetch_from_ytmusic(title, artist=''):
     return result
 
 
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # YT-DLP
 # ═══════════════════════════════════════════════════════════════════════════════
-def fetch_from_ytdlp(title, artist=''):
+def fetch_from_ytdlp(title, artist='', anchor=None):
     if not _cb.is_allowed('youtube'):
         log.debug('[CB] youtube/ytdlp OPEN — skipping'); return None
     l1_key = f"ytdlp:{normalize(title)}:{normalize(artist)}"
@@ -547,74 +695,113 @@ def fetch_from_ytdlp(title, artist=''):
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            best_result = None; best_conf = -1.0
             for search_q in search_queries:
                 try:
                     info = ydl.extract_info(search_q, download=False)
                     if not info or not info.get('entries'): continue
+
+                    # ── TVE: build candidate list (up to 5) ──────────────────
                     entries = [e for e in info['entries'] if e and e.get('duration', 0) > 90]
-                    if not entries: entries = [e for e in info['entries'] if e]
-                    for entry in entries:
-                        if not entry: continue
-                        yt_title  = entry.get('title', '')
-                        yt_artist = entry.get('uploader', '') or entry.get('artist', '')
-                        if not dna_compatible(title, yt_title):
-                            log.debug(f"[yt-dlp] DNA block: '{yt_title}'"); continue
-                        _ok, _conf, _reason = _is_confirmed_match(
-                            title, artist, yt_title, yt_artist,
-                            source='youtube', min_conf=0.60,
-                        )
-                        if not _ok:
-                            log.debug(f"[yt-dlp] Rejected '{yt_title}': {_reason}"); continue
-                        if 'music.youtube' in (entry.get('webpage_url') or ''):
-                            _conf = min(1.0, _conf + 0.05)
-                        if _conf > best_conf: best_conf = _conf; best_result = entry
-                    if best_conf >= 0.75: break
+                    if not entries:
+                        entries = [e for e in info['entries'] if e]
+
+                    # Convert entries → TVE candidate dicts
+                    tve_candidates = []
+                    for entry in entries[:5]:
+                        tve_candidates.append({
+                            'title':      entry.get('title', ''),
+                            'artist':     entry.get('uploader', '') or entry.get('artist', ''),
+                            'duration_s': int(entry.get('duration', 0) or 0),
+                            '_entry':     entry,  # preserve full entry for URL extraction
+                        })
+
+                    # ── Retrieve Saavn duration hint if available ─────────────
+                    # Pass 0 if unknown — Tier 1 skips gracefully
+                    _saavn_dur = 0  # ytdlp path: no Saavn reference duration
+
+                    _saavn_lang2 = anchor.get('language', '') if anchor else ''
+                    best_candidate, scores = tve_pick_best(
+                        saavn_title=title,
+                        saavn_artist=artist,
+                        saavn_duration_s=_saavn_dur,
+                        candidates=tve_candidates,
+                        max_candidates=5,
+                        saavn_language=_saavn_lang2,
+                        source='youtube',
+                        anchor=anchor,
+                    )
+
+                    if best_candidate is None:
+                        # Also check scores for mismatch_error — all 5 failed
+                        if scores and scores.get('status') == 'mismatch_error':
+                            log.debug(f"[yt-dlp] TVE: {scores['message']} for '{title}'")
+                        # Try next search query
+                        continue
+
+                    best_result = best_candidate['_entry']
+
+                    # ── Legacy confidence cross-check (keep existing gate) ────
+                    yt_title  = best_result.get('title', '')
+                    yt_artist = best_result.get('uploader', '') or best_result.get('artist', '')
+                    _ok, _conf, _reason = _is_confirmed_match(
+                        title, artist, yt_title, yt_artist,
+                        source='youtube', min_conf=0.60,
+                    )
+                    if not _ok:
+                        log.debug(f"[yt-dlp] Legacy gate rejected '{yt_title}': {_reason}")
+                        continue
+
+                    if 'music.youtube' in (best_result.get('webpage_url') or ''):
+                        _conf = min(1.0, _conf + 0.05)
+                    best_conf = _conf
+
+                    # ── Extract audio formats ─────────────────────────────────
+                    formats       = best_result.get('formats', [])
+                    audio_formats = [f for f in formats
+                                     if f.get('acodec') not in ('none', None, '')
+                                     and f.get('url')
+                                     and (f.get('vcodec') in ('none', None, '') or not f.get('vcodec'))]
+                    if not audio_formats:
+                        audio_formats = [f for f in formats
+                                         if f.get('acodec') not in ('none', None, '') and f.get('url')]
+                    if not audio_formats:
+                        audio_formats = [f for f in formats if f.get('url')]
+                    if not audio_formats: continue
+
+                    best_fmt = max(audio_formats, key=lambda f: f.get('abr') or f.get('tbr') or 0)
+                    abr      = best_fmt.get('abr') or best_fmt.get('tbr') or 0
+                    quality  = f"{int(abr)}kbps" if abr else 'unknown'
+                    thumb    = best_result.get('thumbnail', '')
+                    if not thumb:
+                        vid_id = best_result.get('id', '')
+                        if vid_id: thumb = f"https://img.youtube.com/vi/{vid_id}/mqdefault.jpg"
+
+                    if not verify_via_fingerprint(best_fmt['url'], title, artist):
+                        log.warning(f"[yt-dlp] Fingerprint FAILED: '{best_result.get('title')}'")
+                        _cb.record_failure('youtube')
+                        continue  # try next query rather than returning None
+
+                    _cb.record_success('youtube')
+                    _src_perf.record('youtube', 0, True)
+                    result = {
+                        'url':    best_fmt['url'],
+                        'quality': quality,
+                        'title':  best_result.get('title', title),
+                        'artist': best_result.get('uploader', artist) or best_result.get('artist', artist),
+                        'image':  thumb, 'source': 'youtube',
+                        '_confidence': round(best_conf, 3),
+                    }
+                    cached_art = _get_artwork(title, artist)
+                    if cached_art: result['image'] = cached_art
+                    elif thumb: _store_artwork(title, artist, thumb, 5)
+                    if best_conf >= 0.65: _l1_audio.set(l1_key, result)
+                    log.info(f"[yt-dlp] ✓ '{best_result.get('title')}' conf={best_conf:.2f} q={quality}")
+                    return result
+
                 except Exception: continue
 
-            if not best_result or best_conf < 0.60: return None
-
-            formats       = best_result.get('formats', [])
-            audio_formats = [f for f in formats
-                             if f.get('acodec') not in ('none', None, '')
-                             and f.get('url')
-                             and (f.get('vcodec') in ('none', None, '') or not f.get('vcodec'))]
-            if not audio_formats:
-                audio_formats = [f for f in formats
-                                 if f.get('acodec') not in ('none', None, '') and f.get('url')]
-            if not audio_formats:
-                audio_formats = [f for f in formats if f.get('url')]
-            if not audio_formats: return None
-
-            best_fmt = max(audio_formats, key=lambda f: f.get('abr') or f.get('tbr') or 0)
-            abr      = best_fmt.get('abr') or best_fmt.get('tbr') or 0
-            quality  = f"{int(abr)}kbps" if abr else 'unknown'
-            thumb    = best_result.get('thumbnail', '')
-            if not thumb:
-                vid_id = best_result.get('id', '')
-                if vid_id: thumb = f"https://img.youtube.com/vi/{vid_id}/mqdefault.jpg"
-
-            if not verify_via_fingerprint(best_fmt['url'], title, artist):
-                log.warning(f"[yt-dlp] Fingerprint FAILED: '{best_result.get('title')}'")
-                _cb.record_failure('youtube')
-                return None
-
-            _cb.record_success('youtube')
-            _src_perf.record('youtube', 0, True)
-            result = {
-                'url':    best_fmt['url'],
-                'quality': quality,
-                'title':  best_result.get('title', title),
-                'artist': best_result.get('uploader', artist) or best_result.get('artist', artist),
-                'image':  thumb, 'source': 'youtube',
-                '_confidence': round(best_conf, 3),
-            }
-            cached_art = _get_artwork(title, artist)
-            if cached_art: result['image'] = cached_art
-            elif thumb: _store_artwork(title, artist, thumb, 5)
-            if best_conf >= 0.65: _l1_audio.set(l1_key, result)
-            log.info(f"[yt-dlp] ✓ '{best_result.get('title')}' conf={best_conf:.2f} q={quality}")
-            return result
+            # All search queries exhausted — genuine not-found
+            return None
     except Exception as e:
         log.warning(f"[yt-dlp] '{title}' → {e}")
         _cb.record_failure('youtube')
@@ -624,7 +811,7 @@ def fetch_from_ytdlp(title, artist=''):
 # ═══════════════════════════════════════════════════════════════════════════════
 # SOUNDCLOUD
 # ═══════════════════════════════════════════════════════════════════════════════
-def fetch_from_soundcloud(title, artist=''):
+def fetch_from_soundcloud(title, artist='', anchor=None):
     if not _cb.is_allowed('soundcloud'):
         log.debug('[CB] soundcloud OPEN — skipping'); return None
     l1_key = f"sc:{normalize(title)}:{normalize(artist)}"
@@ -645,18 +832,50 @@ def fetch_from_soundcloud(title, artist=''):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(f"scsearch5:{query}", download=False)
             if not info or not info.get('entries'): return None
-            best = None; best_conf = -1.0
+
+            # ── TVE: build candidate list (up to 5) ──────────────────────────
+            tve_candidates = []
             for entry in info['entries']:
                 if not entry or entry.get('duration', 0) < 60: continue
-                sc_title = entry.get('title', '')
-                _ok, _conf, _reason = _is_confirmed_match(
-                    title, artist, sc_title, entry.get('uploader', ''),
-                    source='soundcloud', min_conf=0.60,
+                tve_candidates.append({
+                    'title':      entry.get('title', ''),
+                    'artist':     entry.get('uploader', ''),
+                    'duration_s': int(entry.get('duration', 0) or 0),
+                    '_entry':     entry,
+                })
+
+            _sc_saavn_dur  = anchor.get('duration_s', 0) if anchor else 0
+            _sc_saavn_lang = anchor.get('language', '')  if anchor else ''
+            best_candidate, scores = tve_pick_best(
+                saavn_title=title,
+                saavn_artist=artist,
+                saavn_duration_s=_sc_saavn_dur,
+                candidates=tve_candidates,
+                max_candidates=5,
+                saavn_language=_sc_saavn_lang,
+                source='soundcloud',  # Tier 5 artist check skipped for SC
+                anchor=anchor,
+            )
+
+            if best_candidate is None:
+                # Strict fallback — all 5 failed
+                log.warning(
+                    f"[SoundCloud] TVE all candidates failed for '{title}': "
+                    f"{scores.get('message', 'no verified track')}"
                 )
-                if not _ok:
-                    log.debug(f"[SoundCloud] Rejected '{sc_title}': {_reason}"); continue
-                if _conf > best_conf: best_conf = _conf; best = entry
-            if not best or best_conf < 0.60: return None
+                return None
+
+            best = best_candidate['_entry']
+
+            # Legacy confidence cross-check
+            _ok, _conf, _reason = _is_confirmed_match(
+                title, artist, best.get('title', ''), best.get('uploader', ''),
+                source='soundcloud', min_conf=0.60,
+            )
+            if not _ok:
+                log.debug(f"[SoundCloud] Legacy gate rejected '{best.get('title')}': {_reason}")
+                return None
+            best_conf = _conf
 
             formats  = best.get('formats', [])
             if not formats: return None
@@ -815,11 +1034,23 @@ def fetch_from_mirror(mirror, query, min_score=0.4, title='', artist='', languag
                     continue
 
                 # [FIX-QUERY-TITLE] query (variant) nahi, _conf_title (original) use karo
-                # query = build_query_variants se generated form hota hai
-                # _conf_title = actual song title — isi se word match check hona chahiye
                 if not has_word_match(_conf_title, song_title): continue
                 dur = int(song.get('duration', 999) or 999)
                 if dur > 1080: continue
+
+                # ── HARD ARTIST GATE ─────────────────────────────────────────
+                # Agar request mein artist diya hai toh artist match MANDATORY hai.
+                # Title match 100% hone pe bhi wrong artist = reject.
+                # Ye Bhojpuri/Bhakti/Hindi cross-contamination ka primary fix hai.
+                if _conf_artist and song_artist:
+                    _art_sim = _best_artist_similarity(_conf_artist, song_artist)
+                    if _art_sim < 0.55:
+                        log.debug(
+                            f"[Mirror] HARD ARTIST REJECT: "
+                            f"req='{_conf_artist}' got='{song_artist}' "
+                            f"sim={_art_sim:.2f} title='{song_title}'"
+                        )
+                        continue
 
                 _ok, _conf, _reason = _is_confirmed_match(
                     _conf_title, _conf_artist, song_title, song_artist,
@@ -1094,6 +1325,17 @@ def fetch_from_jiosavan(title, artist='', language=''):
             if not dna_compatible(title, song_title):
                 log.debug(f"[JioSavan] DNA MISMATCH: '{song_title}'"); continue
 
+            # ── HARD ARTIST GATE (same logic as fetch_from_mirror) ───────────
+            if artist and song_artist:
+                _art_sim = _best_artist_similarity(artist, song_artist)
+                if _art_sim < 0.55:
+                    log.debug(
+                        f"[JioSavan] HARD ARTIST REJECT: "
+                        f"req='{artist}' got='{song_artist}' "
+                        f"sim={_art_sim:.2f} title='{song_title}'"
+                    )
+                    continue
+
             _ok, _conf, _reason = _is_confirmed_match(
                 title, artist, song_title, song_artist,
                 source='jiosavan', duration_s=0, res_dur_s=song_dur, min_conf=0.65,
@@ -1215,6 +1457,27 @@ def play_song():
             _executor_cache.submit(sb_delete, 'song_cache', {'cache_key': _ck})
 
     _verified_hit = None
+
+    # ── TVE Match Cache Fast-Path ──────────────────────────────────────────────
+    # If this Saavn ID was already verified against a YT/SC source,
+    # skip the full search + validation pipeline entirely.
+    if song_id and not audio_url:
+        _tve_hit = tve_match_get_verified(song_id, req_title=title, req_artist=artist)
+        if _tve_hit and _tve_hit.get('url'):
+            _tve_entry = _check_cache_entry(_tve_hit)
+            if _tve_entry:
+                audio_url  = _tve_entry['url']
+                quality    = _tve_entry.get('quality', 'unknown')
+                source     = _tve_entry.get('source', 'unknown')
+                confidence = float(_tve_entry.get('_confidence', _tve_entry.get('confidence', 0.80)))
+                if not title:  title  = _tve_entry.get('title', '')
+                if not artist: artist = _tve_entry.get('artist', '')
+                log.info(f"[TVECache] ✓ Fast-path hit: id={song_id} src={source}")
+            else:
+                # URL likely expired — evict and re-resolve
+                tve_match_invalidate(song_id)
+                log.debug(f"[TVECache] Evicted expired entry for id={song_id}")
+
     hit = _get_verified(song_id=song_id, title=title, artist=artist)
     _verified_hit = _check_cache_entry(hit)
     if _verified_hit:
@@ -1309,6 +1572,8 @@ def play_song():
                 if not title:  title  = _r_title
                 if not artist: artist = _r_artist
                 log.info(f"[Play] ✓ Saavn ID={song_id} conf={confidence:.2f} q={quality}")
+                # Store Saavn anchor for YT/SC fallback reference
+                if result: store_saavn_anchor(song_id, {**result, 'duration_s': result.get('duration', 0)})
 
     if not audio_url and title:
         _variants_tried = set()
@@ -1322,6 +1587,12 @@ def play_song():
                 source     = 'saavn'
                 confidence = float(result.get('_confidence', result.get('score', 0.5)))
                 log.info(f"[Play] ✓ Saavn search '{result['title']}' q={quality}")
+                # Store anchor from search result
+                if result and song_id:
+                    store_saavn_anchor(song_id, {**result, 'duration_s': int(result.get('duration', 0))})
+                elif result:
+                    # No song_id — store by title+artist key
+                    store_saavn_anchor('title:' + normalize(title), {**result, 'duration_s': 0})
                 break
 
     if not audio_url and title:
@@ -1354,14 +1625,19 @@ def play_song():
             if not artist: artist = _p1_res.get('artist', artist)
 
         if not audio_url:
+            # Retrieve Saavn anchor for anchor-based TVE validation
+            _fb_anchor = get_saavn_anchor(song_id=song_id, title=title, artist=artist)
+            if _fb_anchor:
+                log.debug(f"[Play] Anchor found: dur={_fb_anchor.get('duration_s')}s "
+                          f"lang={_fb_anchor.get('language')} for '{title}'")
             _all_fb_futures = {
-                _executor.submit(fetch_from_ytmusic,    title, artist):        'ytmusic',
-                _executor.submit(fetch_from_ytdlp,      title, artist):        'youtube',
-                _executor.submit(fetch_from_soundcloud, title, artist):        'soundcloud',
+                _executor.submit(fetch_from_ytmusic,    title, artist, _fb_anchor): 'ytmusic',
+                _executor.submit(fetch_from_ytdlp,      title, artist, _fb_anchor): 'youtube',
+                _executor.submit(fetch_from_soundcloud, title, artist, _fb_anchor): 'soundcloud',
                 _executor.submit(fetch_from_piped,      title, title=title,
-                                 artist=artist):                               'piped',
+                                 artist=artist):                                     'piped',
                 _executor.submit(fetch_from_invidious,  title, title=title,
-                                 artist=artist):                               'invidious',
+                                 artist=artist):                                     'invidious',
             }
 
             _fb_candidates = []; _arrival_idx = 0
@@ -1574,6 +1850,14 @@ def play_song():
         _executor_cache.submit(_supabase_cache_set, _play_ck_title, _cache_payload, confidence)
     from core import _store_verified
     _store_verified(song_id, title, artist, _cache_payload, confidence)
+
+    # ── TVE Match Cache Write ──────────────────────────────────────────────────
+    # If the final source is a YT/SC fallback (not native Saavn), store the
+    # Saavn ID → result mapping so future plays skip the TVE pipeline entirely.
+    if song_id and source not in ('saavn', 'jiosavan') and confidence >= 0.80:
+        tve_match_set(song_id, _cache_payload,
+                      req_title=request.args.get('title', '').strip(),
+                      req_artist=request.args.get('artist', '').strip())
 
     if confidence >= 0.85 and title and song_id and source in ('saavn', 'jiosavan'):
         _executor_cache.submit(_song_index_put, title, artist, song_id, title, _best_art)
