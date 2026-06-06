@@ -9,6 +9,291 @@ from core import (
     _is_devotional_query, _is_english_song_query,
 )
 
+try:
+    from rapidfuzz import fuzz as _rfuzz
+    _RAPIDFUZZ_AVAILABLE = True
+except ImportError:
+    _RAPIDFUZZ_AVAILABLE = False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRACK VERIFICATION ENGINE — v1.0
+# Permanently fixes song mismatch from YT/SoundCloud results.
+# Architecture: Metadata Cleaner → 3-Tier Pipeline → Cache-Aware Loop
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── Metadata Cleaning & Normalization ──────────────────────────────────────────
+
+_META_NOISE_RE = re.compile(
+    r'(?i)\b(official|video|audio|lyrics|lyrical|full\s+video|full\s+song|'
+    r'hd|hq|mp3|remix|cover|reverb|lofi|slowed|vibe|clean|'
+    r'shot|reels|tiktok|version|4k|8k|music|visualizer|'
+    r'reaction|episode|ep|superhit|super\s+hit|new\s+song|'
+    r'latest|blockbuster|hit|jukebox|nonstop|back\s+to\s+back|'
+    r'2020|2021|2022|2023|2024|2025|'
+    r'song|gana|gaana|bhajan|bhojpuri\s+song|hindi\s+song|'
+    r'dj\s+wale|dj\s+remix|wala|wali|wale)\b'
+)
+
+# Hindi/Devanagari noise — strip if present
+_META_DEVANAGARI_RE = re.compile(r'[\u0900-\u097F]+')
+
+_META_BRACKET_RE  = re.compile(r'[\[\](){}<>]')
+_META_SPECIAL_RE  = re.compile(r'[-|_+/\\]+')
+_META_WHITESPACE  = re.compile(r'\s{2,}')
+
+# Saavn/YT title clutter patterns
+_META_EXTRA_RE = re.compile(
+    r'(?i)\s*[-|]\s*(official|audio|video|lyrics|full\s+song|hd|hq|'
+    r'ft\.?\s+\w+|feat\.?\s+\w+)\s*$'
+)
+
+
+def clean_metadata(text: str) -> str:
+    """
+    Tier-0 text cleanser.
+    - Lowercase + strip whitespace
+    - Strip punctuation: [], (), -, |, _, +, /
+    - Purge non-music metadata buzzwords
+    - Collapses leftover whitespace
+    """
+    if not text:
+        return ''
+    t = text.lower().strip()
+
+    # Remove bracketed sections first
+    t = _META_BRACKET_RE.sub(' ', t)
+
+    # Remove trailing meta labels after dash/pipe
+    t = _META_EXTRA_RE.sub('', t)
+
+    # Purge buzzword tokens
+    t = _META_NOISE_RE.sub(' ', t)
+
+    # Replace special chars with space
+    t = _META_SPECIAL_RE.sub(' ', t)
+
+    # Strip Devanagari script noise (Hindi titles on YT often mix scripts)
+    t = _META_DEVANAGARI_RE.sub(' ', t)
+
+    # Collapse whitespace
+    t = _META_WHITESPACE.sub(' ', t).strip()
+
+    return t
+
+
+# ── Three-Tier Validation Pipeline ────────────────────────────────────────────
+
+# Thresholds
+_TVE_DURATION_MAX_DELTA_S  = 5     # Tier 1: reject if > 5s difference
+_TVE_TITLE_THRESHOLD       = 85    # Tier 2: rapidfuzz token_sort_ratio min
+_TVE_ARTIST_THRESHOLD      = 80    # Tier 2: artist match min
+
+
+def tve_tier1_duration(saavn_duration_s: int, target_duration_s: int) -> bool:
+    """
+    Tier 1 — Fast duration gate.
+    Returns True (PASS) if durations match within threshold.
+    Returns False (REJECT) immediately if delta > _TVE_DURATION_MAX_DELTA_S.
+    Skip this tier entirely if either duration is 0 (unknown).
+    """
+    if saavn_duration_s <= 0 or target_duration_s <= 0:
+        return True  # Unknown duration — cannot reject
+    return abs(saavn_duration_s - target_duration_s) <= _TVE_DURATION_MAX_DELTA_S
+
+
+def tve_tier2_fuzzy(
+    saavn_title:  str,
+    saavn_artist: str,
+    target_title: str,
+    target_artist: str,
+) -> tuple:
+    """
+    Tier 2 — Token-based fuzzy matching (rapidfuzz).
+    Returns (pass: bool, title_score: int, artist_score: int).
+    Falls back to SequenceMatcher if rapidfuzz unavailable.
+    """
+    c_saavn_t  = clean_metadata(saavn_title)
+    c_saavn_a  = clean_metadata(saavn_artist)
+    c_target_t = clean_metadata(target_title)
+    c_target_a = clean_metadata(target_artist)
+
+    if _RAPIDFUZZ_AVAILABLE:
+        title_score  = _rfuzz.token_sort_ratio(c_saavn_t, c_target_t)
+        # Artist: check if Saavn primary artist exists within target artist string
+        # Use partial_ratio for artist — handles "Arijit Singh" inside "Arijit Singh, Shreya Ghoshal"
+        if c_saavn_a and c_target_a:
+            artist_score = max(
+                _rfuzz.token_sort_ratio(c_saavn_a, c_target_a),
+                _rfuzz.partial_ratio(c_saavn_a, c_target_a),
+            )
+        else:
+            artist_score = 50  # neutral when artist unknown
+    else:
+        # Fallback — difflib SequenceMatcher
+        from difflib import SequenceMatcher as _SM
+        def _sim(a, b):
+            if not a or not b: return 50
+            return int(_SM(None, a, b).ratio() * 100)
+        title_score  = _sim(c_saavn_t, c_target_t)
+        artist_score = _sim(c_saavn_a, c_target_a)
+
+    title_pass  = title_score  >= _TVE_TITLE_THRESHOLD
+    artist_pass = artist_score >= _TVE_ARTIST_THRESHOLD
+    return (title_pass and artist_pass), title_score, artist_score
+
+
+def tve_tier3_strict_exclusion(saavn_title: str, target_title: str) -> bool:
+    """
+    Tier 3 — Strict version exclusion.
+    Returns True (PASS) if no version mismatch.
+    Returns False (REJECT) if:
+      - Saavn query is a clean song (no remix/cover)
+      - But target result contains remix/cover markers
+    """
+    saavn_is_version  = _is_remix_or_cover(saavn_title) or _is_slowed_reverb(saavn_title) or _is_live_version(saavn_title)
+    target_is_version = _is_remix_or_cover(target_title) or _is_slowed_reverb(target_title) or _is_live_version(target_title)
+
+    if not saavn_is_version and target_is_version:
+        return False  # REJECT — clean query, version result
+    return True  # PASS
+
+
+def tve_validate(
+    saavn_title:      str,
+    saavn_artist:     str,
+    saavn_duration_s: int,
+    target_title:     str,
+    target_artist:    str,
+    target_duration_s: int,
+    saavn_language:   str = '',
+    source:           str = '',
+) -> tuple:
+    """
+    Full 5-Tier TVE validation.
+    Returns (pass: bool, reason: str, scores: dict).
+    """
+    # Tier 1 — Duration fast drop
+    if not tve_tier1_duration(saavn_duration_s, target_duration_s):
+        return False, 'tier1_duration_reject', {
+            'saavn_dur': saavn_duration_s,
+            'target_dur': target_duration_s,
+            'delta': abs(saavn_duration_s - target_duration_s),
+        }
+
+    # Tier 2 — Fuzzy match (SC artist skip handled inside tier2)
+    t2_pass, t_score, a_score = tve_tier2_fuzzy(
+        saavn_title, saavn_artist, target_title, target_artist)
+    if not t2_pass:
+        return False, f'tier2_fuzzy_reject:title={t_score},artist={a_score}', {
+            'title_score': t_score,
+            'artist_score': a_score,
+        }
+
+    # Tier 3 — Strict version exclusion
+    if not tve_tier3_strict_exclusion(saavn_title, target_title):
+        return False, 'tier3_version_mismatch', {
+            'saavn_title': saavn_title,
+            'target_title': target_title,
+        }
+
+    # Tier 4 — Language cross-block
+    t4_pass, t4_reason = tve_tier4_language(saavn_language, target_title, target_artist)
+    if not t4_pass:
+        return False, f'tier4_{t4_reason}', {
+            'saavn_language': saavn_language,
+            'target_title': target_title,
+        }
+
+    # Tier 5 — Artist hard reject
+    _title_exact = clean_metadata(saavn_title) == clean_metadata(target_title)
+    t5_pass, t5_reason = tve_tier5_artist_hard(
+        saavn_artist, target_artist, source=source, title_exact=_title_exact)
+    if not t5_pass:
+        return False, f'tier5_{t5_reason}', {
+            'saavn_artist': saavn_artist,
+            'target_artist': target_artist,
+        }
+
+    return True, 'ok', {
+        'title_score': t_score,
+        'artist_score': a_score,
+        'saavn_dur': saavn_duration_s,
+        'target_dur': target_duration_s,
+    }
+
+
+def tve_validate_anchored(anchor: dict, target_title: str, target_artist: str,
+                           target_duration_s: int, source: str = '') -> tuple:
+    """
+    Anchor-based validation — uses Saavn ground truth metadata.
+    More accurate than string-based because language/year/album are known.
+    """
+    return tve_validate(
+        saavn_title=anchor.get('title', ''),
+        saavn_artist=anchor.get('artist', ''),
+        saavn_duration_s=anchor.get('duration_s', 0),
+        target_title=target_title,
+        target_artist=target_artist,
+        target_duration_s=target_duration_s,
+        saavn_language=anchor.get('language', ''),
+        source=source,
+    )
+def tve_pick_best(
+    saavn_title:      str,
+    saavn_artist:     str,
+    saavn_duration_s: int,
+    candidates:       list,
+    max_candidates:   int = 5,
+    title_key:        str = 'title',
+    artist_key:       str = 'artist',
+    duration_key:     str = 'duration_s',
+    saavn_language:   str = '',
+    source:           str = '',
+    anchor:           dict = None,
+) -> tuple:
+    """
+    Run up to max_candidates through the 5-Tier TVE pipeline.
+    - anchor: if provided, uses tve_validate_anchored (more accurate)
+    - source: passed to Tier 5 (SC skips artist check)
+    - saavn_language: passed to Tier 4 (language gate)
+    Returns (best_candidate_dict, scores_dict) or
+            (None, {"status": "mismatch_error", ...}) if all fail.
+    """
+    checked = 0
+    for candidate in candidates[:max_candidates]:
+        checked += 1
+        c_title  = candidate.get(title_key, '')
+        c_artist = candidate.get(artist_key, '')
+        c_dur    = int(candidate.get(duration_key, 0) or 0)
+
+        if anchor:
+            passed, reason, scores = tve_validate_anchored(
+                anchor, c_title, c_artist, c_dur, source=source)
+        else:
+            passed, reason, scores = tve_validate(
+                saavn_title, saavn_artist, saavn_duration_s,
+                c_title, c_artist, c_dur,
+                saavn_language=saavn_language, source=source,
+            )
+
+        if passed:
+            log.debug(
+                f"[TVE] ✓ Pass after {checked}: '{c_title}' "
+                f"t={scores.get('title_score')} a={scores.get('artist_score')}"
+            )
+            return candidate, scores
+
+        log.debug(
+            f"[TVE] ✗ {checked}/{min(len(candidates), max_candidates)} "
+            f"REJECTED '{c_title}': {reason}"
+        )
+
+    log.warning(
+        f"[TVE] All {checked} candidate(s) failed: saavn='{saavn_title}' by '{saavn_artist}'"
+    )
+    return None, {"status": "mismatch_error", "message": "No verified track found"}
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # VERSION DNA
 # ═══════════════════════════════════════════════════════════════════════════════
