@@ -1313,3 +1313,364 @@ __all__ = [
 # ═══════════════════════════════════════════════════════════════════════════════
 # END OF PRODUCTION-GRADE MATCH_ENGINE.PY
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BACKWARD COMPATIBILITY SHIM
+# Maps old function/constant names → new production implementations
+# fetchers.py, core.py, sources.py mein koi changes nahi karne padte
+# ═══════════════════════════════════════════════════════════════════════════════
+
+import re as _re
+import os as _os
+
+# ── Constants ──────────────────────────────────────────────────────────────────
+QUALITY_RANK = {'320kbps': 5, '160kbps': 4, '96kbps': 3, '64kbps': 2, '48kbps': 1, 'unknown': 0}
+NINETIES_SEEDS   = ['90s', '1990', '1991', '1992', '1993', '1994', '1995', '1996', '1997', '1998', '1999']
+NINETIES_TRIGGERS = ['purane', 'purana', 'purani', 'old', 'classic', 'retro', '90']
+ALLOWED_STREAM_DOMAINS = [
+    'cdn.saavncdn.com', 'aac.saavncdn.com', 'jiocdn.com', 'jiosavan.onrender.com',
+    'rr1---sn-', 'googlevideo.com', 'youtube.com', 'ytimg.com',
+    'sndcdn.com', 'soundcloud.com', 'cf-hls-media.sndcdn.com',
+    'audio.jukehost.co.uk',
+]
+
+# ── normalize (core.py has its own, but match_engine also needs one) ──────────
+def normalize(text: str) -> str:
+    if not text: return ''
+    t = text.lower()
+    t = _re.sub(r'[\u2018\u2019\u201c\u201d\u2013\u2014\u2026]', ' ', t)
+    t = _re.sub(r'[^a-z0-9\s]', '', t)
+    return _re.sub(r'\s+', ' ', t).strip()
+
+# ── clean_query ────────────────────────────────────────────────────────────────
+def clean_query(text: str) -> str:
+    return clean_title_for_comparison(text)
+
+# ── clean_metadata (TVE v1 compat) ────────────────────────────────────────────
+def clean_metadata(text: str) -> str:
+    return clean_title_for_comparison(text)
+
+# ── _ensure_500 — thumbnail URL to 500x500 ───────────────────────────────────
+def _ensure_500(url: str) -> str:
+    if not url or not url.startswith('http'): return ''
+    url = _re.sub(r'-(\d+)x(\d+)\.(jpg|jpeg|webp|png)', r'-500x500.\3', url)
+    url = _re.sub(r'\b(50|150|250)x(50|150|250)\b', '500x500', url)
+    if 'ytimg.com' in url or 'yt3.ggpht.com' in url:
+        url = _re.sub(r'=w\d+-h\d+(-[a-z]+)?', '=w500-h500', url)
+        url = _re.sub(r'=s\d+', '=s500', url)
+    return url
+
+# ── pick_image — best quality image from Saavn song dict ─────────────────────
+def pick_image(song: dict) -> str:
+    raw = song.get('image') or song.get('artworkUrl100') or song.get('thumbnail') or ''
+    if isinstance(raw, list):
+        # Saavn returns list of {quality, url} — pick highest quality
+        best = ''
+        _pref = ['500x500', '150x150', '50x50']
+        for p in _pref:
+            for item in raw:
+                u = item.get('url', item) if isinstance(item, dict) else str(item)
+                if p in u:
+                    best = u; break
+            if best: break
+        if not best and raw:
+            last = raw[-1]
+            best = last.get('url', last) if isinstance(last, dict) else str(last)
+        raw = best
+    return _ensure_500(str(raw)) if raw else ''
+
+# ── pick_best_quality — choose best audio URL from downloadUrl list ───────────
+def pick_best_quality(raw_urls, preferred='320kbps'):
+    if not raw_urls: return None, None
+    if isinstance(raw_urls, str): return raw_urls, 'unknown'
+    ranked = []
+    for item in raw_urls:
+        if isinstance(item, str):
+            ranked.append((QUALITY_RANK.get('unknown', 0), item, 'unknown'))
+            continue
+        url = item.get('url', '')
+        q   = item.get('quality', 'unknown')
+        if not url: continue
+        ranked.append((QUALITY_RANK.get(q, 0), url, q))
+    if not ranked: return None, None
+    # Try preferred first
+    for score, url, q in sorted(ranked, key=lambda x: -x[0]):
+        if preferred and preferred.lower() in q.lower():
+            return url, q
+    best = max(ranked, key=lambda x: x[0])
+    return best[1], best[2]
+
+def _pick_low_quality(raw_urls):
+    url, q = pick_best_quality(raw_urls, preferred='96kbps')
+    if url: return url, q
+    return pick_best_quality(raw_urls)
+
+# ── detect_preferred_quality — from request headers ──────────────────────────
+def detect_preferred_quality(headers: dict) -> str:
+    if headers.get('Save-Data', '').lower() == 'on': return '96kbps'
+    hint = headers.get('X-Quality-Hint', '').lower()
+    if hint == 'low':    return '96kbps'
+    if hint == 'medium': return '160kbps'
+    return '320kbps'
+
+# ── _detect_language ──────────────────────────────────────────────────────────
+_HINDI_WORDS   = {'tera','mera','tum','hum','hai','kya','nahi','pyar','dil','ishq','aaja',
+                  'suno','bolo','jiya','mann','raat','din','yaar','dost','zindagi','mohabbat'}
+_BHOJPURI_WDS  = {'ae','hau','rahe','bani','dekhta','tohar','hamaar','kaisan','bhailsa',
+                  'chhodi','ailu','jailu','leke','saiya','piya'}
+_ENGLISH_WORDS = {'the','and','you','love','baby','night','day','heart','feel','never',
+                  'always','every','time','want','need','come','going'}
+
+def _detect_language(text: str) -> str:
+    if not text: return ''
+    t = text.lower()
+    words = set(_re.sub(r'[^a-z\s]', '', t).split())
+    bh = len(words & _BHOJPURI_WDS)
+    hi = len(words & _HINDI_WORDS)
+    en = len(words & _ENGLISH_WORDS)
+    if bh >= 2: return 'bhojpuri'
+    if hi >= 2: return 'hindi'
+    if en >= 2: return 'english'
+    return ''
+
+# ── _bhojpuri_normalize ───────────────────────────────────────────────────────
+def _bhojpuri_normalize(text: str) -> str:
+    if not text: return ''
+    t = text.lower()
+    t = _re.sub(r'[^a-z0-9\s]', '', t)
+    return _re.sub(r'\s+', ' ', t).strip()
+
+# ── has_version_words ─────────────────────────────────────────────────────────
+def has_version_words(title: str) -> bool:
+    rejected, _ = hard_reject_by_version(title, title, query_has_version=False)
+    # More targeted: check against candidate
+    rejected2, _ = _candidate_has_stem_reject(title)
+    if rejected2: return True
+    tl = title.lower()
+    for w in _HARD_REJECT_WORDS:
+        if _re.search(r'\b' + _re.escape(w) + r'\b', tl):
+            return True
+    return False
+
+# ── get_song_dna — returns version type if title is a version ─────────────────
+def get_song_dna(title: str) -> str:
+    _, word = _candidate_has_stem_reject(title)
+    if word: return word
+    tl = title.lower()
+    for w in _HARD_REJECT_WORDS:
+        if _re.search(r'\b' + _re.escape(w) + r'\b', tl):
+            return w
+    return ''
+
+# ── dna_compatible — True if both titles are same version type ────────────────
+def dna_compatible(query_title: str, candidate_title: str) -> bool:
+    rejected, reason = hard_reject_by_version(
+        query_title, candidate_title,
+        query_has_version=user_requested_version(query_title)
+    )
+    return not rejected
+
+# ── _is_remix_or_cover, _is_live_version, _is_slowed_reverb ──────────────────
+def _is_remix_or_cover(title: str) -> bool:
+    tl = title.lower()
+    remix_words = {'remix','cover','mashup','bootleg','flip','rework','edit',
+                   'dj mix','dj remix','dj version','club mix','extended mix'}
+    for w in remix_words:
+        if _re.search(r'\b' + _re.escape(w) + r'\b', tl): return True
+    return False
+
+def _is_live_version(title: str) -> bool:
+    tl = title.lower()
+    live_words = {'live','unplugged','acoustic','coke studio','mtv unplugged',
+                  'studio session','concert','stripped'}
+    for w in live_words:
+        if _re.search(r'\b' + _re.escape(w) + r'\b', tl): return True
+    return False
+
+def _is_slowed_reverb(title: str) -> bool:
+    tl = title.lower()
+    slow_words = {'slowed','reverb','lofi','lo-fi','nightcore','sped up',
+                  '8d audio','bass boosted','pitched','chopped'}
+    for w in slow_words:
+        if _re.search(r'\b' + _re.escape(w) + r'\b', tl): return True
+    return False
+
+# ── _query_requests_version ───────────────────────────────────────────────────
+_query_requests_version = user_requested_version
+
+# ── _is_devotional_query ─────────────────────────────────────────────────────
+_DEVOTIONAL_KW = ['chalisa','aarti','bhajan','stuti','mantra','stotra','vandana',
+                  'kirtan','prarthana','hanuman','ganesh','durga','gayatri','om jai',
+                  'jai shri','shiv','krishna','radhe','sai baba','qawwali','naat',
+                  'hamd','ramayan','mahabharat','mata','devi']
+def _is_devotional_query(text: str) -> bool:
+    t = text.lower()
+    return any(kw in t for kw in _DEVOTIONAL_KW)
+
+# ── title_score ───────────────────────────────────────────────────────────────
+def title_score(query: str, result_title: str, result_artist: str = '') -> float:
+    return calculate_title_similarity(query, result_title)
+
+# ── dynamic_min_score ─────────────────────────────────────────────────────────
+def dynamic_min_score(query: str) -> float:
+    words = len(query.split())
+    if words <= 1: return 0.50
+    if words <= 3: return 0.45
+    return 0.40
+
+# ── has_word_match ────────────────────────────────────────────────────────────
+def has_word_match(query: str, result: str, min_overlap: float = 0.30) -> bool:
+    qw = set(w for w in normalize(query).split() if len(w) >= 3)
+    rw = set(w for w in normalize(result).split() if len(w) >= 3)
+    if not qw or not rw: return True
+    overlap = len(qw & rw) / max(len(qw), 1)
+    return overlap >= min_overlap
+
+# ── build_query_variants ──────────────────────────────────────────────────────
+def build_query_variants(title: str, artist: str, album: str) -> list:
+    variants = []
+    clean_t = _re.sub(r'\(.*?\)|\[.*?\]', '', title).strip()
+    clean_a = artist.split(',')[0].split('&')[0].strip() if artist else ''
+    if clean_a:
+        variants.append(f"{clean_a} {clean_t}")
+        variants.append(f"{clean_t} {clean_a}")
+    variants.append(clean_t)
+    if title != clean_t:
+        variants.append(title)
+    # deduplicate preserving order
+    seen = set()
+    result = []
+    for v in variants:
+        v = v.strip()
+        if v and v not in seen:
+            seen.add(v); result.append(v)
+    return result
+
+# ── _safe_year ────────────────────────────────────────────────────────────────
+def _safe_year(val) -> str:
+    try: return str(int(val))[:4]
+    except: return ''
+
+# ── compute_confidence (shim → core.py's version) ────────────────────────────
+# core.py has its own compute_confidence — this is for match_engine imports
+def compute_confidence(query_title, query_artist, result_title, result_artist,
+                       query_duration_s=0, result_duration_s=0, source='') -> float:
+    result = verify_track(
+        query_title=query_title, query_artist=query_artist,
+        query_duration_s=query_duration_s,
+        candidate_title=result_title, candidate_artist=result_artist,
+        candidate_duration_s=result_duration_s, source=source,
+    )
+    return result.confidence
+
+# ── is_likely_duplicate ───────────────────────────────────────────────────────
+def is_likely_duplicate(a: dict, b: dict, threshold: float = 0.92) -> bool:
+    ta = normalize(a.get('trackName') or a.get('title', ''))
+    tb = normalize(b.get('trackName') or b.get('title', ''))
+    aa = normalize(a.get('artistName') or a.get('artist', ''))
+    ab = normalize(b.get('artistName') or b.get('artist', ''))
+    t_sim = calculate_title_similarity(ta, tb)
+    a_sim = calculate_artist_similarity(aa, ab) if aa and ab else 0.5
+    return (t_sim * 0.7 + a_sim * 0.3) >= threshold
+
+# ── _is_confirmed_match ───────────────────────────────────────────────────────
+def _is_confirmed_match(req_title, req_artist, res_title, res_artist,
+                         source='', duration_s=0, res_dur_s=0, min_conf=0.65):
+    if not res_title or not res_title.strip():
+        return False, 0.0, 'empty_title'
+    # Version gate
+    if not user_requested_version(req_title):
+        rejected, reason = hard_reject_by_version(req_title, res_title, query_has_version=False)
+        if rejected:
+            return False, 0.0, reason
+    # Confidence
+    result = verify_track(
+        query_title=req_title, query_artist=req_artist,
+        query_duration_s=duration_s,
+        candidate_title=res_title, candidate_artist=res_artist,
+        candidate_duration_s=res_dur_s, source=source,
+    )
+    if result.confidence < min_conf:
+        return False, result.confidence, f'low_conf_{result.confidence:.3f}'
+    return True, result.confidence, 'ok'
+
+# ── TVE v1 compat (old names → new production functions) ─────────────────────
+def tve_validate(saavn_title, saavn_artist, saavn_duration_s,
+                 target_title, target_artist, target_duration_s,
+                 saavn_language='', source=''):
+    passed, reason, scores = tve_validate_production(
+        saavn_title, saavn_artist, saavn_duration_s,
+        target_title, target_artist, target_duration_s,
+        source=source,
+    )
+    return passed, reason, scores
+
+def tve_validate_anchored(anchor, target_title, target_artist,
+                           target_duration_s=0, source='', **kwargs):
+    return tve_validate(
+        anchor.get('title',''), anchor.get('artist',''),
+        int(anchor.get('duration_s', 0) or 0),
+        target_title, target_artist, target_duration_s,
+        saavn_language=anchor.get('language',''), source=source,
+    )
+
+def tve_tier1_duration(saavn_s, target_s):
+    if saavn_s <= 0 or target_s <= 0: return True
+    return abs(saavn_s - target_s) <= 10
+
+def tve_tier4_language(saavn_language, target_title, target_artist):
+    return True, 'ok'  # handled inside verify_track
+
+def tve_tier5_artist_hard(saavn_artist, target_artist, source='', title_exact=False):
+    if source == 'soundcloud': return True, 'sc_skip'
+    if not saavn_artist or not target_artist: return True, 'ok'
+    sim = calculate_artist_similarity(saavn_artist, target_artist)
+    if sim < 0.90: return False, f'artist_hard:{sim:.2f}'
+    return True, 'ok'
+
+def tve_pick_best(saavn_title='', saavn_artist='', saavn_duration_s=0,
+                  candidates=None, max_candidates=5,
+                  saavn_language='', source='', anchor=None,
+                  title_key='title', artist_key='artist', duration_key='duration_s',
+                  uploader_key='uploader', url_key='webpage_url'):
+    if not candidates:
+        return None, {'status': 'mismatch_error', 'message': 'No candidates'}
+    # Use anchor if available
+    if anchor:
+        _title  = anchor.get('title', saavn_title)
+        _artist = anchor.get('artist', saavn_artist)
+        _dur    = int(anchor.get('duration_s', saavn_duration_s) or 0)
+    else:
+        _title  = saavn_title
+        _artist = saavn_artist
+        _dur    = saavn_duration_s
+
+    best_candidate = None
+    best_conf      = -1.0
+    best_scores    = {}
+
+    for candidate in candidates[:max_candidates]:
+        c_title  = candidate.get(title_key, '')
+        c_artist = candidate.get(artist_key, '')
+        c_dur    = int(candidate.get(duration_key, 0) or 0)
+
+        passed, reason, scores = tve_validate_production(
+            _title, _artist, _dur,
+            c_title, c_artist, c_dur,
+            source=source,
+        )
+        conf = scores.get('confidence', 0.0)
+        if passed and conf > best_conf:
+            best_conf = conf
+            best_candidate = candidate
+            best_scores = scores
+
+    if best_candidate is not None:
+        return best_candidate, best_scores
+
+    return None, {'status': 'mismatch_error', 'message': 'No verified track found'}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# END COMPATIBILITY SHIM
+# ═══════════════════════════════════════════════════════════════════════════════
