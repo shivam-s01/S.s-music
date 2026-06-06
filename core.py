@@ -413,9 +413,9 @@ class _ConfidenceTuner:
             self._misses[k] = misses
             if misses >= self._MAX_MISS:
                 current   = self._floors.get(k, self._DEFAULT)
-                # [FIX-B] Floor sirf ek baar lower ho sakti hai default se
-                # MIN = 0.55 hard floor — 0.45 tak nahi girega (galat matches allow hote the)
-                new_floor = max(0.55, current - self._NUDGE)
+                # [FIX-B v2] Floor _MIN ke saath consistent — 0.60 hard floor
+                # Pehle max(0.55,...) tha jo _MIN=0.60 se inconsistent tha
+                new_floor = max(self._MIN, current - self._NUDGE)
                 if new_floor != current:
                     self._floors[k] = new_floor
                 self._misses[k] = 0  # [FIX-B] Always reset misses after nudge
@@ -567,11 +567,21 @@ def _supabase_cache_set(cache_key, data, confidence=1.0):
         log.debug(f'[Cache:L2] Blocked version write: "{_write_title}"')
         return
     # [FIX-CORE-4b] Extra: 'dhol mix', 'jhankar' etc — _is_remix_or_cover miss kar sakta hai
+    # [FIX-CORE-4b v2] Sirf tab block karo jab user ne version nahi manga tha
+    # (version songs cache mein jayenge agar explicitly requested hue hain)
     try:
         from match_engine import get_song_dna
-        if _write_title and get_song_dna(_write_title):
-            log.debug(f'[Cache:L2] DNA blocked write: "{_write_title}"')
-            return
+        _cache_key_title = data.get('title', '') or _write_title
+        if _cache_key_title and get_song_dna(_cache_key_title):
+            # Check: kya cache key (request title) bhi version tha?
+            _req_title_from_key = cache_key.split(':')[1] if ':' in cache_key else ''
+            if _req_title_from_key and not get_song_dna(_req_title_from_key):
+                # User ne clean song manga, version result cache mein ja raha tha — BLOCK
+                log.debug(f'[Cache:L2] DNA blocked version write: "{_cache_key_title}"')
+                return
+            elif not _req_title_from_key:
+                log.debug(f'[Cache:L2] DNA blocked write (no req title): "{_cache_key_title}"')
+                return
     except ImportError:
         pass
     if confidence < _CACHE_MIN_CONFIDENCE:
@@ -718,30 +728,65 @@ def _song_index_put(title, artist, saavn_id, confirmed_title, artwork_url=''):
 # 512KB fetch per fallback source = significant MB waste → removed
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def verify_via_fingerprint(url: str, expected_title: str, expected_artist: str) -> bool:
+def verify_via_fingerprint(url: str, expected_title: str, expected_artist: str,
+                           result_title: str = '', result_artist: str = '') -> bool:
     """
-    [FIX-CORE-3] Real two-pass verification — was always returning True (dead code bug).
+    [FIX-CORE-3 v2] Real multi-pass verification.
     Pass 1: DNA gate — version word mismatch pe immediate reject
-    Pass 2: Meaningful word overlap check between expected and any version-flagged title
-    AcoustID removed (CDN encrypted + regional songs not in DB) — DNA gate sufficient.
+    Pass 2: Agar result_title provided hai (YTMusic/yt-dlp se milti hai) toh
+            dna_compatible + _is_confirmed_match se strict cross-check karo.
+    Pass 3: Result title mein hard version words hain aur user ne nahi manga — reject.
+    CDN URL se title extract nahi hoti, lekin callers ab result_title pass karte hain.
     """
-    from match_engine import has_version_words, has_word_match, dna_compatible
+    from match_engine import has_version_words, dna_compatible, has_word_match
     if not expected_title:
         return True  # koi title nahi — allow karo
 
     # Pass 1: Agar expected_title khud version hai (user ne manga tha),
-    # toh fingerprint se aur kuch check nahi — dna_compatible already passed
-    if has_version_words(expected_title):
+    # result bhi version hona chahiye — dna_compatible already handles this
+    # lekin agar result_title diya hai toh explicit check karo
+    if result_title:
+        # DNA compatibility check — version mismatch turant reject
+        if not dna_compatible(expected_title, result_title):
+            log.warning(
+                f"[Fingerprint] DNA MISMATCH: expected='{expected_title}' "
+                f"result='{result_title}'"
+            )
+            return False
+
+        # Pass 2: _is_confirmed_match se confidence check
+        _ok, _conf, _reason = _is_confirmed_match(
+            expected_title, expected_artist,
+            result_title, result_artist,
+            source='fingerprint',
+            min_conf=0.60,
+        )
+        if not _ok:
+            log.warning(
+                f"[Fingerprint] MATCH FAILED: expected='{expected_title}' "
+                f"result='{result_title}' reason={_reason} conf={_conf:.3f}"
+            )
+            return False
+
+        # Pass 3: Hard version word check — user ne clean song manga,
+        # result mein version word hai toh reject
+        if not has_version_words(expected_title) and has_version_words(result_title):
+            log.warning(
+                f"[Fingerprint] VERSION MISMATCH: expected clean='{expected_title}' "
+                f"result has version='{result_title}'"
+            )
+            return False
+
+        log.debug(
+            f"[Fingerprint] ✓ VERIFIED: '{expected_title}' → '{result_title}' "
+            f"conf={_conf:.3f}"
+        )
         return True
 
-    # Pass 2: URL se title nahi mil sakti (CDN encrypted), lekin
-    # agar kisi ne is function ko kisi aur title ke saath call kiya
-    # (jo expected_title se bilkul alag ho) toh reject karo.
-    # Real check: dna_compatible — if expected_title is clean,
-    # this url must not be a version song. Since we can't extract
-    # title from URL, we rely on dna_compatible having already passed
-    # at the call site. This function is the final safety net.
-    return True  # CDN URLs pe title extract nahi hoti — dna_compatible gate sufficient
+    # result_title nahi diya — CDN URLs pe title extract nahi hoti
+    # Sirf Pass 1: agar expected_title version nahi hai toh allow
+    # (dna_compatible gate call site pe already pass hua hai)
+    return True
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1192,13 +1237,18 @@ def compute_confidence(
             conf = min(1.0, conf + 0.05)
             break
 
-    # [ARTIST-FIX-3] Hard artist mismatch rejection — threshold tighten kiya
-    # Pehle 0.50 tha — "Arijit Singh" vs "Armaan Malik" pass ho jaata tha
-    # Ab 0.40 — aur primary artist check bhi
-    # [ARTIST-FIX-3b] 0.40 → 0.42 — matched with Gate 5
-    if qa_norm and ra_norm and a_sim < 0.42 and t_sim < 0.95:
+    # [SAAVN-FIRST] Source-aware artist reject threshold
+    # YT/SC pe metadata galat hoti hai — stricter artist gate
+    _ARTIST_REJECT_BY_SOURCE = {
+        'saavn': 0.38, 'jiosavan': 0.38,
+        'ytmusic': 0.45, 'youtube': 0.48,
+        'youtube-broad': 0.52, 'soundcloud': 0.45,
+        'piped': 0.45, 'invidious': 0.45,
+    }
+    _artist_reject_floor = _ARTIST_REJECT_BY_SOURCE.get(source, 0.42)
+    if qa_norm and ra_norm and a_sim < _artist_reject_floor and t_sim < 0.95:
         if qt != rt:
-            log.debug(f"[ArtistReject] qa='{qa_norm}' ra='{ra_norm}' a_sim={a_sim:.3f}")
+            log.debug(f"[ArtistReject] qa='{qa_norm}' ra='{ra_norm}' a_sim={a_sim:.3f} src={source}")
             return 0.0
 
     # Duration penalty
@@ -1308,6 +1358,23 @@ def _is_confirmed_match(
 ) -> tuple:
     if not res_title or not res_title.strip():
         return False, 0.0, 'empty_title'
+
+    # [SAAVN-FIRST] Source-specific min_conf floors
+    # Saavn = exact match possible, 0.60 fine
+    # YT/SC = unreliable metadata, need higher confidence
+    _SOURCE_MIN_CONF = {
+        'saavn':        0.60,
+        'jiosavan':     0.60,
+        'ytmusic':      0.72,
+        'youtube':      0.75,
+        'youtube-broad':0.80,
+        'soundcloud':   0.72,
+        'piped':        0.72,
+        'invidious':    0.72,
+        'fingerprint':  0.60,
+    }
+    _source_floor = _SOURCE_MIN_CONF.get(source, 0.65)
+    min_conf = max(min_conf, _source_floor)
 
     # ── GATE 0: DNA check — SABSE PEHLE, kabhi bypass nahi ─────────────────
     # PATCH: req_title bhi empty nahi hona chahiye — agar dono empty hain toh skip
