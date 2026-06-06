@@ -835,6 +835,45 @@ def artwork_proxy():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# /api/suggest  — fast search suggestions (iTunes only)
+# ═══════════════════════════════════════════════════════════════════════════════
+@app.route('/api/suggest')
+@limiter.limit("120 per minute")
+def get_suggestions():
+    q = request.args.get('q', '').strip()[:100]
+    if not q or len(q) < 2:
+        return jsonify({'suggestions': []})
+
+    cache_key = f"suggest:{q.lower()}"
+    cached = _l1_meta.get(cache_key)
+    if cached is not None:
+        return jsonify({'suggestions': cached})
+
+    try:
+        r = requests.get(
+            'https://itunes.apple.com/search',
+            params={'term': q, 'media': 'music', 'entity': 'song',
+                    'limit': 8, 'country': 'IN'},
+            timeout=4
+        )
+        r.raise_for_status()
+        results = r.json().get('results', [])
+        suggestions = [
+            {
+                'trackName':  s.get('trackName', ''),
+                'artistName': s.get('artistName', ''),
+                'artworkUrl': (s.get('artworkUrl100') or '').replace('100x100', '60x60'),
+                'trackId':    s.get('trackId'),
+            }
+            for s in results if s.get('trackName')
+        ][:6]
+        _l1_meta.set(cache_key, suggestions)
+        return jsonify({'suggestions': suggestions})
+    except Exception:
+        return jsonify({'suggestions': []})
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # /health
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/health')
