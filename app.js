@@ -2049,18 +2049,103 @@ const browseCategories = [
 ];
 const extraGenreMap = { electronic:'electronic music dance', trending:'top trending songs', chill:'chill lofi music' };
 
+let _suggestTimeout = null;
+let _lastSuggestQ = '';
+
+function _createSuggestDropdown() {
+  let d = document.getElementById('search-suggest-drop');
+  if (d) return d;
+  d = document.createElement('div');
+  d.id = 'search-suggest-drop';
+  d.style.cssText = `
+    position:absolute;left:0;right:0;top:100%;z-index:999;
+    background:var(--surface1,#111);border-radius:0 0 16px 16px;
+    overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,0.5);
+    border:1px solid rgba(255,255,255,0.06);border-top:none;
+  `;
+  const searchBar = document.getElementById('search-input')?.parentElement;
+  if (searchBar) {
+    searchBar.style.position = 'relative';
+    searchBar.appendChild(d);
+  }
+  return d;
+}
+
+function _hideSuggestDropdown() {
+  const d = document.getElementById('search-suggest-drop');
+  if (d) d.remove();
+}
+
+async function _fetchSuggestions(q) {
+  if (q === _lastSuggestQ) return;
+  _lastSuggestQ = q;
+  try {
+    const r = await fetch(`/api/suggest?q=${encodeURIComponent(q)}`);
+    const d = await r.json();
+    _renderSuggestions(d.suggestions || [], q);
+  } catch(e) { _hideSuggestDropdown(); }
+}
+
+function _renderSuggestions(suggestions, q) {
+  if (!suggestions.length) { _hideSuggestDropdown(); return; }
+  const drop = _createSuggestDropdown();
+  drop.innerHTML = '';
+  for (const s of suggestions) {
+    const item = document.createElement('div');
+    item.style.cssText = `
+      display:flex;align-items:center;gap:10px;padding:10px 14px;
+      cursor:pointer;transition:background 0.15s;
+    `;
+    item.onmouseenter = () => item.style.background = 'rgba(255,255,255,0.06)';
+    item.onmouseleave = () => item.style.background = '';
+    const img = document.createElement('img');
+    img.src = s.artworkUrl || IMG_PLACEHOLDER;
+    img.style.cssText = 'width:36px;height:36px;border-radius:6px;object-fit:cover;flex-shrink:0;';
+    img.onerror = () => { img.src = IMG_PLACEHOLDER; };
+    const info = document.createElement('div');
+    info.style.cssText = 'flex:1;min-width:0;';
+    info.innerHTML = `
+      <div style="font-size:13px;font-weight:500;color:var(--text1,#fff);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(s.trackName)}</div>
+      <div style="font-size:11px;color:var(--text3,#888);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(s.artistName)}</div>
+    `;
+    const icon = document.createElement('div');
+    icon.innerHTML = `<svg viewBox="0 0 24 24" style="width:14px;height:14px;stroke:var(--text3,#888);fill:none;stroke-width:2;stroke-linecap:round;"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="7 7 17 7 17 17"/></svg>`;
+    item.appendChild(img); item.appendChild(info); item.appendChild(icon);
+    item.addEventListener('click', () => {
+      const input = document.getElementById('search-input');
+      if (input) input.value = s.trackName + ' ' + s.artistName;
+      _hideSuggestDropdown();
+      saveRecentSearch(s.trackName);
+      doSearch(s.trackName + ' ' + s.artistName);
+    });
+    drop.appendChild(item);
+  }
+}
+
 const searchInput = document.getElementById('search-input');
 if (searchInput) {
-  searchInput.addEventListener('focus', function() { if (!this.value.trim()) renderSearchIdle(); });
+  searchInput.addEventListener('focus', function() {
+    if (!this.value.trim()) renderSearchIdle();
+  });
   searchInput.addEventListener('input', function() {
     const v = this.value.trim();
     const clearBtn = document.getElementById('search-clear');
     if (clearBtn) clearBtn.style.display = v ? 'flex' : 'none';
     clearTimeout(_searchTimeout);
-    if (!v) { renderSearchIdle(); return; }
+    clearTimeout(_suggestTimeout);
+    if (!v) { renderSearchIdle(); _hideSuggestDropdown(); return; }
+    _suggestTimeout = setTimeout(() => _fetchSuggestions(v), 200);
     showSearchSkeleton();
-    _searchTimeout = setTimeout(() => doSearch(v), 360);
+    _searchTimeout = setTimeout(() => {
+      _hideSuggestDropdown();
+      doSearch(v);
+    }, 500);
   });
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#search-suggest-drop') && !e.target.closest('#search-input')) {
+      _hideSuggestDropdown();
+    }
+  }, { passive: true });
 }
 
 function clearSearch() {
