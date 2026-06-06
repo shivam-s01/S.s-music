@@ -238,18 +238,47 @@ function _titleMatches(saavnTitle, trackName) {
   const threshold = total <= 2 ? 0.85 : total <= 3 ? 0.60 : 0.50;
   return matched / total >= threshold;
 }
-// ─── ITUNES ART FETCHER ───────────────────────────────────────────────────────
-async function _fetchItunesArt(title, artist) {
+
+// ─── ITUNES ART FETCHER — [FIX] Cache + song object direct update ─────────────
+// _itunesArtCache: same title+artist pe repeat fetch band karo
+const _itunesArtCache = new Map();
+const MAX_ITUNES_CACHE = 200;
+
+async function _fetchItunesArt(title, artist, songObj) {
+  const key = `${(title||'').toLowerCase()}|${(artist||'').toLowerCase()}`;
+  if (_itunesArtCache.has(key)) {
+    const cached = _itunesArtCache.get(key);
+    // Song object bhi update karo agar cached URL hai
+    if (cached && songObj) {
+      songObj.artworkUrl100 = cached;
+      songObj.image = cached;
+    }
+    return cached;
+  }
   try {
     const q = encodeURIComponent(`${title} ${artist}`);
     const r = await fetch(`https://itunes.apple.com/search?term=${q}&entity=song&limit=1`);
     const d = await r.json();
     if (d.results?.[0]?.artworkUrl100) {
-      return d.results[0].artworkUrl100.replace('100x100', '600x600');
+      const url = d.results[0].artworkUrl100.replace('100x100', '600x600');
+      // Cache mein store karo
+      if (_itunesArtCache.size >= MAX_ITUNES_CACHE) {
+        const firstKey = _itunesArtCache.keys().next().value;
+        _itunesArtCache.delete(firstKey);
+      }
+      _itunesArtCache.set(key, url);
+      // Song object directly update karo — card/row references bhi theek honge
+      if (songObj) {
+        songObj.artworkUrl100 = url;
+        songObj.image = url;
+      }
+      return url;
     }
   } catch(e) {}
+  _itunesArtCache.set(key, null); // null cache karo — repeat fetch band
   return null;
 }
+
 // ─── 9. LOAD TRACK — SAAVN-FIRST ─────────────────────────────────────────────
 function loadTrack(song, autoplay = true) {
   if (!song) return;
@@ -264,14 +293,17 @@ function loadTrack(song, autoplay = true) {
   if (sb) { sb.classList.remove('full-active'); sb.max = 30; sb.value = 0; sb.style.setProperty('--prog', '0%'); }
 
   currentTrack = song;
-  // iTunes art — hamesha fetch karo chahe source kuch bhi ho
-_fetchItunesArt(song.trackName || '', song.artistName || '').then(url => {
-  if (url && currentTrack?.trackId === song.trackId) {
-    currentTrack.artworkUrl100 = url;
-    currentTrack.image = url;
-    updatePlayerUI();
-  }
-});
+
+  // [FIX] iTunes art — song object pass karo taaki direct update ho
+  // Agar already cached hai toh bhi songObj update hoga
+  _fetchItunesArt(song.trackName || '', song.artistName || '', song).then(url => {
+    if (url && currentTrack?.trackId === song.trackId) {
+      currentTrack.artworkUrl100 = url;
+      currentTrack.image = url;
+      updatePlayerUI();
+    }
+  });
+
   currentQuality = 'loading';
 
   const durEl = document.getElementById('fp-duration');
@@ -325,8 +357,6 @@ async function _autoFetchFullSong(song, autoplay = true) {
 
   try {
     // ── FIX: _saavnId already hai toh fresh search mat karo ──
-    // Search results mein correct ID already resolve ho chuka hota hai
-    // Direct ID use karo — yahi mismatch ki jad thi
     if (song._saavnId) {
       const proxyUrl = `/api/play?id=${encodeURIComponent(song._saavnId)}`
         + `&title=${encodeURIComponent(song.trackName || '')}`
@@ -356,12 +386,10 @@ async function _autoFetchFullSong(song, autoplay = true) {
         if (j.success && j.url) {
           const _wV = _userWantsVersion(requested.trackName, requested.artistName || '');
 
-          // Version block — remix/lofi etc reject karo agar user ne nahi manga
           if (_isVersionSong(j.title || '') && !_wV) {
             console.info('[AutoFetch] REJECTED version: ' + j.title);
           } else if (j.source === 'saavn' || _titleMatches(j.title, requested.trackName)) {
             d = j;
-            // _saavnId prefer karo — direct ID path reliable hai
             if (j._saavnId) {
               proxyUrl = `/api/play?id=${encodeURIComponent(j._saavnId)}`
                 + `&title=${encodeURIComponent(requested.trackName || '')}`
@@ -393,10 +421,59 @@ async function _autoFetchFullSong(song, autoplay = true) {
 
 
 // ── Helper: preload + swap audio ─────────────────────────────────────────────
+// [FIX] X-Artwork-URL header backend se read karo — image mismatch fix
 async function _upgradeAudio(proxyUrl, d, song, autoplay, ctrl, requested) {
   _currentSaavnUrl     = proxyUrl;
   _currentSaavnQuality = d?.quality || 'unknown';
   if (d?.quality) _updateDlSheetQuality(d.quality);
+
+  // [FIX-ART-1] Backend se X-Artwork-URL header read karo
+  // Backend already correct Saavn image bhejta hai — frontend sirf ignore kar raha tha
+  try {
+    const headResp = await fetch(proxyUrl, { method: 'HEAD', signal: ctrl?.signal });
+    if (!ctrl?.signal?.aborted && headResp.ok) {
+      const backendArtUrl    = headResp.headers.get('X-Artwork-URL');
+      const backendTitle     = headResp.headers.get('X-Song-Title');
+      const backendArtist    = headResp.headers.get('X-Song-Artist');
+      const backendQuality   = headResp.headers.get('X-Audio-Quality');
+
+      if (backendQuality) {
+        _currentSaavnQuality = backendQuality;
+        _updateDlSheetQuality(backendQuality);
+      }
+
+      if (backendArtUrl && backendArtUrl.startsWith('http')) {
+        // Song object update karo — taaki card/row/queue sab mein sahi image aaye
+        song.artworkUrl100 = backendArtUrl;
+        song.image         = backendArtUrl;
+        requested.artworkUrl100 = backendArtUrl;
+        requested.image         = backendArtUrl;
+
+        // currentTrack bhi update karo agar same song chal raha hai
+        if (currentTrack && String(currentTrack.trackId) === String(requested.trackId)) {
+          currentTrack.artworkUrl100 = backendArtUrl;
+          currentTrack.image         = backendArtUrl;
+        }
+
+        // Queue mein bhi update karo (same trackId wale sab)
+        for (const qs of currentQueue) {
+          if (String(qs.trackId) === String(requested.trackId)) {
+            qs.artworkUrl100 = backendArtUrl;
+            qs.image         = backendArtUrl;
+          }
+        }
+
+        // iTunes cache bhi update karo
+        const _ck = `${(requested.trackName||'').toLowerCase()}|${(requested.artistName||'').toLowerCase()}`;
+        _itunesArtCache.set(_ck, backendArtUrl);
+      }
+    }
+  } catch(headErr) {
+    // HEAD request fail hone pe silently ignore karo — audio still plays
+    if (headErr.name !== 'AbortError') {
+      console.debug('[Art] HEAD request failed, using fallback art:', headErr.message);
+    }
+  }
 
   // FIX 3: preload timeout 6s (was 14s)
   const preAudio = new Audio();
@@ -419,7 +496,7 @@ async function _upgradeAudio(proxyUrl, d, song, autoplay, ctrl, requested) {
     return;
   }
 
-  if (ctrl.signal.aborted || currentTrack?.trackId !== requested.trackId) {
+  if (ctrl?.signal?.aborted || currentTrack?.trackId !== requested.trackId) {
     _cleanupPre(); return;
   }
 
@@ -442,16 +519,21 @@ async function _upgradeAudio(proxyUrl, d, song, autoplay, ctrl, requested) {
     if (d.quality) _currentSaavnQuality = d.quality;
   }
 
+  // UI update after art fix
+  if (currentTrack?.trackId === requested.trackId) {
+    updatePlayerUI();
+  }
+
   if (wasPlaying) {
     const pp = audio.play();
     if (pp?.then) pp.then(() => {
-      if (ctrl.signal.aborted || currentTrack?.trackId !== requested.trackId) {
+      if (ctrl?.signal?.aborted || currentTrack?.trackId !== requested.trackId) {
         audio.pause(); return;
       }
       isPlaying = true; currentQuality = 'full'; _fullSongAbort = null;
       updateQualityLabel(); updatePlayerUI();
     }).catch(() => {
-      if (!ctrl.signal.aborted && song._source !== 'saavn') {
+      if (!ctrl?.signal?.aborted && song._source !== 'saavn') {
         _fallbackToPreview(requested);
       }
     });
@@ -1589,6 +1671,8 @@ async function openArtistPageFromName(artistName) {
 
 async function fetchRecommendations(song) {
   if (!song) return;
+  // [FIX-MB-1] Queue mein already 15+ songs hain toh recommendations mat fetch karo
+  if (currentQueue.length >= 15) return;
   const ctrl = new AbortController();
   _recFetchAbort = ctrl;
   try {
@@ -1668,9 +1752,20 @@ function _pickQuery(sec) {
   return sec.queries[Math.floor(Math.random() * sec.queries.length)];
 }
 
+// [FIX-MB-2] loadHomeSection — sectionCache properly use karo
+// Pehle cache check nahi hota tha — har render pe fresh API call hoti thi
 async function loadHomeSection(sec) {
+  // Cache hit — no API call
+  if (sectionCache[sec.id] && sectionCache[sec.id].length > 0) {
+    return sectionCache[sec.id];
+  }
+
   try {
-    if (typeof sec.fn === 'function') return await sec.fn();
+    if (typeof sec.fn === 'function') {
+      const songs = await sec.fn();
+      sectionCache[sec.id] = songs;
+      return songs;
+    }
     const q = _pickQuery(sec);
     if (!q) return [];
     const ctrl = new AbortController();
@@ -1687,6 +1782,8 @@ async function loadHomeSection(sec) {
         const j = Math.floor(Math.random() * (i + 1));
         [songs[i], songs[j]] = [songs[j], songs[i]];
       }
+      // Cache mein store karo
+      sectionCache[sec.id] = songs;
       return songs;
     } catch(fe) {
       clearTimeout(to);
@@ -1694,14 +1791,20 @@ async function loadHomeSection(sec) {
         const fq = sec.queries[Math.floor(Math.random() * sec.queries.length)];
         const r2 = await fetch(`/api/songs?q=${encodeURIComponent(fq)}`);
         const d2 = await r2.json();
-        return (d2.results || []).filter(s => s.previewUrl || s._source === 'saavn');
+        const songs = (d2.results || []).filter(s => s.previewUrl || s._source === 'saavn');
+        sectionCache[sec.id] = songs;
+        return songs;
       }
       return [];
     }
   } catch(e) { return []; }
 }
 
-function refreshHomeSections() { sectionCache = {}; haptic(15); buildHomeSections(currentGenre || 'all'); showToast('Refreshed'); }
+function refreshHomeSections() {
+  // [FIX] Refresh pe cache clear karo — fresh data fetch hogi
+  sectionCache = {};
+  haptic(15); buildHomeSections(currentGenre || 'all'); showToast('Refreshed');
+}
 
 function renderSkeletonSection(type, count = 4) {
   let html = '<div class="h-scroll-row" style="padding-right:20px;">';
@@ -1793,6 +1896,8 @@ async function refreshSection(secId) {
   const el   = document.getElementById('sec-' + secId); if (!el) return;
   const type = sec.type === 'featured' ? 'cards' : sec.type;
   el.innerHTML = type === 'rows' ? renderRowSkeleton() : renderSkeletonSection(type, 5);
+  // [FIX] Specific section ka cache clear karo — fresh data aayega
+  delete sectionCache[secId];
   haptic(10); _renderSection(sec, wrap);
 }
 
@@ -1812,8 +1917,10 @@ function renderQuickResume() {
 function makeQuickCard(s, i, queue) {
   const div = document.createElement('div'); div.className = 'quick-card anim-in';
   div.style.animationDelay = (i * 0.05) + 's';
+  // [FIX-MB-3] Low-end pe 200x200 karo — less MB
+  const imgSize = isLowEnd ? '200x200' : '400x400';
   const img = document.createElement('img'); img.alt = esc(s.trackName); img.loading = 'lazy';
-  setImgSrc(img, getArtUrl(s, '400x400')); div.appendChild(img);
+  setImgSrc(img, getArtUrl(s, imgSize)); div.appendChild(img);
   const info = document.createElement('div'); info.className = 'quick-card-info';
   info.innerHTML = `<div class="quick-card-title">${esc(s.trackName)}</div><div class="quick-card-artist">${esc(s.artistName)}</div>`;
   div.appendChild(info);
@@ -1825,9 +1932,11 @@ function makeQuickCard(s, i, queue) {
 function makeWideCard(s, i, queue) {
   const div = document.createElement('div'); div.className = 'wide-card anim-in';
   div.style.animationDelay = (i * 0.05) + 's';
+  // [FIX-MB-3] Low-end pe 200x200 karo — less MB
+  const imgSize = isLowEnd ? '200x200' : '400x400';
   const cover = document.createElement('div'); cover.className = 'wide-card-cover';
   const img = document.createElement('img'); img.alt = esc(s.trackName); img.loading = 'lazy';
-  setImgSrc(img, getArtUrl(s, '400x400'));
+  setImgSrc(img, getArtUrl(s, imgSize));
   const play = document.createElement('div'); play.className = 'wide-card-play';
   play.innerHTML = '<svg viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3" fill="white"/></svg>';
   cover.appendChild(img); cover.appendChild(play);
@@ -1843,9 +1952,11 @@ function makeBwCard(s, i, queue, meta) {
   meta = meta || { color:'#b89640', genre:'Music' };
   const div = document.createElement('div'); div.className = 'bw-card anim-in';
   div.style.animationDelay = (i * 0.05) + 's';
+  // [FIX-MB-3] Low-end pe 200x200 karo — less MB
+  const imgSize = isLowEnd ? '200x200' : '400x400';
   const cover = document.createElement('div'); cover.className = 'bw-card-cover';
   const img = document.createElement('img'); img.alt = esc(s.trackName); img.loading = 'lazy';
-  setImgSrc(img, getArtUrl(s, '400x400')); cover.appendChild(img);
+  setImgSrc(img, getArtUrl(s, imgSize)); cover.appendChild(img);
   const overlay = document.createElement('div'); overlay.className = 'bw-card-overlay';
   overlay.innerHTML = `<div class="bw-card-genre" style="color:${meta.color}">${meta.genre}</div><div class="bw-card-title">${esc(s.trackName)}</div><div class="bw-card-sub">${esc(s.artistName)}</div>`;
   cover.appendChild(overlay);
@@ -2025,8 +2136,8 @@ async function doSearch(q) {
     saveRecentSearch(q);
     let songs = (d.results || []).filter(s => s.previewUrl || s._source === 'saavn');
     if (!_userWantsVersion(q, '')) {
-  songs = songs.filter(s => !_isVersionSong(s.trackName || ''));
-}
+      songs = songs.filter(s => !_isVersionSong(s.trackName || ''));
+    }
     renderSearchResults(songs, q);
   } catch(e) {
     const body = document.getElementById('search-body');
