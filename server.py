@@ -18,8 +18,6 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 # ── [FIX-RENDER-1] Persistent session with connection pooling ─────────────────
-# Render pe har request pe naya TCP connection banta tha — DNS + TLS overhead
-# Session reuse karne se same host pe 5-10x faster outbound requests
 _http_session = requests.Session()
 _retry_strategy = Retry(
     total=3,
@@ -95,7 +93,7 @@ def _sb_headers():
         'Content-Type':  'application/json',
     }
 
-# ── Legacy cache stubs (kept for compat — L1/L2 already handle this) ─────────
+# ── Legacy cache stubs ────────────────────────────────────────────────────────
 def _cache_get(key):
     return _l1_meta.get(f"legacy:{key}")
 
@@ -104,7 +102,7 @@ def _cache_set(key, value):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# /api/songs
+# /api/songs  — [FIX] Saavn-first, iTunes optional
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/songs')
 @limiter.limit("60 per minute")
@@ -126,9 +124,10 @@ def get_songs():
     def fetch_itunes():
         nonlocal itunes_results
         try:
+            # [FIX-TIMEOUT-1] iTunes timeout 25s → 6s
             r = _http_session.get('https://itunes.apple.com/search',
                              params={'term': search_term, 'media': 'music', 'entity': 'song',
-                                     'limit': 50, 'country': 'IN'}, timeout=25)
+                                     'limit': 50, 'country': 'IN'}, timeout=6)
             r.raise_for_status()
             results = r.json().get('results', [])
             if is_90s:
@@ -147,7 +146,8 @@ def get_songs():
             }
             resolved = []
             try:
-                for future in as_completed(resolve_futures, timeout=10):
+                # [FIX-TIMEOUT-2] resolve timeout 10s → 5s
+                for future in as_completed(resolve_futures, timeout=5):
                     try:
                         res = future.result()
                         if res: resolved.append(res)
@@ -164,7 +164,6 @@ def get_songs():
         try:
             raw = _fetch_saavn_search_parallel(search_term)
             if raw:
-                # [FIX-SERVER-1] query pass karo — remix/version filter sahi se kaam karega
                 normalized = _normalize_saavn_songs(raw, query=search_term)
                 if is_90s:
                     filtered   = [s for s in normalized if 1990 <= _safe_year(s.get('releaseDate')) <= 1999]
@@ -174,18 +173,28 @@ def get_songs():
         except Exception:
             pass
 
-    t1 = threading.Thread(target=fetch_itunes)
+    # [FIX-SAAVN-FIRST] Saavn pehle start karo, iTunes baad mein
     t2 = threading.Thread(target=fetch_saavn)
-    t1.start(); t2.start()
-    t1.join(timeout=28)
-    t2.join(timeout=20)
+    t1 = threading.Thread(target=fetch_itunes)
+    t2.start()
+    t1.start()
+
+    # [FIX-SAAVN-FIRST] Saavn ko 12s wait karo
+    t2.join(timeout=12)
+
+    # [FIX-SAAVN-FIRST] Agar Saavn ne results de diye — iTunes sirf 2s aur wait karo
+    if saavn_results:
+        t1.join(timeout=2)
+    else:
+        # Saavn fail — iTunes ko 8s aur do
+        t1.join(timeout=8)
 
     merged = list(itunes_results)
     for s in saavn_results:
         if not any(is_likely_duplicate(s, e) for e in merged):
             merged.append(s)
 
-    # [FIX-RENDER] Agar dono fail ho gaye — sirf Saavn se direct fetch karo
+    # [FIX-RENDER] Dono fail — direct Saavn fallback
     if not merged:
         try:
             raw = _fetch_saavn_search_parallel(search_term)
@@ -217,7 +226,6 @@ def get_90s_songs():
 
     raw = _fetch_saavn_search_parallel(seed)
     if raw:
-        # [FIX-SERVER-2] query pass karo
         normalized = _normalize_saavn_songs(raw, query=seed)
         filtered   = [s for s in normalized if 1990 <= _safe_year(s.get('releaseDate')) <= 1999]
         result     = (filtered if len(filtered) >= 5 else normalized)[:30]
@@ -227,9 +235,10 @@ def get_90s_songs():
         return jsonify({'results': result, 'seed': seed})
 
     try:
+        # [FIX-TIMEOUT-3] iTunes timeout 25s → 6s
         r = _http_session.get('https://itunes.apple.com/search',
                          params={'term': seed, 'media': 'music', 'entity': 'song',
-                                 'limit': 50, 'country': 'IN'}, timeout=25)
+                                 'limit': 50, 'country': 'IN'}, timeout=6)
         r.raise_for_status()
         results  = r.json().get('results', [])
         filtered = [s for s in results if s.get('trackName') and
@@ -243,7 +252,8 @@ def get_90s_songs():
         }
         resolved = []
         try:
-            for future in as_completed(resolve_futures, timeout=10):
+            # [FIX-TIMEOUT-4] resolve timeout 10s → 5s
+            for future in as_completed(resolve_futures, timeout=5):
                 try:
                     res = future.result()
                     if res: resolved.append(res)
@@ -845,7 +855,6 @@ _ARTWORK_ALLOWED_DOMAINS = [
 def artwork_proxy():
     url = request.args.get('url', '').strip()
     if not url: return jsonify({'error': 'Missing url'}), 400
-    # [FIX-SERVER-3] YT thumbnail URL ko maxresdefault pe upgrade karo before proxy
     if 'img.youtube.com' in url or 'i.ytimg.com' in url:
         url = re.sub(r'/(default|mqdefault|sddefault|hqdefault)\.jpg', '/maxresdefault.jpg', url)
     try:
@@ -876,7 +885,7 @@ def artwork_proxy():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# /api/suggest  — fast search suggestions
+# /api/suggest  — [FIX-TIMEOUT-5] timeout 8s → 4s
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/suggest')
 @limiter.limit("120 per minute")
@@ -895,14 +904,13 @@ def get_suggestions():
             'https://itunes.apple.com/search',
             params={'term': q, 'media': 'music', 'entity': 'song',
                     'limit': 8, 'country': 'IN'},
-            timeout=8
+            timeout=4  # [FIX] 8 → 4
         )
         r.raise_for_status()
         results = r.json().get('results', [])
         suggestions = []
         for s in results:
             if not s.get('trackName'): continue
-            # [FIX-SERVER-4] 60x60 → 500x500 — suggest mein bhi proper thumbnail
             raw_art = s.get('artworkUrl100') or ''
             art_url = _ensure_500(
                 raw_art.replace('100x100bb', '500x500bb').replace('100x100', '500x500')
@@ -930,17 +938,13 @@ def health():
         'sources': ['saavn', 'jiosavan', 'ytmusic', 'piped', 'invidious', 'soundcloud', 'youtube'],
         'auth':    'google-oauth',
         'db':      'supabase',
-        'version': '3.1',
+        'version': '3.2',
     })
 
 
-# ── [FIX-RENDER-2] Startup warmup — pre-establish connections ─────────────────
-# Render pe gunicorn start hone ke baad pehli request slow hoti thi kyunki
-# TCP connections cold hote hain. Ye warmup background mein connections
-# pre-establish kar leta hai taaki pehli user request fast mile.
+# ── [FIX-RENDER-2] Startup warmup ────────────────────────────────────────────
 def _startup_warmup():
     try:
-        # iTunes connection warm karo
         _http_session.get(
             'https://itunes.apple.com/search',
             params={'term': 'arijit singh', 'media': 'music', 'entity': 'song', 'limit': 1},
@@ -950,15 +954,11 @@ def _startup_warmup():
     except Exception as e:
         log.warning(f'[Warmup] iTunes failed: {e}')
     try:
-        # Saavn mirrors warm karo
         _fetch_saavn_search_parallel('arijit singh')
         log.info('[Warmup] Saavn connection established')
     except Exception as e:
         log.warning(f'[Warmup] Saavn failed: {e}')
 
-# Gunicorn worker start hone ke 3s baad warmup karo
-# [FIX] __name__ check nahi — preload_app=True hai toh master process mein bhi chalega
-# Isliye environment variable se guard karo
 if os.environ.get('SERVER_SOFTWARE', '').startswith('gunicorn') or __name__ == '__main__':
     _warmup_timer = threading.Timer(3.0, _startup_warmup)
     _warmup_timer.daemon = True
