@@ -145,10 +145,10 @@ def get_songs():
                 art = re.sub(r'\b\d+x\d+bb\b', '600x600bb', art)
                 art = re.sub(r'\b\d+x\d+\b', '600x600', art)
                 s['artworkUrl100'] = art
-            # previewUrl → /api/play route pe bhejo (title+artist se)
+            # previewUrl → /api/saavn route pe bhejo (title+artist se)
             title  = s.get('trackName', '')
             artist = s.get('artistName', '')
-            s['previewUrl'] = f"/api/play?title={quote(title, safe='')}&artist={quote(artist, safe='')}"
+            s['previewUrl'] = f"/api/saavn?q={quote(title, safe='')}&artist={quote(artist, safe='')}"
             results.append(s)
 
     except Exception as e:
