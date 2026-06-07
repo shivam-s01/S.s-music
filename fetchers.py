@@ -538,6 +538,18 @@ def fetch_from_ytmusic(title, artist='', anchor=None):
     if not results: results = _ytm_search(clean_title, limit=5)
     if not results: return None
 
+    # [FIX-CHANNEL-2] YTMusic mein bhi non-music content filter
+    _YTM_BLOCKED_TITLE = {
+        'interview', 'behind the scenes', 'making of', 'reaction',
+        'jukebox', 'all songs', 'nonstop', 'full episode', 'episode',
+        'press conference', 'award show', 'live show',
+    }
+    results = [
+        r for r in results
+        if not any(bw in (r.get('title') or '').lower() for bw in _YTM_BLOCKED_TITLE)
+    ]
+    if not results: return None
+
     # ── TVE: build candidate list (duration=0 initially — fixed post-selection) ──
     tve_candidates = [
         {'title': item.get('title', ''), 'artist': item.get('artist', ''),
@@ -623,20 +635,21 @@ def fetch_from_ytdlp(title, artist='', anchor=None):
     clean_artist = artist.split(',')[0].split('&')[0].strip() if artist else ''
     clean_title  = re.sub(r'\(.*?\)|\[.*?\]', '', title).strip()
 
+    # [FIX-QUERY-1] "full song"/"audio" keywords removed — SET India/lyric channels attract karte the
+    # ytmsearch priority — YT Music index mein sirf official music hoti hai
     search_queries = []
     if clean_artist:
         search_queries += [
             f"ytmsearch5:{clean_artist} {clean_title}",
-            f"ytsearch5:{clean_artist} {clean_title} full song",
-            f"ytmsearch3:{clean_title}",
-            f"ytsearch3:{clean_title} {clean_artist} audio",
-            f"ytsearch2:{clean_title} song",
+            f"ytmsearch3:{clean_title} {clean_artist}",
+            f"ytsearch5:{clean_artist} {clean_title}",
+            f"ytsearch3:{clean_title}",
         ]
     else:
         search_queries += [
             f"ytmsearch5:{clean_title}",
-            f"ytsearch5:{clean_title} full song audio",
-            f"ytsearch3:{clean_title} song",
+            f"ytmsearch3:{clean_title}",
+            f"ytsearch5:{clean_title}",
         ]
 
     ydl_opts = {
@@ -658,7 +671,39 @@ def fetch_from_ytdlp(title, artist='', anchor=None):
                     if not entries:
                         entries = [e for e in info['entries'] if e]
 
-                    # Convert entries → TVE candidate dicts
+                    # [FIX-CHANNEL-1] Non-music channels block karo
+                    # SET India, Colors TV, Star Plus jaise channels shows/interviews dete hain
+                    _BLOCKED_CHANNELS = {
+                        'set india', 'sony entertainment', 'colors tv', 'star plus',
+                        'zee tv', 'star gold', 'sony max', 'star utsav',
+                        'mtv india', 'vh1 india', 'b4u music', 'b4u movies',
+                        'shemaroo', 'shemaroo movies', 'shemaroo filmi gaane',
+                        'pen movies', 'ultra bollywood', 'goldmines',
+                        'news18', 'aaj tak', 'ndtv', 'india tv', 'republic',
+                        'abp news', 'zee news', 'tv9', 'sun tv',
+                    }
+                    _BLOCKED_TITLE_WORDS = {
+                        'interview', 'behind the scenes', 'making of', 'bts',
+                        'reaction', 'review', 'watch online', 'full episode',
+                        'episode', 'serial', 'comedy show', 'award show',
+                        'live show', 'concert', 'press conference',
+                        'video jukebox', 'jukebox', 'all songs', 'nonstop',
+                    }
+                    filtered_entries = []
+                    for e in entries:
+                        _uploader = (e.get('uploader') or e.get('channel') or '').lower()
+                        _etitle   = (e.get('title') or '').lower()
+                        # Block known non-music channels
+                        if any(bc in _uploader for bc in _BLOCKED_CHANNELS):
+                            log.debug(f"[yt-dlp] CHANNEL BLOCK: '{e.get('title')}' by '{_uploader}'")
+                            continue
+                        # Block non-music title patterns
+                        if any(bw in _etitle for bw in _BLOCKED_TITLE_WORDS):
+                            log.debug(f"[yt-dlp] TITLE BLOCK: '{e.get('title')}'")
+                            continue
+                        filtered_entries.append(e)
+                    if filtered_entries:
+                        entries = filtered_entries
                     tve_candidates = []
                     for entry in entries[:5]:
                         tve_candidates.append({
@@ -1373,6 +1418,16 @@ def play_song():
                 _is_slowed_reverb(_ct) or
                 _is_live_version(_ct)):
                 return None
+            # [FIX-CACHE-REMIX] hard_reject_by_version — brackets ke andar bhi catch hoga
+            # e.g. "Ooh La La (Dhol Mix)" — _is_remix_or_cover miss kar sakta tha
+            try:
+                from match_engine import hard_reject_by_version
+                _hr, _hr_reason = hard_reject_by_version(_ct, _ct, query_has_version=False)
+                if _hr:
+                    log.info(f"[Cache] HARD REJECT version in cache: '{_ct}' — {_hr_reason}")
+                    return None
+            except ImportError:
+                pass
 
         if title and _ct:
             if not dna_compatible(title, _ct):
