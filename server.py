@@ -36,7 +36,7 @@ from match_engine import (
     _detect_language, _is_devotional_query,
     _query_requests_version, NINETIES_TRIGGERS, NINETIES_SEEDS,
     ALLOWED_STREAM_DOMAINS, dna_compatible,
-    _safe_year, _pick_low_quality,
+    _safe_year, _pick_low_quality, _ensure_500,
 )
 from sources import (
     SAAVN_MIRRORS, PIPED_INSTANCES, INVIDIOUS_INSTANCES,
@@ -137,7 +137,8 @@ def get_songs():
         try:
             raw = _fetch_saavn_search_parallel(search_term)
             if raw:
-                normalized = _normalize_saavn_songs(raw)
+                # [FIX-SERVER-1] query pass karo — remix/version filter sahi se kaam karega
+                normalized = _normalize_saavn_songs(raw, query=search_term)
                 if is_90s:
                     filtered   = [s for s in normalized if 1990 <= _safe_year(s.get('releaseDate')) <= 1999]
                     normalized = filtered if len(filtered) >= 5 else normalized
@@ -180,7 +181,8 @@ def get_90s_songs():
 
     raw = _fetch_saavn_search_parallel(seed)
     if raw:
-        normalized = _normalize_saavn_songs(raw)
+        # [FIX-SERVER-2] query pass karo
+        normalized = _normalize_saavn_songs(raw, query=seed)
         filtered   = [s for s in normalized if 1990 <= _safe_year(s.get('releaseDate')) <= 1999]
         result     = (filtered if len(filtered) >= 5 else normalized)[:30]
         random.shuffle(result)
@@ -807,6 +809,9 @@ _ARTWORK_ALLOWED_DOMAINS = [
 def artwork_proxy():
     url = request.args.get('url', '').strip()
     if not url: return jsonify({'error': 'Missing url'}), 400
+    # [FIX-SERVER-3] YT thumbnail URL ko maxresdefault pe upgrade karo before proxy
+    if 'img.youtube.com' in url or 'i.ytimg.com' in url:
+        url = re.sub(r'/(default|mqdefault|sddefault|hqdefault)\.jpg', '/maxresdefault.jpg', url)
     try:
         parsed = urlparse(url)
         if parsed.scheme not in ('http', 'https'): return jsonify({'error': 'Invalid scheme'}), 400
@@ -835,7 +840,7 @@ def artwork_proxy():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# /api/suggest  — fast search suggestions (iTunes only)
+# /api/suggest  — fast search suggestions
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/suggest')
 @limiter.limit("120 per minute")
@@ -858,15 +863,21 @@ def get_suggestions():
         )
         r.raise_for_status()
         results = r.json().get('results', [])
-        suggestions = [
-            {
+        suggestions = []
+        for s in results:
+            if not s.get('trackName'): continue
+            # [FIX-SERVER-4] 60x60 → 500x500 — suggest mein bhi proper thumbnail
+            raw_art = s.get('artworkUrl100') or ''
+            art_url = _ensure_500(
+                raw_art.replace('100x100bb', '500x500bb').replace('100x100', '500x500')
+            ) if raw_art else ''
+            suggestions.append({
                 'trackName':  s.get('trackName', ''),
                 'artistName': s.get('artistName', ''),
-                'artworkUrl': (s.get('artworkUrl100') or '').replace('100x100', '60x60'),
+                'artworkUrl': art_url,
                 'trackId':    s.get('trackId'),
-            }
-            for s in results if s.get('trackName')
-        ][:6]
+            })
+        suggestions = suggestions[:6]
         _l1_meta.set(cache_key, suggestions)
         return jsonify({'suggestions': suggestions})
     except Exception:
