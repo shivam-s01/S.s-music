@@ -280,10 +280,22 @@ async function _fetchItunesArt(title, artist, songObj) {
 }
 
 // ─── 9. LOAD TRACK — SAAVN-FIRST ─────────────────────────────────────────────
+// [MASTER-FIX] AbortController timing fix: ctrl synchronously banao PEHLE,
+// phir async function ko pass karo — fast skip pe race condition zero.
+let _loadGeneration = 0; // monotonic counter — har loadTrack pe increment
+
 function loadTrack(song, autoplay = true) {
   if (!song) return;
   _dismissedTrackId = null;
+  _prefetchFiredForTrack = null;
+
+  // [FIX-ABORT-TIMING] Pehle abort, phir naya ctrl — synchronous, race-free
   if (_fullSongAbort) { _fullSongAbort.abort(); _fullSongAbort = null; }
+  const ctrl = new AbortController();
+  _fullSongAbort = ctrl;
+  _loadGeneration++; // har song pe unique generation id
+  const myGen = _loadGeneration;
+
   _currentSaavnUrl = null; _currentSaavnQuality = null;
 
   const pill = document.querySelector('.quality-pill');
@@ -294,29 +306,24 @@ function loadTrack(song, autoplay = true) {
 
   currentTrack = song;
 
-  // [FIX] iTunes art — song object pass karo taaki direct update ho
-  // Agar already cached hai toh bhi songObj update hoga
-  _fetchItunesArt(song.trackName || '', song.artistName || '', song).then(url => {
-    if (url && currentTrack?.trackId === song.trackId) {
-      currentTrack.artworkUrl100 = url;
-      currentTrack.image = url;
-      updatePlayerUI();
-    }
-  });
+  // iTunes art — sirf tab fetch karo jab Saavn image nahi hai
+  const _alreadyHasArt = !!(song.artworkUrl100 || song.image);
+  const _isSaavnSong = song._source === 'saavn' || !!song._saavnId;
+  if (!(_isSaavnSong && _alreadyHasArt)) {
+    _fetchItunesArt(song.trackName || '', song.artistName || '', song).then(url => {
+      if (url && _loadGeneration === myGen && currentTrack?.trackId === song.trackId) {
+        currentTrack.artworkUrl100 = url; currentTrack.image = url; updatePlayerUI();
+      }
+    });
+  }
 
   currentQuality = 'loading';
-
   const durEl = document.getElementById('fp-duration');
   if (durEl) durEl.textContent = '0:30';
 
-  audio.pause();
-  audio.src = '';
-  audio.load();
+  audio.pause(); audio.src = ''; audio.load();
 
-  updatePlayerUI();
-  showMiniPlayer();
-  updateActiveRows();
-  updateQualityLabel();
+  updatePlayerUI(); showMiniPlayer(); updateActiveRows(); updateQualityLabel();
   addToRecentlyPlayed(song);
 
   clearTimeout(_recFetchTimeout);
@@ -324,24 +331,22 @@ function loadTrack(song, autoplay = true) {
   _recFetchTimeout = setTimeout(() => fetchRecommendations(song), 800);
   fetchLyrics(song);
 
-  // ── Saavn-sourced song: skip preview, go straight to full audio ──
   if (song._source === 'saavn') {
-    _autoFetchFullSong(song, autoplay);
-    return;
+    _autoFetchFullSong(song, autoplay, ctrl, myGen); return;
   }
 
-  // ── iTunes song: play preview immediately, upgrade in background ──
-  if (!song.previewUrl) return;
+  // iTunes: preview turant, full upgrade background mein
+  if (!song.previewUrl) { _autoFetchFullSong(song, autoplay, ctrl, myGen); return; }
   audio.src = song.previewUrl;
   if (autoplay) {
     const p = audio.play();
     if (p && p.then) {
-      p.then(() => { isPlaying = true; updatePlayerUI(); })
-       .catch(err => { if (err.name !== 'AbortError') { isPlaying = false; updatePlayerUI(); } });
+      p.then(() => { if (_loadGeneration === myGen) { isPlaying = true; updatePlayerUI(); } })
+       .catch(err => { if (err.name !== 'AbortError' && _loadGeneration === myGen) { isPlaying = false; updatePlayerUI(); } });
     }
   }
   updatePlayerUI();
-  _autoFetchFullSong(song, autoplay);
+  _autoFetchFullSong(song, autoplay, ctrl, myGen);
 }
 
 function playSongs(queue, index) {
@@ -350,22 +355,33 @@ function playSongs(queue, index) {
 }
 
 // ─── 10. AUTO FETCH FULL SONG ─────────────────────────────────────────────────
-async function _autoFetchFullSong(song, autoplay = true) {
-  const ctrl = new AbortController();
-  _fullSongAbort = ctrl;
+// [MASTER-FIX] ctrl + myGen dono check karo har await ke baad
+// — double protection against song mismatch
+async function _autoFetchFullSong(song, autoplay = true, ctrl, myGen) {
+  // Agar ctrl nahi diya (legacy call), banao
+  if (!ctrl) { ctrl = new AbortController(); _fullSongAbort = ctrl; }
+  if (!myGen) myGen = _loadGeneration;
   const requested = song;
 
+  // Guard: kya ye request abhi bhi valid hai?
+  function _stillValid() {
+    return !ctrl.signal.aborted &&
+           _loadGeneration === myGen &&
+           currentTrack?.trackId === requested.trackId;
+  }
+
   try {
-    // ── FIX: _saavnId already hai toh fresh search mat karo ──
+    // ── Direct Saavn ID path — fastest, zero search ──
     if (song._saavnId) {
       const proxyUrl = `/api/play?id=${encodeURIComponent(song._saavnId)}`
         + `&title=${encodeURIComponent(song.trackName || '')}`
         + `&artist=${encodeURIComponent(song.artistName || '')}`;
-      await _upgradeAudio(proxyUrl, null, song, autoplay, ctrl, requested);
+      if (!_stillValid()) return;
+      await _upgradeAudio(proxyUrl, null, song, autoplay, ctrl, requested, myGen);
       return;
     }
 
-    // ── iTunes song: title+artist se search ──
+    // ── iTunes song: search Saavn ──
     const cleanTitle  = (song.trackName  || '').replace(/\(.*?\)|\[.*?\]/g, '').trim();
     const cleanArtist = (song.artistName || '').split(/[&,]|feat\.|ft\./i)[0].trim();
     const movieMatch  = (song.trackName  || '').match(/\(From\s+[\u201c\u201d""]?(.+?)[\u201c\u201d""]?\)/i);
@@ -381,21 +397,29 @@ async function _autoFetchFullSong(song, autoplay = true) {
         `/api/saavn?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`,
         { signal: ctrl.signal }
       );
+      if (!_stillValid()) return;
       if (r.ok) {
         const j = await r.json();
+        if (!_stillValid()) return;
         if (j.success && j.url) {
           const _wV = _userWantsVersion(requested.trackName, requested.artistName || '');
-
+          // [MISMATCH-GUARD] Version song reject karo agar user ne nahi manga
           if (_isVersionSong(j.title || '') && !_wV) {
-            console.info('[AutoFetch] REJECTED version: ' + j.title);
+            console.info('[AutoFetch] VERSION REJECTED: ' + j.title);
           } else if (j.source === 'saavn' || _titleMatches(j.title, requested.trackName)) {
-            d = j;
-            if (j._saavnId) {
-              proxyUrl = `/api/play?id=${encodeURIComponent(j._saavnId)}`
-                + `&title=${encodeURIComponent(requested.trackName || '')}`
-                + `&artist=${encodeURIComponent(requested.artistName || '')}`;
+            // [MISMATCH-GUARD] Artist bhi verify karo — alag artist = reject
+            const _reqArtistNorm = (requested.artistName || '').toLowerCase().split(/[&,]/)[0].trim();
+            const _resArtistNorm = (j.artist || '').toLowerCase().split(/[&,]/)[0].trim();
+            const _artistOk = !_reqArtistNorm || !_resArtistNorm ||
+              _resArtistNorm.includes(_reqArtistNorm) || _reqArtistNorm.includes(_resArtistNorm) ||
+              _reqArtistNorm.split(' ').some(w => w.length > 3 && _resArtistNorm.includes(w));
+            if (!_artistOk) {
+              console.info(`[AutoFetch] ARTIST MISMATCH: req="${_reqArtistNorm}" got="${_resArtistNorm}"`);
             } else {
-              proxyUrl = `/api/stream?url=${encodeURIComponent(j.url)}`;
+              d = j;
+              proxyUrl = j._saavnId
+                ? `/api/play?id=${encodeURIComponent(j._saavnId)}&title=${encodeURIComponent(requested.trackName || '')}&artist=${encodeURIComponent(requested.artistName || '')}`
+                : `/api/stream?url=${encodeURIComponent(j.url)}`;
             }
           }
         }
@@ -404,108 +428,103 @@ async function _autoFetchFullSong(song, autoplay = true) {
       if (e.name === 'AbortError') return;
     }
 
-    if (ctrl.signal.aborted) return;
-    if (currentTrack?.trackId !== requested.trackId) return;
-
+    if (!_stillValid()) return;
     if (!d || !proxyUrl) {
       if (song._source === 'saavn') showToast('Song unavailable — try another');
       return;
     }
 
-    await _upgradeAudio(proxyUrl, d, song, autoplay, ctrl, requested);
+    await _upgradeAudio(proxyUrl, d, song, autoplay, ctrl, requested, myGen);
 
   } catch (e) {
     if (e.name !== 'AbortError') console.info('[AutoFetch] Error:', e.message);
   }
 }
 
-
 // ── Helper: preload + swap audio ─────────────────────────────────────────────
-// [FIX] X-Artwork-URL header backend se read karo — image mismatch fix
-async function _upgradeAudio(proxyUrl, d, song, autoplay, ctrl, requested) {
+// [MASTER-FIX] preload = 'auto', adaptive timeout, generation guard
+async function _upgradeAudio(proxyUrl, d, song, autoplay, ctrl, requested, myGen) {
+  if (!myGen) myGen = _loadGeneration;
+
+  function _stillValid() {
+    return !ctrl?.signal?.aborted &&
+           _loadGeneration === myGen &&
+           currentTrack?.trackId === requested.trackId;
+  }
+
   _currentSaavnUrl     = proxyUrl;
   _currentSaavnQuality = d?.quality || 'unknown';
   if (d?.quality) _updateDlSheetQuality(d.quality);
 
-  // [FIX-ART-1] Backend se X-Artwork-URL header read karo
-  // Backend already correct Saavn image bhejta hai — frontend sirf ignore kar raha tha
-  try {
-    const headResp = await fetch(proxyUrl, { method: 'HEAD', signal: ctrl?.signal });
-    if (!ctrl?.signal?.aborted && headResp.ok) {
-      const backendArtUrl    = headResp.headers.get('X-Artwork-URL');
-      const backendTitle     = headResp.headers.get('X-Song-Title');
-      const backendArtist    = headResp.headers.get('X-Song-Artist');
-      const backendQuality   = headResp.headers.get('X-Audio-Quality');
-
-      if (backendQuality) {
-        _currentSaavnQuality = backendQuality;
-        _updateDlSheetQuality(backendQuality);
-      }
-
-      if (backendArtUrl && backendArtUrl.startsWith('http')) {
-        // Song object update karo — taaki card/row/queue sab mein sahi image aaye
-        song.artworkUrl100 = backendArtUrl;
-        song.image         = backendArtUrl;
-        requested.artworkUrl100 = backendArtUrl;
-        requested.image         = backendArtUrl;
-
-        // currentTrack bhi update karo agar same song chal raha hai
-        if (currentTrack && String(currentTrack.trackId) === String(requested.trackId)) {
-          currentTrack.artworkUrl100 = backendArtUrl;
-          currentTrack.image         = backendArtUrl;
-        }
-
-        // Queue mein bhi update karo (same trackId wale sab)
-        for (const qs of currentQueue) {
-          if (String(qs.trackId) === String(requested.trackId)) {
-            qs.artworkUrl100 = backendArtUrl;
-            qs.image         = backendArtUrl;
-          }
-        }
-
-        // iTunes cache bhi update karo
-        const _ck = `${(requested.trackName||'').toLowerCase()}|${(requested.artistName||'').toLowerCase()}`;
-        _itunesArtCache.set(_ck, backendArtUrl);
-      }
-    }
-  } catch(headErr) {
-    // HEAD request fail hone pe silently ignore karo — audio still plays
-    if (headErr.name !== 'AbortError') {
-      console.debug('[Art] HEAD request failed, using fallback art:', headErr.message);
-    }
-  }
-
-  // FIX 3: preload timeout 6s (was 14s)
   const preAudio = new Audio();
-  preAudio.preload     = 'auto';
+  preAudio.preload     = 'auto'; // 'metadata' pe canplay reliable nahi — 'auto' rakho
   preAudio.crossOrigin = 'anonymous';
+  const _cleanupPre = () => { try { preAudio.src = ''; preAudio.load(); } catch(e) {} };
 
-  const _cleanupPre = () => { try { preAudio.src = ''; } catch(e) {} };
+  // [FIX-TIMEOUT] 2G pe 15s, baaki 10s — pehle se zyada patient
+  const _connType = navigator.connection?.effectiveType || '4g';
+  const _preloadTimeout = _connType === '2g' ? 15000 : _connType === '3g' ? 10000 : 8000;
 
   try {
     await new Promise((res, rej) => {
-      const to = setTimeout(() => { _cleanupPre(); rej(new Error('preload-timeout')); }, 6000);
-      preAudio.addEventListener('canplay', () => { clearTimeout(to); res(); }, { once: true });
-      preAudio.addEventListener('error',   () => { clearTimeout(to); rej(new Error('preload-error')); }, { once: true });
+      const to = setTimeout(() => { _cleanupPre(); rej(new Error('preload-timeout')); }, _preloadTimeout);
+      preAudio.addEventListener('canplay',  () => { clearTimeout(to); res(); }, { once: true });
+      preAudio.addEventListener('canplaythrough', () => { clearTimeout(to); res(); }, { once: true });
+      preAudio.addEventListener('error',    () => { clearTimeout(to); rej(new Error('preload-error')); }, { once: true });
       preAudio.src = proxyUrl;
       preAudio.load();
     });
   } catch (preErr) {
     _cleanupPre();
-    if (song._source === 'saavn') showToast('Stream failed — try another song');
-    return;
+    if (!_stillValid()) return; // Song badal gaya — silently exit
+    // Timeout pe bhi try karo — stream directly set karo bina preload ke
+    if (preErr.message === 'preload-timeout') {
+      console.info('[Audio] Preload timeout — setting src directly');
+      // Fall through to direct play below
+    } else {
+      if (song._source === 'saavn') showToast('Stream error — retrying…');
+      return;
+    }
   }
 
-  if (ctrl?.signal?.aborted || currentTrack?.trackId !== requested.trackId) {
-    _cleanupPre(); return;
-  }
+  if (!_stillValid()) { _cleanupPre(); return; }
 
   const wasPlaying = song._source === 'saavn' ? autoplay : isPlaying;
-  const pos = audio.currentTime;
+  const prevPos = audio.currentTime;
 
+  // [FIX-ART] Backend headers async read — playback block nahi karta
+  (async () => {
+    try {
+      if (!_stillValid()) return;
+      const headResp = await fetch(proxyUrl, { method: 'HEAD', signal: ctrl?.signal });
+      if (!_stillValid() || !headResp.ok) return;
+      const backendArtUrl  = headResp.headers.get('X-Artwork-URL');
+      const backendQuality = headResp.headers.get('X-Audio-Quality');
+      if (backendQuality && _stillValid()) {
+        _currentSaavnQuality = backendQuality;
+        _updateDlSheetQuality(backendQuality); updateQualityLabel();
+      }
+      if (backendArtUrl && backendArtUrl.startsWith('http') && _stillValid()) {
+        song.artworkUrl100 = backendArtUrl; song.image = backendArtUrl;
+        requested.artworkUrl100 = backendArtUrl; requested.image = backendArtUrl;
+        if (currentTrack && String(currentTrack.trackId) === String(requested.trackId)) {
+          currentTrack.artworkUrl100 = backendArtUrl; currentTrack.image = backendArtUrl;
+        }
+        for (const qs of currentQueue) {
+          if (String(qs.trackId) === String(requested.trackId)) {
+            qs.artworkUrl100 = backendArtUrl; qs.image = backendArtUrl;
+          }
+        }
+        _itunesArtCache.set(`${(requested.trackName||'').toLowerCase()}|${(requested.artistName||'').toLowerCase()}`, backendArtUrl);
+        if (_stillValid()) updatePlayerUI();
+      }
+    } catch(e) { /* silent */ }
+  })();
+
+  // [CORE] Audio src swap
   audio.addEventListener('loadedmetadata', () => {
-    if (isFinite(pos) && pos > 0 && isFinite(audio.duration) && pos < audio.duration) {
-      audio.currentTime = pos;
+    if (isFinite(prevPos) && prevPos > 1 && isFinite(audio.duration) && prevPos < audio.duration) {
+      audio.currentTime = prevPos;
     }
   }, { once: true });
 
@@ -514,29 +533,37 @@ async function _upgradeAudio(proxyUrl, d, song, autoplay, ctrl, requested) {
   if (sbEl) sbEl.classList.add('full-active');
   _cleanupPre();
 
-  // GODMODE: NEVER overwrite trackName/artistName — causes wrong song in player
-  if (d) {
-    if (d.quality) _currentSaavnQuality = d.quality;
-  }
-
-  // UI update after art fix
-  if (currentTrack?.trackId === requested.trackId) {
-    updatePlayerUI();
-  }
+  if (d?.quality) _currentSaavnQuality = d.quality;
+  if (_stillValid()) updatePlayerUI();
 
   if (wasPlaying) {
     const pp = audio.play();
-    if (pp?.then) pp.then(() => {
-      if (ctrl?.signal?.aborted || currentTrack?.trackId !== requested.trackId) {
-        audio.pause(); return;
-      }
-      isPlaying = true; currentQuality = 'full'; _fullSongAbort = null;
-      updateQualityLabel(); updatePlayerUI();
-    }).catch(() => {
-      if (!ctrl?.signal?.aborted && song._source !== 'saavn') {
-        _fallbackToPreview(requested);
-      }
-    });
+    if (pp?.then) {
+      pp.then(() => {
+        if (!_stillValid()) { audio.pause(); return; }
+        isPlaying = true; currentQuality = 'full'; _fullSongAbort = null;
+        updateQualityLabel(); updatePlayerUI();
+        if (_bgAudioCtx?.state === 'suspended') _bgAudioCtx.resume().catch(()=>{});
+        _acquireWakeLock();
+        updateMediaSession();
+      }).catch(err => {
+        if (err.name === 'AbortError') return;
+        if (!_stillValid()) return;
+        // Autoplay block hua — user interaction pe retry karo
+        const _retryPlay = () => {
+          if (!_stillValid()) return;
+          audio.play().then(() => {
+            isPlaying = true; currentQuality = 'full';
+            updateQualityLabel(); updatePlayerUI(); updateMediaSession();
+          }).catch(()=>{});
+          document.removeEventListener('touchstart', _retryPlay);
+          document.removeEventListener('click', _retryPlay);
+        };
+        document.addEventListener('touchstart', _retryPlay, { once: true });
+        document.addEventListener('click', _retryPlay, { once: true });
+        if (song._source !== 'saavn') _fallbackToPreview(requested);
+      });
+    }
   } else {
     currentQuality = 'full'; _fullSongAbort = null;
     updateQualityLabel(); updatePlayerUI();
@@ -644,7 +671,18 @@ function toggleRepeat() {
 }
 
 // ─── 12. AUDIO EVENTS ────────────────────────────────────────────────────────
-audio.addEventListener('ended', () => { if (!repeatOn) nextTrack(); });
+audio.addEventListener('ended', () => {
+  if (repeatOn) {
+    audio.currentTime = 0; audio.play().catch(()=>{});
+    return;
+  }
+  if (currentQueue.length <= 1) {
+    audio.currentTime = 0; audio.play().catch(()=>{});
+    return;
+  }
+  _maybeTriggerFeedbackPrompt('ended');
+  nextTrack();
+});
 audio.addEventListener('error', () => {
   if (currentQuality === 'full' && currentTrack?.previewUrl && currentTrack?._source !== 'saavn') {
     _fallbackToPreview(currentTrack);
@@ -673,6 +711,8 @@ audio.addEventListener('pause', () => {
 });
 
 let _throttledTimeUpdate = 0;
+let _prefetchFiredForTrack = null; // [FIX-PREFETCH] 70% pe ek baar prefetch karo
+
 audio.addEventListener('timeupdate', () => {
   const now = Date.now();
   if (now - _throttledTimeUpdate < 250) return;
@@ -695,6 +735,21 @@ audio.addEventListener('timeupdate', () => {
   }
   const fc = document.getElementById('fp-current');
   if (fc) fc.textContent = formatSec(audio.currentTime);
+
+  // [FIX-SMART-PREFETCH] 70% pe sirf next song prefetch karo — not on load
+  if (p >= 70 && currentTrack && currentQueue.length > 1) {
+    const nextIdx = shuffleOn ? _getShuffleIndex(currentIndex, currentQueue.length) : (currentIndex + 1) % currentQueue.length;
+    const nextSong = currentQueue[nextIdx];
+    if (nextSong && String(nextSong.trackId) !== String(_prefetchFiredForTrack)) {
+      _prefetchFiredForTrack = nextSong.trackId;
+      // Background mein quietly prefetch karo
+      fetch(`/api/prefetch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ songs: [{ id: nextSong._saavnId || nextSong.trackId, title: nextSong.trackName, artist: nextSong.artistName }] }),
+      }).catch(() => {});
+    }
+  }
 });
 
 audio.addEventListener('durationchange', () => {
@@ -922,12 +977,39 @@ function updateMediaSession() {
       artist: currentTrack.artistName || 'Unknown',
       artwork: [{ src: artUrl, sizes: '512x512', type: 'image/jpeg' }]
     });
-    navigator.mediaSession.setActionHandler('play', () => { audio.play().catch(()=>{}); isPlaying = true; updatePlayerUI(); });
+    navigator.mediaSession.setActionHandler('play', () => {
+      audio.play().catch(()=>{});
+      isPlaying = true; updatePlayerUI();
+      if (_bgAudioCtx && _bgAudioCtx.state === 'suspended') _bgAudioCtx.resume().catch(()=>{});
+    });
     navigator.mediaSession.setActionHandler('pause', () => { audio.pause(); isPlaying = false; updatePlayerUI(); });
     navigator.mediaSession.setActionHandler('nexttrack', nextTrack);
     navigator.mediaSession.setActionHandler('previoustrack', prevTrack);
-    try { navigator.mediaSession.setActionHandler('seekto', d => { if (isFinite(d.seekTime)) seekTo(d.seekTime); }); } catch(e) {}
+    // [FIX-MEDIASESSION-SEEK] Lock screen seek support
+    try {
+      navigator.mediaSession.setActionHandler('seekto', d => { if (isFinite(d.seekTime)) seekTo(d.seekTime); });
+    } catch(e) {}
+    try {
+      navigator.mediaSession.setActionHandler('seekbackward', d => {
+        const skip = d.seekOffset || 10;
+        seekTo(Math.max(0, audio.currentTime - skip));
+      });
+      navigator.mediaSession.setActionHandler('seekforward', d => {
+        const skip = d.seekOffset || 10;
+        seekTo(Math.min(audio.duration || 999, audio.currentTime + skip));
+      });
+    } catch(e) {}
     navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+    // [FIX-MEDIASESSION-POS] Position state update karo — lock screen seekbar
+    try {
+      if (isFinite(audio.duration) && audio.duration > 0) {
+        navigator.mediaSession.setPositionState({
+          duration: audio.duration,
+          playbackRate: audio.playbackRate || 1,
+          position: Math.min(audio.currentTime, audio.duration),
+        });
+      }
+    } catch(e) {}
   } catch(e) {}
 }
 
@@ -945,8 +1027,18 @@ function showMiniPlayer() {
   if (_dismissedTrackId && currentTrack && String(_dismissedTrackId) === String(currentTrack.trackId)) return;
   const mp = document.getElementById('mini-player');
   if (!mp) return;
-  mp.style.opacity = ''; mp.style.pointerEvents = '';
+  // [FIX-MINI-1] Force reset inline styles that may block visibility
+  mp.style.transform = '';
+  mp.style.transition = '';
+  mp.style.opacity = '';
+  mp.style.pointerEvents = '';
   mp.classList.add('show');
+  // [FIX-MINI-2] Agar fullscreen open hai toh mini player hide rakho
+  const fp = document.getElementById('fullscreen-player');
+  if (fp && fp.classList.contains('open')) {
+    mp.style.opacity = '0';
+    mp.style.pointerEvents = 'none';
+  }
 }
 
 function updateActiveRows() {
@@ -1366,7 +1458,9 @@ function closeFullscreen() {
     const closeId = fp._closeId;
     setTimeout(() => {
       if (fp._closeId !== closeId) return;
-      mp.style.transition = ''; mp.style.opacity = ''; mp.style.pointerEvents = '';
+      // [FIX-MINI-CLOSE] Force all inline styles reset before showing
+      mp.style.transition = ''; mp.style.transform = '';
+      mp.style.opacity = ''; mp.style.pointerEvents = '';
       if (currentTrack) showMiniPlayer();
     }, 220);
   }
@@ -2098,6 +2192,8 @@ function _renderSuggestions(suggestions, q) {
     `;
     item.onmouseenter = () => item.style.background = 'rgba(255,255,255,0.06)';
     item.onmouseleave = () => item.style.background = '';
+    // [FIX-SUGGEST-BLUR] Prevent blur firing before click on desktop
+    item.addEventListener('mousedown', (e) => e.preventDefault(), { passive: false });
     const img = document.createElement('img');
     img.src = s.artworkUrl || IMG_PLACEHOLDER;
     img.style.cssText = 'width:36px;height:36px;border-radius:6px;object-fit:cover;flex-shrink:0;';
@@ -2111,7 +2207,19 @@ function _renderSuggestions(suggestions, q) {
     const icon = document.createElement('div');
     icon.innerHTML = `<svg viewBox="0 0 24 24" style="width:14px;height:14px;stroke:var(--text3,#888);fill:none;stroke-width:2;stroke-linecap:round;"><line x1="7" y1="17" x2="17" y2="7"/><polyline points="7 7 17 7 17 17"/></svg>`;
     item.appendChild(img); item.appendChild(info); item.appendChild(icon);
+    item.addEventListener('touchend', (e) => {
+      e.preventDefault(); // [FIX-SUGGEST-TOUCH] Click delay bypass on mobile
+      clearTimeout(_searchTimeout); // [FIX-SUGGEST-DOUBLE] doSearch cancel karo
+      clearTimeout(_suggestTimeout);
+      const input = document.getElementById('search-input');
+      if (input) input.value = s.trackName + ' ' + s.artistName;
+      _hideSuggestDropdown();
+      saveRecentSearch(s.trackName);
+      doSearch(s.trackName + ' ' + s.artistName);
+    }, { passive: false });
     item.addEventListener('click', () => {
+      clearTimeout(_searchTimeout); // [FIX-SUGGEST-DOUBLE] doSearch cancel karo
+      clearTimeout(_suggestTimeout);
       const input = document.getElementById('search-input');
       if (input) input.value = s.trackName + ' ' + s.artistName;
       _hideSuggestDropdown();
@@ -2835,25 +2943,65 @@ function _releaseWakeLock() {
   if (_wakeLock) { _wakeLock.release().catch(()=>{}); _wakeLock = null; }
 }
 
+// ── [FIX-BG-1] Background audio: proper MediaSession + AudioContext node ──────
+// Silent 1-sample ping was not enough to keep audio alive on Android/iOS.
+// Fix: Connect real audio element into AudioContext graph so the browser
+// keeps the audio pipeline active when the tab is backgrounded.
+// Additionally: visibilitychange pe aggressively re-acquire wakelock + re-play.
+let _bgAudioSource = null;
+
 function _setupBgAudioPing() {
   try {
     _bgAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
     window._bgAudioCtx = _bgAudioCtx;
-    _bgPingInterval = setInterval(() => {
-      if (!isPlaying) return;
-      try {
-        const buf = _bgAudioCtx.createBuffer(1, 1, 22050);
-        const src = _bgAudioCtx.createBufferSource();
-        src.buffer = buf; src.connect(_bgAudioCtx.destination); src.start(0);
-      } catch(e) {}
-    }, 30000);
+
+    // Connect real audio element into the context graph
+    // This keeps the audio engine alive in background on Android Chrome
+    try {
+      const mediaNode = _bgAudioCtx.createMediaElementSource(audio);
+      mediaNode.connect(_bgAudioCtx.destination);
+      _bgAudioSource = mediaNode;
+    } catch(e) {
+      // Fallback: silent ping (older browsers)
+      _bgPingInterval = setInterval(() => {
+        if (!isPlaying) return;
+        try {
+          if (_bgAudioCtx.state === 'suspended') _bgAudioCtx.resume().catch(()=>{});
+          const buf = _bgAudioCtx.createBuffer(1, 1, 22050);
+          const src = _bgAudioCtx.createBufferSource();
+          src.buffer = buf; src.connect(_bgAudioCtx.destination); src.start(0);
+        } catch(e2) {}
+      }, 25000);
+    }
     window._bgPingInterval = _bgPingInterval;
   } catch(e) {}
 }
 
-audio.addEventListener('playing', () => { _acquireWakeLock(); });
-audio.addEventListener('pause',   () => { if (!isPlaying) _releaseWakeLock(); });
-document.addEventListener('visibilitychange', () => { if (!document.hidden && isPlaying) _acquireWakeLock(); }, { passive: true });
+audio.addEventListener('playing', () => {
+  _acquireWakeLock();
+  // Resume AudioContext if suspended (iOS requires this after user gesture)
+  if (_bgAudioCtx && _bgAudioCtx.state === 'suspended') {
+    _bgAudioCtx.resume().catch(()=>{});
+  }
+});
+audio.addEventListener('pause', () => { if (!isPlaying) _releaseWakeLock(); });
+
+// [FIX-BG-2] visibilitychange: jab tab foreground aaye aur isPlaying=true ho
+// toh audio.play() retry karo — browser kabhi kabhi background mein pause kar deta hai
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    if (_bgAudioCtx && _bgAudioCtx.state === 'suspended') {
+      _bgAudioCtx.resume().catch(()=>{});
+    }
+    if (isPlaying && audio.paused && audio.src) {
+      // Tab wapas aaya aur audio paused hai — resume karo
+      audio.play().then(() => {
+        isPlaying = true; _syncPlayIcons(); _syncPlayingClass(); updateMediaSession();
+      }).catch(()=>{});
+    }
+    if (isPlaying) _acquireWakeLock();
+  }
+}, { passive: true });
 
 // ─── 37. TOAST ───────────────────────────────────────────────────────────────
 let _toastTimer = null;
@@ -2869,6 +3017,346 @@ function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').repl
 function formatMs(ms) { const s = Math.floor((ms||0)/1000); return `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`; }
 function formatSec(s)  { s = Math.floor(s||0); return `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`; }
 function haptic(pat)   { try { if (navigator.vibrate && (typeof appSettings === 'undefined' || appSettings?.hapticFeedback !== false)) navigator.vibrate(pat); } catch(e) {} }
+
+// ─── 38b. FEEDBACK PROMPT SYSTEM — Spotify / YT Music style ──────────────────
+//
+// Logic:
+//  • Har 7th song ke baad (~14% chance per song) quietly ek small card pop hota hai
+//  • 2 types alternate: "Rate this song" (thumbs) aur "Tell us more" (text)
+//  • Auto-dismiss 6 sec mein agar user ignore kare
+//  • Session mein max 2 baar — spam nahi
+//  • Fullscreen player open ho toh wahan show karo, warna mini player ke upar
+// ─────────────────────────────────────────────────────────────────────────────
+let _fbSongsPlayed   = 0;   // session mein kitne songs play hue
+let _fbShownCount    = 0;   // session mein kitni baar prompt aaya
+let _fbLastShownTime = 0;   // last prompt ka timestamp
+let _fbPromptTimer   = null;
+let _feedbackSubmitting = false;
+const _FB_MAX_PER_SESSION = 3;
+const _FB_MIN_INTERVAL_MS = 5 * 60 * 1000; // 5 min ke beech dobara nahi
+const _FB_SONG_INTERVAL   = 6; // har 6th song ke baad eligible
+const _FB_PROMPTS = [
+  { type: 'rate',  label: 'How was that song?' },
+  { type: 'rate',  label: 'Enjoying the music?' },
+  { type: 'text',  label: 'Any feedback for us?' },
+  { type: 'rate',  label: 'Was this the right song?' },
+  { type: 'text',  label: 'Help us improve Aurum 🎵' },
+];
+
+function _maybeTriggerFeedbackPrompt(trigger) {
+  _fbSongsPlayed++;
+  if (_fbShownCount >= _FB_MAX_PER_SESSION) return;
+  if (Date.now() - _fbLastShownTime < _FB_MIN_INTERVAL_MS) return;
+  if (_fbSongsPlayed % _FB_SONG_INTERVAL !== 0) return;
+  // Extra random 40% skip — feel random, not mechanical
+  if (Math.random() < 0.4) return;
+  // 1.5s delay — song end ke turant baad nahi, thoda wait karo
+  setTimeout(_showFeedbackPrompt, 1500);
+}
+
+function _showFeedbackPrompt() {
+  if (_fbShownCount >= _FB_MAX_PER_SESSION) return;
+  if (document.getElementById('fb-prompt')) return; // already open
+
+  _fbShownCount++;
+  _fbLastShownTime = Date.now();
+
+  const prompt = _FB_PROMPTS[(_fbShownCount - 1) % _FB_PROMPTS.length];
+  const song   = currentTrack;
+
+  const el = document.createElement('div');
+  el.id = 'fb-prompt';
+  el.style.cssText = `
+    position:fixed;left:50%;transform:translateX(-50%) translateY(20px);
+    bottom:${document.getElementById('mini-player')?.classList.contains('show') ? '82px' : '20px'};
+    z-index:9000;
+    background:rgba(24,24,28,0.97);
+    border:1px solid rgba(255,255,255,0.09);
+    border-radius:16px;
+    padding:14px 16px 12px;
+    width:min(340px, calc(100vw - 32px));
+    box-shadow:0 8px 32px rgba(0,0,0,0.5);
+    opacity:0;
+    transition:opacity 0.25s ease, transform 0.25s cubic-bezier(0.34,1.56,0.64,1);
+    pointer-events:auto;
+  `;
+
+  if (prompt.type === 'rate') {
+    el.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <span style="font-size:13px;font-weight:600;color:#fff;">${prompt.label}</span>
+        <button onclick="_dismissFbPrompt()" style="background:none;border:none;color:rgba(255,255,255,0.4);font-size:18px;cursor:pointer;line-height:1;padding:0 2px;">×</button>
+      </div>
+      ${song ? `<div style="font-size:11px;color:rgba(255,255,255,0.4);margin-bottom:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(song.trackName||'')} · ${esc(song.artistName||'')}</div>` : ''}
+      <div style="display:flex;justify-content:center;gap:20px;">
+        <button onclick="_submitFbRating('thumbs_up')" style="
+          background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);
+          border-radius:50px;padding:10px 28px;font-size:20px;cursor:pointer;
+          transition:all 0.15s;color:#fff;
+        " onmouseenter="this.style.background='rgba(255,255,255,0.12)'" onmouseleave="this.style.background='rgba(255,255,255,0.06)'">👍</button>
+        <button onclick="_submitFbRating('thumbs_down')" style="
+          background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);
+          border-radius:50px;padding:10px 28px;font-size:20px;cursor:pointer;
+          transition:all 0.15s;color:#fff;
+        " onmouseenter="this.style.background='rgba(255,255,255,0.12)'" onmouseleave="this.style.background='rgba(255,255,255,0.06)'">👎</button>
+      </div>
+    `;
+  } else {
+    el.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <span style="font-size:13px;font-weight:600;color:#fff;">${prompt.label}</span>
+        <button onclick="_dismissFbPrompt()" style="background:none;border:none;color:rgba(255,255,255,0.4);font-size:18px;cursor:pointer;line-height:1;padding:0 2px;">×</button>
+      </div>
+      ${song ? `<div style="font-size:11px;color:rgba(255,255,255,0.4);margin-bottom:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(song.trackName||'')} · ${esc(song.artistName||'')}</div>` : ''}
+      <div style="display:flex;gap:8px;">
+        <input id="fb-prompt-input" type="text" placeholder="Type your feedback…" style="
+          flex:1;background:rgba(255,255,255,0.07);border:1px solid rgba(255,255,255,0.1);
+          border-radius:10px;padding:9px 12px;color:#fff;font-size:13px;
+          font-family:inherit;outline:none;
+        " onkeydown="if(event.key==='Enter') _submitFbText()">
+        <button onclick="_submitFbText()" style="
+          background:#b89640;border:none;border-radius:10px;
+          padding:9px 14px;font-size:13px;font-weight:700;
+          color:#000;cursor:pointer;font-family:inherit;white-space:nowrap;
+        ">Send</button>
+      </div>
+    `;
+  }
+
+  document.body.appendChild(el);
+  // Animate in
+  requestAnimationFrame(() => {
+    el.style.opacity = '1';
+    el.style.transform = 'translateX(-50%) translateY(0)';
+  });
+
+  // Auto-dismiss after 7s
+  _fbPromptTimer = setTimeout(_dismissFbPrompt, 7000);
+}
+
+function _dismissFbPrompt() {
+  clearTimeout(_fbPromptTimer);
+  const el = document.getElementById('fb-prompt');
+  if (!el) return;
+  el.style.opacity = '0';
+  el.style.transform = 'translateX(-50%) translateY(16px)';
+  setTimeout(() => el.remove(), 280);
+}
+
+async function _submitFbRating(rating) {
+  const song = currentTrack;
+  haptic([8, 20, 8]);
+  // Thumbs up — quick confirm anim
+  const el = document.getElementById('fb-prompt');
+  if (el) {
+    el.innerHTML = `<div style="text-align:center;padding:8px 0;font-size:22px;">${rating === 'thumbs_up' ? '👍' : '👎'}</div><div style="text-align:center;font-size:13px;color:rgba(255,255,255,0.6);margin-top:4px;">Thanks!</div>`;
+    setTimeout(_dismissFbPrompt, 900);
+  }
+  // Thumbs down — full feedback sheet kholo
+  if (rating === 'thumbs_down') {
+    setTimeout(() => openFeedback('Wrong song'), 950);
+  }
+  try {
+    await fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: rating === 'thumbs_up' ? 'Liked' : 'Disliked',
+        message: rating,
+        song_name:   song?.trackName  || '',
+        artist_name: song?.artistName || '',
+        song_id:     song?._saavnId   || String(song?.trackId || ''),
+        quality:     _currentSaavnQuality || '',
+        user_agent:  navigator.userAgent.slice(0, 200),
+      }),
+    });
+  } catch(e) {}
+}
+
+async function _submitFbText() {
+  const input = document.getElementById('fb-prompt-input');
+  const text  = (input?.value || '').trim();
+  if (!text) { if (input) input.focus(); return; }
+  const song  = currentTrack;
+  haptic([8, 20, 8]);
+  const el = document.getElementById('fb-prompt');
+  if (el) {
+    el.innerHTML = `<div style="text-align:center;padding:8px 0;font-size:22px;">🙏</div><div style="text-align:center;font-size:13px;color:rgba(255,255,255,0.6);margin-top:4px;">Feedback sent!</div>`;
+    setTimeout(_dismissFbPrompt, 900);
+  }
+  try {
+    await fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type: 'Quick feedback',
+        message: text,
+        song_name:   song?.trackName  || '',
+        artist_name: song?.artistName || '',
+        song_id:     song?._saavnId   || String(song?.trackId || ''),
+        quality:     _currentSaavnQuality || '',
+        user_agent:  navigator.userAgent.slice(0, 200),
+      }),
+    });
+  } catch(e) {}
+}
+
+window._dismissFbPrompt  = _dismissFbPrompt;
+window._submitFbRating   = _submitFbRating;
+window._submitFbText     = _submitFbText;
+window._maybeTriggerFeedbackPrompt = _maybeTriggerFeedbackPrompt;
+
+function openFeedback(prefillType) {
+  // Inline modal banao agar exist nahi karta
+  let modal = document.getElementById('feedback-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'feedback-modal';
+    modal.style.cssText = `
+      position:fixed;inset:0;z-index:10000;display:flex;align-items:flex-end;
+      background:rgba(0,0,0,0.6);backdrop-filter:blur(6px);
+      opacity:0;transition:opacity 0.22s ease;pointer-events:none;
+    `;
+    modal.innerHTML = `
+      <div id="feedback-sheet" style="
+        width:100%;background:var(--surface1,#111);border-radius:22px 22px 0 0;
+        padding:20px 20px 36px;box-shadow:0 -8px 40px rgba(0,0,0,0.5);
+        transform:translateY(100%);transition:transform 0.3s cubic-bezier(0.22,1,0.36,1);
+      ">
+        <div style="width:36px;height:3px;background:rgba(255,255,255,0.15);border-radius:2px;margin:0 auto 18px;"></div>
+        <div style="font-size:15px;font-weight:700;color:var(--text1,#fff);margin-bottom:4px;">Send Feedback</div>
+        <div id="feedback-song-label" style="font-size:11px;color:var(--text3,#888);margin-bottom:16px;"></div>
+
+        <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+          ${['Wrong song','Wrong artist','Bad quality','App bug','Suggestion','Other'].map(t =>
+            `<button class="fb-chip" onclick="_fbSelectType(this,'${t}')" style="
+              padding:6px 12px;border-radius:20px;border:1px solid rgba(255,255,255,0.12);
+              background:var(--surface2,#1a1a1a);color:var(--text2,#aaa);
+              font-size:12px;cursor:pointer;font-family:inherit;transition:all 0.15s;
+            ">${t}</button>`
+          ).join('')}
+        </div>
+
+        <textarea id="feedback-text" placeholder="Describe the issue or suggestion…" style="
+          width:100%;min-height:80px;background:var(--surface2,#1a1a1a);
+          border:1px solid rgba(255,255,255,0.1);border-radius:12px;
+          color:var(--text1,#fff);font-size:13px;padding:10px 12px;
+          font-family:inherit;resize:none;outline:none;box-sizing:border-box;
+        "></textarea>
+
+        <div style="display:flex;gap:10px;margin-top:12px;">
+          <button onclick="closeFeedback()" style="
+            flex:1;padding:12px;border-radius:12px;border:1px solid rgba(255,255,255,0.1);
+            background:var(--surface2,#1a1a1a);color:var(--text2,#aaa);
+            font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;
+          ">Cancel</button>
+          <button id="fb-submit-btn" onclick="submitFeedback()" style="
+            flex:2;padding:12px;border-radius:12px;border:none;
+            background:var(--gold,#b89640);color:#000;
+            font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;
+          ">Send ✓</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', e => { if (e.target === modal) closeFeedback(); });
+  }
+
+  // Song label update karo
+  const lbl = document.getElementById('feedback-song-label');
+  if (lbl && currentTrack) {
+    lbl.textContent = `${currentTrack.trackName || ''} · ${currentTrack.artistName || ''}`;
+  } else if (lbl) { lbl.textContent = ''; }
+
+  // Prefill type agar diya
+  if (prefillType) {
+    document.querySelectorAll('.fb-chip').forEach(c => {
+      c.style.background = c.textContent === prefillType ? 'var(--gold,#b89640)' : '';
+      c.style.color      = c.textContent === prefillType ? '#000' : '';
+      c.style.borderColor= c.textContent === prefillType ? 'var(--gold,#b89640)' : '';
+      c.dataset.selected = c.textContent === prefillType ? '1' : '';
+    });
+  }
+
+  modal.style.pointerEvents = 'auto';
+  requestAnimationFrame(() => {
+    modal.style.opacity = '1';
+    const sheet = document.getElementById('feedback-sheet');
+    if (sheet) sheet.style.transform = 'translateY(0)';
+  });
+}
+
+function _fbSelectType(btn, type) {
+  document.querySelectorAll('.fb-chip').forEach(c => {
+    c.style.background  = '';
+    c.style.color       = '';
+    c.style.borderColor = '';
+    c.dataset.selected  = '';
+  });
+  btn.style.background  = 'var(--gold,#b89640)';
+  btn.style.color       = '#000';
+  btn.style.borderColor = 'var(--gold,#b89640)';
+  btn.dataset.selected  = '1';
+}
+
+function closeFeedback() {
+  const modal = document.getElementById('feedback-modal');
+  if (!modal) return;
+  const sheet = document.getElementById('feedback-sheet');
+  modal.style.opacity = '0';
+  if (sheet) sheet.style.transform = 'translateY(100%)';
+  setTimeout(() => { modal.style.pointerEvents = 'none'; }, 300);
+  const ta = document.getElementById('feedback-text');
+  if (ta) ta.value = '';
+  document.querySelectorAll('.fb-chip').forEach(c => {
+    c.style.background = ''; c.style.color = ''; c.style.borderColor = ''; c.dataset.selected = '';
+  });
+}
+
+async function submitFeedback() {
+  if (_feedbackSubmitting) return;
+  const typeBtn = document.querySelector('.fb-chip[data-selected="1"]');
+  const type    = typeBtn?.textContent || 'General';
+  const text    = (document.getElementById('feedback-text')?.value || '').trim();
+
+  if (!text && type === 'General') { showToast('Describe the issue first'); return; }
+
+  _feedbackSubmitting = true;
+  const btn = document.getElementById('fb-submit-btn');
+  if (btn) { btn.textContent = 'Sending…'; btn.style.opacity = '0.6'; }
+
+  const payload = {
+    type,
+    message: text,
+    song_name:   currentTrack?.trackName  || '',
+    artist_name: currentTrack?.artistName || '',
+    song_id:     currentTrack?._saavnId   || String(currentTrack?.trackId || ''),
+    quality:     _currentSaavnQuality     || '',
+    user_agent:  navigator.userAgent.slice(0, 200),
+    timestamp:   new Date().toISOString(),
+  };
+
+  try {
+    await fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    showToast('Feedback sent — thank you! 🙏');
+    haptic([10, 30, 10]);
+    closeFeedback();
+  } catch(e) {
+    showToast('Send failed — check connection');
+  } finally {
+    _feedbackSubmitting = false;
+    if (btn) { btn.textContent = 'Send ✓'; btn.style.opacity = ''; }
+  }
+}
+
+window.openFeedback  = openFeedback;
+window.closeFeedback = closeFeedback;
+window.submitFeedback = submitFeedback;
+window._fbSelectType = _fbSelectType;
 
 if (!isTV) {
   document.addEventListener('keydown', e => {
