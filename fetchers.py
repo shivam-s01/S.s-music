@@ -205,7 +205,7 @@ def _fetch_saavn_search_parallel(search_term, language=''):
     futures = {_executor.submit(_fetch_saavn_search_mirror, m, search_term, language): m
                for m in mirrors}
     try:
-        for future in as_completed(futures, timeout=8):
+        for future in as_completed(futures, timeout=5):  # [FIX-499] 8s → 5s
             try:
                 result = future.result()
                 if result:
@@ -300,15 +300,19 @@ def _resolve_itunes_to_saavn(itunes_song: dict) -> Optional[dict]:
         _store_artwork(title, artist, itunes_song['artworkUrl100'], 2)
 
     mirrors = _best_mirrors(n=6)
+    _deadline = time.time() + 4.0  # [FIX-499] Hard 4s deadline
 
     for query in build_query_variants(title, artist, ''):
+        if time.time() > _deadline: break  # [FIX-499]
         for mirror in mirrors[:6]:
+            if time.time() > _deadline: break  # [FIX-499]
             for endpoint in ['/api/search/songs', '/api/search', '/search/songs']:
+                if time.time() > _deadline: break  # [FIX-499]
                 try:
                     resp = requests.get(
                         f'{mirror}{endpoint}',
                         params={'query': query, 'q': query, 'limit': 5},
-                        timeout=_health.adaptive_timeout(mirror),
+                        timeout=min(_health.adaptive_timeout(mirror), 4),  # [FIX-499] cap 4s
                         headers={'User-Agent': 'Mozilla/5.0'},
                     )
                     if resp.status_code != 200: continue
