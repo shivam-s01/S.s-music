@@ -124,7 +124,12 @@ function getArtUrl(song, size) {
   const _c = [song.artworkUrl100, song.artworkUrl60, song.image, song.artwork, song.thumbnail, song.cover].filter(u => u && typeof u === 'string' && u.startsWith('http'));
   if (!_c.length) return '';
   const _r = _c[0].replace(/\d{2,4}x\d{2,4}/g, target);
-  if (!_r.startsWith('/api/artwork') && _r.includes('saavncdn.com')) return '/api/artwork?url=' + encodeURIComponent(_r);
+  if (!_r.startsWith('/api/artwork') && (
+    _r.includes('saavncdn.com') ||
+    _r.includes('mzstatic.com') ||
+    _r.includes('is1-ssl') || _r.includes('is2-ssl') || _r.includes('is3-ssl') ||
+    _r.includes('is4-ssl') || _r.includes('is5-ssl')
+  )) return '/api/artwork?url=' + encodeURIComponent(_r);
   return _r;
 }
 
