@@ -122,6 +122,7 @@ def _is_source_alive(url: str) -> bool:
 # SAAVN MIRRORS
 # ═══════════════════════════════════════════════════════════════════════════════
 _BASE_MIRRORS = [
+    'https://jiosaavn-op.onrender.com',
     'https://jio-saavn-api.onrender.com',
     'https://my-jiosaavn-api.onrender.com',
     'https://saavn-backend.onrender.com',
@@ -588,4 +589,3 @@ def _master_heal_loop():
 
 threading.Thread(target=_master_heal_loop, daemon=True).start()
 log.info('[StrongHeal] Strong master heal loop started (60s interval)')
-
