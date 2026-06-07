@@ -198,6 +198,11 @@ let _dismissedTrackId    = null;
 let lyricsViewActive     = false;
 let originalArtworkHTML  = null;
 
+// [PATCH-1/6] Session-level recommendation state — feeds queue scoring engine
+const _sessionPlayedIds  = new Set();   // all trackIds played this session
+const _sessionArtistFreq = {};          // artist → play count this session
+const QUEUE_TARGET       = 65;          // target queue depth (was 15, now 65)
+
 // ─── 8. AUDIO ENGINE ─────────────────────────────────────────────────────────
 const audio = new Audio();
 audio.preload = 'none';
@@ -305,6 +310,11 @@ function loadTrack(song, autoplay = true) {
   if (sb) { sb.classList.remove('full-active'); sb.max = 30; sb.value = 0; sb.style.setProperty('--prog', '0%'); }
 
   currentTrack = song;
+
+  // [PATCH-6] Session artist frequency tracking — feeds recommendation scorer
+  const _ltArtist = (song.artistName || '').split(/[&,]|feat\.|ft\./i)[0].trim().toLowerCase();
+  if (_ltArtist) _sessionArtistFreq[_ltArtist] = (_sessionArtistFreq[_ltArtist] || 0) + 1;
+  _sessionPlayedIds.add(String(song.trackId));
 
   // iTunes art — sirf tab fetch karo jab Saavn image nahi hai
   const _alreadyHasArt = !!(song.artworkUrl100 || song.image);
@@ -626,6 +636,15 @@ function nextTrack() {
   }
   loadTrack(currentQueue[currentIndex]);
   updateQueuePanel();
+
+  // [PATCH-5] Proactive queue refill — if fewer than 12 songs remain ahead,
+  // trigger recommendation fetch immediately so queue never runs dry in background
+  const remaining = currentQueue.length - currentIndex - 1;
+  if (remaining < 12 && currentTrack) {
+    clearTimeout(_recFetchTimeout);
+    if (_recFetchAbort) { _recFetchAbort.abort(); _recFetchAbort = null; }
+    _recFetchTimeout = setTimeout(() => fetchRecommendations(currentQueue[currentIndex] || currentTrack), 500);
+  }
 }
 
 function prevTrack() {
@@ -681,7 +700,24 @@ audio.addEventListener('ended', () => {
     return;
   }
   _maybeTriggerFeedbackPrompt('ended');
-  nextTrack();
+
+  // [PATCH-2] Resume AudioContext BEFORE advancing track.
+  // On Android/iOS, AudioContext suspends in background; calling audio.play()
+  // on a suspended context is silently swallowed — queue appears to stall.
+  const _advance = () => {
+    nextTrack();
+    // If queue is now draining fast, proactively refetch for the new current song
+    if (currentQueue.length - currentIndex < 10 && currentTrack) {
+      clearTimeout(_recFetchTimeout);
+      _recFetchTimeout = setTimeout(() => fetchRecommendations(currentTrack), 300);
+    }
+  };
+
+  if (_bgAudioCtx && _bgAudioCtx.state === 'suspended') {
+    _bgAudioCtx.resume().then(_advance).catch(_advance);
+  } else {
+    _advance();
+  }
 });
 audio.addEventListener('error', () => {
   if (currentQuality === 'full' && currentTrack?.previewUrl && currentTrack?._source !== 'saavn') {
@@ -748,6 +784,21 @@ audio.addEventListener('timeupdate', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ songs: [{ id: nextSong._saavnId || nextSong.trackId, title: nextSong.trackName, artist: nextSong.artistName }] }),
       }).catch(() => {});
+    }
+  }
+
+  // [SW-PATCH] Har 30s pe MediaSession refresh + AudioContext health check + SW ping
+  // PWABuilder mein OS audio focus silently release ho jaata hai —
+  // yeh ensure karta hai ki lock screen notification aur audio pipeline dono live rahen
+  if (now - _lastTuTime > 30000 && isPlaying) {
+    _lastTuTime = now;
+    updateMediaSession();
+    if (_bgAudioCtx && _bgAudioCtx.state === 'suspended') {
+      _bgAudioCtx.resume().catch(() => {});
+    }
+    // Service Worker ko signal: audio active hai, SW ko idle mat hone do
+    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.controller.postMessage({ type: 'AUDIO_PLAYING' });
     }
   }
 });
@@ -840,6 +891,7 @@ function tickViz() { _startViz(); }
 // ─── 15. SCREEN OFF / ON ─────────────────────────────────────────────────────
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
+    // ── Screen locked / tab hidden ─────────────────────────────────────────
     _uiHidden = true; _stopViz();
     document.body.classList.add('screen-off');
     const ac = document.getElementById('ambient-canvas');
@@ -849,7 +901,16 @@ document.addEventListener('visibilitychange', () => {
     if (ac) ac.style.setProperty('display', 'none', 'important');
     const keep = new Set(['recent', 'featured']);
     for (const k of Object.keys(sectionCache)) { if (!keep.has(k)) delete sectionCache[k]; }
+
+    // [PATCH-4] Keep AudioContext alive while hidden — do NOT pause audio.
+    // If context is suspended while isPlaying, pre-resume it so that when
+    // audio.ended fires in background the next play() call will succeed.
+    if (_bgAudioCtx && _bgAudioCtx.state === 'suspended' && isPlaying) {
+      _bgAudioCtx.resume().catch(() => {});
+    }
+
   } else {
+    // ── App came back to foreground ────────────────────────────────────────
     _uiHidden = false;
     document.body.classList.remove('screen-off');
     const fp = document.getElementById('fullscreen-player');
@@ -860,7 +921,22 @@ document.addEventListener('visibilitychange', () => {
     if (!isLowEnd && ac) ac.classList.add('orbs-active');
     if (currentTrack) {
       _syncPlayIcons(); _syncPlayingClass(); updateQualityLabel();
-      if (isPlaying && audio.paused) audio.play().catch(() => {});
+
+      // [PATCH-4] Correct resume ordering: AudioContext first → then audio.play().
+      // play() on a suspended context is a no-op; context must be live first.
+      if (_bgAudioCtx && _bgAudioCtx.state === 'suspended') {
+        _bgAudioCtx.resume().then(() => {
+          if (isPlaying && audio.paused && audio.src) {
+            audio.play().catch(() => {});
+          }
+        }).catch(() => {
+          if (isPlaying && audio.paused && audio.src) {
+            audio.play().catch(() => {});
+          }
+        });
+      } else if (isPlaying && audio.paused) {
+        audio.play().catch(() => {});
+      }
     }
   }
 }, { passive: true });
@@ -977,14 +1053,29 @@ function updateMediaSession() {
       artist: currentTrack.artistName || 'Unknown',
       artwork: [{ src: artUrl, sizes: '512x512', type: 'image/jpeg' }]
     });
+    // [SW-PATCH] Play handler: AudioContext resume FIRST, phir audio.play()
+    // PWABuilder lock screen pe play dabane se AudioContext suspended milta hai —
+    // seedha audio.play() karne se silently fail hota hai
     navigator.mediaSession.setActionHandler('play', () => {
-      audio.play().catch(()=>{});
+      if (_bgAudioCtx && _bgAudioCtx.state === 'suspended') {
+        _bgAudioCtx.resume().then(() => {
+          audio.play().catch(() => {});
+        }).catch(() => { audio.play().catch(() => {}); });
+      } else {
+        audio.play().catch(() => {});
+      }
       isPlaying = true; updatePlayerUI();
-      if (_bgAudioCtx && _bgAudioCtx.state === 'suspended') _bgAudioCtx.resume().catch(()=>{});
     });
     navigator.mediaSession.setActionHandler('pause', () => { audio.pause(); isPlaying = false; updatePlayerUI(); });
     navigator.mediaSession.setActionHandler('nexttrack', nextTrack);
     navigator.mediaSession.setActionHandler('previoustrack', prevTrack);
+    // [SW-PATCH] Stop action: OS kabhi kabhi 'stop' bhejta hai (call/notification) —
+    // handle karo warna OS audio focus le leta hai aur stream kill ho jaata hai
+    try {
+      navigator.mediaSession.setActionHandler('stop', () => {
+        audio.pause(); isPlaying = false; updatePlayerUI();
+      });
+    } catch(e) {}
     // [FIX-MEDIASESSION-SEEK] Lock screen seek support
     try {
       navigator.mediaSession.setActionHandler('seekto', d => { if (isFinite(d.seekTime)) seekTo(d.seekTime); });
@@ -1765,25 +1856,140 @@ async function openArtistPageFromName(artistName) {
 
 async function fetchRecommendations(song) {
   if (!song) return;
-  // [FIX-MB-1] Queue mein already 15+ songs hain toh recommendations mat fetch karo
-  if (currentQueue.length >= 15) return;
+  // [PATCH-1] Target 65 songs — previously capped at 15 which caused queue drift
+  if (currentQueue.length >= QUEUE_TARGET) return;
+
   const ctrl = new AbortController();
   _recFetchAbort = ctrl;
-  try {
-    const artist = song.artistName?.split(/[&,]|feat\.|ft\./i)[0].trim() || '';
-    const r = await fetch(`/api/songs?q=${encodeURIComponent(artist + ' songs')}`, { signal: ctrl.signal });
-    if (ctrl.signal.aborted) return;
-    const d = await r.json();
-    const recs = (d.results || []).filter(s => (s.previewUrl || s._source === 'saavn') && String(s.trackId) !== String(song.trackId));
-    if (recs.length) {
-      const existingIds = new Set(currentQueue.map(s => String(s.trackId)));
-      const newRecs = recs.filter(s => !existingIds.has(String(s.trackId))).slice(0, 8);
-      const MAX_QUEUE_SIZE = 60;
-      currentQueue = [...currentQueue, ...newRecs].slice(0, MAX_QUEUE_SIZE);
-      if (queuePanelOpen) updateQueuePanel();
-      updateNextStrip();
+
+  // Mark this song in session history
+  _sessionPlayedIds.add(String(song.trackId));
+  const _primaryArtist = (song.artistName || '').split(/[&,]|feat\.|ft\./i)[0].trim().toLowerCase();
+  if (_primaryArtist) {
+    _sessionArtistFreq[_primaryArtist] = (_sessionArtistFreq[_primaryArtist] || 0) + 1;
+  }
+
+  // Build ranked query list: same artist first, then session artists, then related
+  const cleanArtist = (song.artistName || '').split(/[&,]|feat\.|ft\./i)[0].trim();
+  const cleanTitle  = (song.trackName  || '').replace(/\(.*?\)|\[.*?\]/g, '').trim();
+  const topSessionArtists = Object.entries(_sessionArtistFreq)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([a]) => a);
+
+  const queries = [
+    `${cleanArtist} best songs`,
+    `${cleanArtist} top hits`,
+    ...topSessionArtists
+      .filter(a => a !== _primaryArtist)
+      .map(a => `${a} songs`),
+    `${cleanTitle} similar songs`,
+    `${cleanArtist} ${song.primaryGenreName || ''} songs`.trim(),
+  ].filter(Boolean).slice(0, 4);
+
+  const existingIds = new Set(currentQueue.map(s => String(s.trackId)));
+
+  // ── Scoring function — pure frontend, no backend change ─────────────────
+  function _scoreSong(candidate) {
+    let score = 0;
+    const cArtist = (candidate.artistName || '').toLowerCase();
+    const cGenre  = (candidate.primaryGenreName || '').toLowerCase();
+    const sGenre  = (song.primaryGenreName || '').toLowerCase();
+
+    // Artist match — highest priority
+    if (cArtist.includes(_primaryArtist) || _primaryArtist.includes(cArtist.split(/[&,]/)[0].trim())) {
+      score += 50;
     }
-  } catch(e) { if (e.name !== 'AbortError') console.info('[Recs] fetch failed:', e.message); }
+    // Session artist boost
+    for (const [sessArtist, freq] of Object.entries(_sessionArtistFreq)) {
+      if (cArtist.includes(sessArtist)) {
+        score += Math.min(freq * 8, 24);
+        break;
+      }
+    }
+    // Genre match
+    if (sGenre && cGenre && (cGenre.includes(sGenre) || sGenre.includes(cGenre))) {
+      score += 20;
+    }
+    // Duration proximity (±45s feels cohesive)
+    if (song.trackTimeMillis && candidate.trackTimeMillis) {
+      const diff = Math.abs(song.trackTimeMillis - candidate.trackTimeMillis) / 1000;
+      if (diff < 45) score += 10;
+    }
+    // Penalize version/remix songs unless current is also one
+    if (_isVersionSong(candidate.trackName || '') && !_isVersionSong(song.trackName || '')) {
+      score -= 30;
+    }
+    // Lightly penalize already-heard-this-session songs
+    if (_sessionPlayedIds.has(String(candidate.trackId))) {
+      score -= 15;
+    }
+    return score;
+  }
+
+  // ── Quality gate: only pass songs with meaningful artist or score relation ─
+  function _passesQualityGate(candidate) {
+    const cArtist = (candidate.artistName || '').toLowerCase();
+    if (!candidate.previewUrl && candidate._source !== 'saavn') return false;
+    if (existingIds.has(String(candidate.trackId))) return false;
+    const artistMatch = cArtist.includes(_primaryArtist) ||
+      _primaryArtist.includes(cArtist.split(/[&,]/)[0].trim()) ||
+      Object.keys(_sessionArtistFreq).some(a => cArtist.includes(a));
+    const score = _scoreSong(candidate);
+    return artistMatch || score >= 20;
+  }
+
+  // ── Fetch from multiple queries, collect candidates ───────────────────────
+  const allCandidates = [];
+
+  for (const q of queries) {
+    if (ctrl.signal.aborted) return;
+    if (currentQueue.length + allCandidates.length >= QUEUE_TARGET) break;
+    try {
+      const r = await fetch(`/api/songs?q=${encodeURIComponent(q)}`, { signal: ctrl.signal });
+      if (ctrl.signal.aborted) return;
+      const d = await r.json();
+      const batch = (d.results || []).filter(s => _passesQualityGate(s));
+      for (const s of batch) {
+        if (!allCandidates.find(c => String(c.trackId) === String(s.trackId))) {
+          allCandidates.push(s);
+          existingIds.add(String(s.trackId));
+        }
+      }
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+    }
+  }
+
+  if (!allCandidates.length) return;
+
+  // ── Sort by score descending ──────────────────────────────────────────────
+  allCandidates.sort((a, b) => _scoreSong(b) - _scoreSong(a));
+
+  // ── Interleave by artist so same-artist songs don't all clump together ────
+  const byArtist = {};
+  for (const s of allCandidates) {
+    const key = (s.artistName || '').split(/[&,]/)[0].trim().toLowerCase();
+    if (!byArtist[key]) byArtist[key] = [];
+    byArtist[key].push(s);
+  }
+  const buckets   = Object.values(byArtist);
+  const maxLen    = Math.max(...buckets.map(b => b.length));
+  const interleaved = [];
+  for (let i = 0; i < maxLen; i++) {
+    for (const bucket of buckets) {
+      if (bucket[i]) interleaved.push(bucket[i]);
+    }
+  }
+
+  // ── Append to queue ───────────────────────────────────────────────────────
+  const slotsLeft = QUEUE_TARGET - currentQueue.length;
+  const toAdd     = interleaved.slice(0, slotsLeft);
+  if (!toAdd.length) return;
+
+  currentQueue = [...currentQueue, ...toAdd];
+  if (queuePanelOpen) updateQueuePanel();
+  updateNextStrip();
 }
 
 // ─── 25. RECENTLY PLAYED ──────────────────────────────────────────────────────
@@ -2943,38 +3149,85 @@ function _releaseWakeLock() {
   if (_wakeLock) { _wakeLock.release().catch(()=>{}); _wakeLock = null; }
 }
 
-// ── [FIX-BG-1] Background audio: proper MediaSession + AudioContext node ──────
-// Silent 1-sample ping was not enough to keep audio alive on Android/iOS.
-// Fix: Connect real audio element into AudioContext graph so the browser
-// keeps the audio pipeline active when the tab is backgrounded.
-// Additionally: visibilitychange pe aggressively re-acquire wakelock + re-play.
-let _bgAudioSource = null;
+// ── [PATCH-3] Background audio: production-grade keep-alive ──────────────────
+// Strategy:
+//   1. Connect real audio element into AudioContext graph (primary mechanism)
+//   2. Schedule silent buffer nodes every 20s (prevents browser GC of context)
+//   3. Stall watchdog: polls every 8s for unexpected pause in background
+//   4. Visibility restore forces correct resume order (context → audio)
+let _bgAudioSource   = null;
+let _bgKeepaliveTick = null;
 
 function _setupBgAudioPing() {
   try {
     _bgAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
     window._bgAudioCtx = _bgAudioCtx;
+  } catch (e) { return; }
 
-    // Connect real audio element into the context graph
-    // This keeps the audio engine alive in background on Android Chrome
+  // Step 1: Connect real audio element into context graph.
+  // createMediaElementSource can only be called once per element — guard it.
+  if (!_bgAudioSource) {
     try {
-      const mediaNode = _bgAudioCtx.createMediaElementSource(audio);
-      mediaNode.connect(_bgAudioCtx.destination);
-      _bgAudioSource = mediaNode;
-    } catch(e) {
-      // Fallback: silent ping (older browsers)
-      _bgPingInterval = setInterval(() => {
-        if (!isPlaying) return;
-        try {
-          if (_bgAudioCtx.state === 'suspended') _bgAudioCtx.resume().catch(()=>{});
-          const buf = _bgAudioCtx.createBuffer(1, 1, 22050);
-          const src = _bgAudioCtx.createBufferSource();
-          src.buffer = buf; src.connect(_bgAudioCtx.destination); src.start(0);
-        } catch(e2) {}
-      }, 25000);
+      _bgAudioSource = _bgAudioCtx.createMediaElementSource(audio);
+      _bgAudioSource.connect(_bgAudioCtx.destination);
+    } catch (e) {
+      _bgAudioSource = null;
+      // If createMediaElementSource fails (already connected elsewhere),
+      // fall through — silent ping below will still keep context alive
     }
-    window._bgPingInterval = _bgPingInterval;
-  } catch(e) {}
+  }
+
+  // Step 2: Periodic silent buffer scheduling every 20s.
+  // Signals to browser's background process manager that audio pipeline is active.
+  function _scheduleSilentPing() {
+    if (!isPlaying) return;
+    try {
+      if (_bgAudioCtx.state === 'suspended') {
+        _bgAudioCtx.resume().catch(() => {});
+        return;
+      }
+      const buf = _bgAudioCtx.createBuffer(1, _bgAudioCtx.sampleRate * 0.1, _bgAudioCtx.sampleRate);
+      // Buffer is zero-initialized by spec — truly silent
+      const src = _bgAudioCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(_bgAudioCtx.destination);
+      src.start(0);
+    } catch (e) { /* context may be closed — ignore */ }
+  }
+
+  if (_bgPingInterval) clearInterval(_bgPingInterval);
+  _bgPingInterval = setInterval(_scheduleSilentPing, 20000);
+  window._bgPingInterval = _bgPingInterval;
+
+  // Step 3: Stall watchdog — polls every 8s.
+  // PWABuilder sometimes suspends audio without firing 'pause'.
+  // If isPlaying=true but audio.paused, attempt recovery.
+  if (_bgKeepaliveTick) clearInterval(_bgKeepaliveTick);
+  _bgKeepaliveTick = setInterval(() => {
+    if (!isPlaying || !audio.src) return;
+    if (audio.paused) {
+      if (_bgAudioCtx && _bgAudioCtx.state === 'suspended') {
+        _bgAudioCtx.resume().catch(() => {});
+      }
+      audio.play().then(() => {
+        _syncPlayIcons(); _syncPlayingClass(); updateMediaSession();
+      }).catch(() => {});
+    }
+  }, 8000);
+  window._bgKeepaliveTick = _bgKeepaliveTick;
+
+  // [SW-PATCH] Service Worker keep-alive ping — har 15s
+  // SW idle ho jaaye toh PWABuilder WebView audio pipeline kill kar deta hai.
+  // Yeh interval SW ko signal karta hai ki audio active hai.
+  let _swPingInterval = null;
+  if (window._swPingInterval) clearInterval(window._swPingInterval);
+  _swPingInterval = setInterval(() => {
+    if (!isPlaying) return;
+    if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+      navigator.serviceWorker.controller.postMessage({ type: 'AUDIO_PLAYING' });
+    }
+  }, 15000);
+  window._swPingInterval = _swPingInterval;
 }
 
 audio.addEventListener('playing', () => {
@@ -2986,15 +3239,24 @@ audio.addEventListener('playing', () => {
 });
 audio.addEventListener('pause', () => { if (!isPlaying) _releaseWakeLock(); });
 
-// [FIX-BG-2] visibilitychange: jab tab foreground aaye aur isPlaying=true ho
-// toh audio.play() retry karo — browser kabhi kabhi background mein pause kar deta hai
+// [PATCH-3] visibilitychange: foreground restore with correct context→audio order
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
     if (_bgAudioCtx && _bgAudioCtx.state === 'suspended') {
-      _bgAudioCtx.resume().catch(()=>{});
-    }
-    if (isPlaying && audio.paused && audio.src) {
-      // Tab wapas aaya aur audio paused hai — resume karo
+      _bgAudioCtx.resume().then(() => {
+        if (isPlaying && audio.paused && audio.src) {
+          audio.play().then(() => {
+            isPlaying = true; _syncPlayIcons(); _syncPlayingClass(); updateMediaSession();
+          }).catch(()=>{});
+        }
+      }).catch(()=>{
+        if (isPlaying && audio.paused && audio.src) {
+          audio.play().then(() => {
+            isPlaying = true; _syncPlayIcons(); _syncPlayingClass(); updateMediaSession();
+          }).catch(()=>{});
+        }
+      });
+    } else if (isPlaying && audio.paused && audio.src) {
       audio.play().then(() => {
         isPlaying = true; _syncPlayIcons(); _syncPlayingClass(); updateMediaSession();
       }).catch(()=>{});
