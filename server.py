@@ -17,7 +17,6 @@ from urllib.parse import urlparse, quote
 from datetime import datetime, timedelta
 from typing import Optional
 
-# ── [FIX-RENDER-1] Persistent session with connection pooling ─────────────────
 _http_session = requests.Session()
 _retry_strategy = Retry(
     total=3,
@@ -85,7 +84,6 @@ from fetchers import (
     _fetch_itunes_artwork,
 )
 
-# ── Supabase header helper ────────────────────────────────────────────────────
 def _sb_headers():
     return {
         'apikey':        SUPABASE_KEY,
@@ -93,7 +91,6 @@ def _sb_headers():
         'Content-Type':  'application/json',
     }
 
-# ── Legacy cache stubs ────────────────────────────────────────────────────────
 def _cache_get(key):
     return _l1_meta.get(f"legacy:{key}")
 
@@ -102,14 +99,14 @@ def _cache_set(key, value):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# /api/songs  — [FIX] Saavn-first, iTunes optional
+# /api/songs — iTunes PRIMARY (fast), Saavn resolve HATA DIYA
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/songs')
 @limiter.limit("60 per minute")
 def get_songs():
-    q          = request.args.get('q', 'top bollywood songs').strip()
-    era        = request.args.get('era', '').strip()
-    is_90s     = (era == '90s') or any(t in q.lower() for t in NINETIES_TRIGGERS)
+    q           = request.args.get('q', 'top bollywood songs').strip()
+    era         = request.args.get('era', '').strip()
+    is_90s      = (era == '90s') or any(t in q.lower() for t in NINETIES_TRIGGERS)
     search_term = random.choice(NINETIES_SEEDS) if is_90s else q
 
     cache_key = f"songs:{search_term.lower()}"
@@ -118,95 +115,58 @@ def get_songs():
         _executor_bg.submit(_auto_prefetch_search_results, cached)
         return jsonify({'results': cached, '_cached': True})
 
-    itunes_results = []
-    saavn_results  = []
+    results = []
 
-    def fetch_itunes():
-        nonlocal itunes_results
-        try:
-            # [FIX-TIMEOUT-1] iTunes timeout 25s → 6s
-            r = _http_session.get('https://itunes.apple.com/search',
-                             params={'term': search_term, 'media': 'music', 'entity': 'song',
-                                     'limit': 50, 'country': 'IN'}, timeout=6)
-            r.raise_for_status()
-            results = r.json().get('results', [])
-            if is_90s:
-                filtered = [s for s in results if s.get('trackName') and
-                            1990 <= _safe_year(s.get('releaseDate')) <= 1999]
-                if len(filtered) < 5:
-                    filtered = [s for s in results if s.get('trackName')]
-                random.shuffle(filtered)
-                candidates = filtered[:30]
-            else:
-                candidates = [s for s in results if s.get('trackName')][:30]
+    # ── iTunes se seedha results lo — no Saavn resolve ───────────────────────
+    try:
+        r = _http_session.get(
+            'https://itunes.apple.com/search',
+            params={'term': search_term, 'media': 'music', 'entity': 'song',
+                    'limit': 50, 'country': 'IN'},
+            timeout=8
+        )
+        r.raise_for_status()
+        raw = r.json().get('results', [])
 
-            resolve_futures = {
-                _executor_bg.submit(_resolve_itunes_to_saavn, s): s
-                for s in candidates
-            }
-            resolved = []
-            try:
-                # [FIX-TIMEOUT-2] resolve timeout 10s → 5s
-                for future in as_completed(resolve_futures, timeout=5):
-                    try:
-                        res = future.result()
-                        if res: resolved.append(res)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            itunes_results = resolved[:30]
-        except Exception:
-            pass
+        if is_90s:
+            filtered = [s for s in raw if s.get('trackName') and
+                        1990 <= _safe_year(s.get('releaseDate')) <= 1999]
+            if len(filtered) < 5:
+                filtered = [s for s in raw if s.get('trackName')]
+            random.shuffle(filtered)
+            candidates = filtered[:30]
+        else:
+            candidates = [s for s in raw if s.get('trackName')][:30]
 
-    def fetch_saavn():
-        nonlocal saavn_results
+        for s in candidates:
+            # artwork upgrade karo
+            art = s.get('artworkUrl100', '')
+            if art:
+                art = re.sub(r'\b\d+x\d+bb\b', '600x600bb', art)
+                art = re.sub(r'\b\d+x\d+\b', '600x600', art)
+                s['artworkUrl100'] = art
+            # previewUrl → /api/play route pe bhejo (title+artist se)
+            title  = s.get('trackName', '')
+            artist = s.get('artistName', '')
+            s['previewUrl'] = f"/api/play?title={quote(title, safe='')}&artist={quote(artist, safe='')}"
+            results.append(s)
+
+    except Exception as e:
+        log.warning(f'[Songs] iTunes failed: {e}')
+
+    # ── iTunes fail — Saavn direct fallback ──────────────────────────────────
+    if not results:
         try:
             raw = _fetch_saavn_search_parallel(search_term)
             if raw:
-                normalized = _normalize_saavn_songs(raw, query=search_term)
-                if is_90s:
-                    filtered   = [s for s in normalized if 1990 <= _safe_year(s.get('releaseDate')) <= 1999]
-                    normalized = filtered if len(filtered) >= 5 else normalized
-                    random.shuffle(normalized)
-                saavn_results = normalized[:30]
+                results = _normalize_saavn_songs(raw, query=search_term)[:30]
         except Exception:
             pass
 
-    # [FIX-SAAVN-FIRST] Saavn pehle start karo, iTunes baad mein
-    t2 = threading.Thread(target=fetch_saavn)
-    t1 = threading.Thread(target=fetch_itunes)
-    t2.start()
-    t1.start()
-
-    # [FIX-SAAVN-FIRST] Saavn ko 12s wait karo
-    t2.join(timeout=12)
-
-    # [FIX-SAAVN-FIRST] Agar Saavn ne results de diye — iTunes sirf 2s aur wait karo
-    if saavn_results:
-        t1.join(timeout=2)
-    else:
-        # Saavn fail — iTunes ko 8s aur do
-        t1.join(timeout=8)
-
-    merged = list(itunes_results)
-    for s in saavn_results:
-        if not any(is_likely_duplicate(s, e) for e in merged):
-            merged.append(s)
-
-    # [FIX-RENDER] Dono fail — direct Saavn fallback
-    if not merged:
-        try:
-            raw = _fetch_saavn_search_parallel(search_term)
-            if raw:
-                merged = _normalize_saavn_songs(raw, query=search_term)[:30]
-        except Exception:
-            pass
-
-    if merged:
-        _l1_meta.set(cache_key, merged)
-        _executor_bg.submit(_auto_prefetch_search_results, merged)
-        return jsonify({'results': merged})
+    if results:
+        _l1_meta.set(cache_key, results)
+        _executor_bg.submit(_auto_prefetch_search_results, results)
+        return jsonify({'results': results})
 
     return jsonify({'results': [], 'error': 'No results found'})
 
@@ -235,7 +195,6 @@ def get_90s_songs():
         return jsonify({'results': result, 'seed': seed})
 
     try:
-        # [FIX-TIMEOUT-3] iTunes timeout 25s → 6s
         r = _http_session.get('https://itunes.apple.com/search',
                          params={'term': seed, 'media': 'music', 'entity': 'song',
                                  'limit': 50, 'country': 'IN'}, timeout=6)
@@ -245,22 +204,7 @@ def get_90s_songs():
                     1990 <= _safe_year(s.get('releaseDate')) <= 1999]
         if len(filtered) < 5: filtered = [s for s in results if s.get('trackName')]
         random.shuffle(filtered)
-        candidates = filtered[:30]
-
-        resolve_futures = {
-            _executor_bg.submit(_resolve_itunes_to_saavn, s): s for s in candidates
-        }
-        resolved = []
-        try:
-            # [FIX-TIMEOUT-4] resolve timeout 10s → 5s
-            for future in as_completed(resolve_futures, timeout=5):
-                try:
-                    res = future.result()
-                    if res: resolved.append(res)
-                except Exception: pass
-        except Exception: pass
-
-        result = resolved[:30]
+        result = filtered[:30]
         _l1_meta.set(cache_key, result)
         _executor_bg.submit(_auto_prefetch_search_results, result)
         return jsonify({'results': result, 'seed': seed})
@@ -291,17 +235,14 @@ def get_saavn_song():
         _ct = entry.get('title', '')
         if not _user_wants_ver:
             if (_is_remix_or_cover(_ct) or _is_live_version(_ct) or _is_slowed_reverb(_ct)):
-                log.info(f"[Cache:/api/saavn] VERSION REJECTED: '{_ct}' for query='{q}'")
                 return None
             if _ct and not dna_compatible(q, _ct):
-                log.info(f"[Cache:/api/saavn] DNA REJECTED: '{_ct}' for query='{q}'")
                 return None
         return entry
 
     if not low_quality:
         l1_hit = _saavn_cache_valid(_l1_saavn.get(_ck))
         if l1_hit:
-            log.info(f"[Cache:L1] HIT saavn: '{q}'")
             _best_art = _get_artwork(q, artist) or l1_hit.get('image', '')
             if _best_art: l1_hit = dict(l1_hit); l1_hit['image'] = _best_art
             return jsonify({'success': True, 'token': token, **l1_hit})
@@ -314,7 +255,6 @@ def get_saavn_song():
             _l2_raw = _l2_fut.result(timeout=0.20)
             _cached = _saavn_cache_valid(_l2_raw)
             if _cached:
-                log.info(f"[Cache:L2] HIT saavn: '{q}'")
                 _best_art = _get_artwork(q, artist) or _cached.get('image', '')
                 if _best_art: _cached = dict(_cached); _cached['image'] = _best_art
                 _l1_saavn.set(_ck, _cached)
@@ -401,9 +341,9 @@ def resolve_song():
             })
 
     for fetcher, src_name in [
-        (lambda: fetch_from_ytmusic(q, artist),            'ytmusic'),
-        (lambda: fetch_from_ytdlp(q, artist),              'youtube'),
-        (lambda: fetch_from_soundcloud(q, artist),         'soundcloud'),
+        (lambda: fetch_from_ytmusic(q, artist),               'ytmusic'),
+        (lambda: fetch_from_ytdlp(q, artist),                 'youtube'),
+        (lambda: fetch_from_soundcloud(q, artist),            'soundcloud'),
         (lambda: fetch_from_piped(q, title=q, artist=artist), 'piped'),
         (lambda: fetch_from_invidious(q, title=q, artist=artist), 'invidious'),
     ]:
@@ -446,9 +386,9 @@ def stream_audio():
         }
         range_header = request.headers.get('Range')
         if range_header: req_headers['Range'] = range_header
-        upstream     = requests.get(url, headers=req_headers, stream=True,
-                                    timeout=(10, None), allow_redirects=True)
-        excluded     = {'content-encoding', 'transfer-encoding', 'connection'}
+        upstream = requests.get(url, headers=req_headers, stream=True,
+                                timeout=(10, None), allow_redirects=True)
+        excluded = {'content-encoding', 'transfer-encoding', 'connection'}
         resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in excluded}
         resp_headers.update({
             'Access-Control-Allow-Origin': '*',
@@ -620,7 +560,7 @@ def health_status():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# AUTH — Google Login
+# AUTH
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/auth/google', methods=['POST'])
 @limiter.limit("20 per minute")
@@ -628,21 +568,16 @@ def handle_google_auth():
     data       = request.get_json() or {}
     credential = data.get('credential', '').strip()
     if not credential: return jsonify({'error': 'Missing credential'}), 400
-
     profile = _verify_google_jwt(credential)
     if not profile: return jsonify({'error': 'Invalid credential'}), 401
-
     sub = profile.get('sub', '').strip()
     if not sub: return jsonify({'error': 'Missing sub'}), 400
-
     sb_upsert('users', {
         'google_sub': sub,
         'name':       profile.get('name', ''),
         'email':      profile.get('email', ''),
         'picture':    profile.get('picture', ''),
     }, on_conflict='google_sub')
-
-    log.info(f"[Auth] User saved: {profile.get('email', '')} | pic: {bool(profile.get('picture'))}")
     return jsonify({
         'success': True, 'sub': sub,
         'name':    profile.get('name', ''),
@@ -652,14 +587,13 @@ def handle_google_auth():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SYNC — Playback State
+# SYNC
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/sync/state', methods=['POST'])
 @limiter.limit("60 per minute")
 def save_playback_state():
     sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
     if not sub: return jsonify({'error': 'Unauthorized'}), 401
-
     data    = request.get_json() or {}
     song_id = (data.get('songId') or '').strip()
     try: progress = max(0.0, min(float(data.get('progress', 0)), 3600.0))
@@ -667,7 +601,6 @@ def save_playback_state():
     device = data.get('device', 'mobile')
     if device not in ('mobile', 'tv'): device = 'mobile'
     if not song_id: return jsonify({'status': 'ignored'}), 200
-
     raw_art_url = str(data.get('artUrl', '') or '').strip()
     _ART_ALLOWED = (
         'saavncdn.com', 'cf.saavncdn.com', 'c.saavncdn.com',
@@ -683,18 +616,13 @@ def save_playback_state():
             _art_domain = urlparse(raw_art_url).netloc.lower().split(':')[0]
             if any(_art_domain == d or _art_domain.endswith('.' + d) for d in _ART_ALLOWED):
                 art_url = raw_art_url
-        except Exception:
-            pass
-
+        except Exception: pass
     sb_upsert('playback_state', {
-        'google_sub': sub,
-        'song_id':    song_id[:100],
+        'google_sub': sub, 'song_id': song_id[:100],
         'song_title': str(data.get('songTitle', '') or '')[:200],
         'artist':     str(data.get('artist', '') or '')[:100],
-        'art_url':    art_url,
-        'progress':   progress,
-        'device':     device,
-        'updated_at': datetime.utcnow().isoformat(),
+        'art_url':    art_url, 'progress': progress,
+        'device':     device, 'updated_at': datetime.utcnow().isoformat(),
     }, on_conflict='google_sub')
     return jsonify({'status': 'ok'})
 
@@ -703,19 +631,14 @@ def save_playback_state():
 def get_playback_state():
     sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
     if not sub: return jsonify({'error': 'Unauthorized'}), 401
-
     rows = sb_select('playback_state', {'google_sub': sub})
     if rows:
         r = rows[0]
         return jsonify({
-            'success':   True,
-            'songId':    r.get('song_id'),
-            'songTitle': r.get('song_title'),
-            'artist':    r.get('artist'),
-            'artUrl':    r.get('art_url'),
-            'progress':  r.get('progress'),
-            'device':    r.get('device'),
-            'updatedAt': r.get('updated_at'),
+            'success': True, 'songId': r.get('song_id'),
+            'songTitle': r.get('song_title'), 'artist': r.get('artist'),
+            'artUrl': r.get('art_url'), 'progress': r.get('progress'),
+            'device': r.get('device'), 'updatedAt': r.get('updated_at'),
         })
     return jsonify({'success': False})
 
@@ -730,12 +653,9 @@ def generate_tv_code():
     session_id = data.get('sessionId') or secrets.token_hex(8)
     code       = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
     expiry     = (datetime.utcnow() + timedelta(minutes=5)).isoformat()
-
     sb_delete('tv_pairing', {'tv_session_id': session_id})
     sb_upsert('tv_pairing', {
-        'pairing_code':  code,
-        'tv_session_id': session_id,
-        'expires_at':    expiry,
+        'pairing_code': code, 'tv_session_id': session_id, 'expires_at': expiry,
     }, on_conflict='pairing_code')
     return jsonify({'code': code, 'sessionId': session_id, 'expiresIn': 300})
 
@@ -745,16 +665,13 @@ def poll_tv_pairing():
     code    = request.args.get('code', '').strip().upper()
     now_str = datetime.utcnow().isoformat()
     if not code: return jsonify({'status': 'pending'}), 400
-
     url = (f"{SUPABASE_URL}/rest/v1/tv_pairing"
            f"?pairing_code=eq.{quote(code, safe='')}"
            f"&expires_at=gt.{quote(now_str, safe='')}")
     try:
         r    = requests.get(url, headers=_sb_headers(), timeout=10)
         rows = r.json() if r.status_code == 200 else []
-    except Exception:
-        rows = []
-
+    except Exception: rows = []
     if not rows: return jsonify({'status': 'expired'})
     row = rows[0]
     if row.get('google_sub'):
@@ -763,10 +680,8 @@ def poll_tv_pairing():
         if user_rows:
             user = user_rows[0]
             return jsonify({'status': 'authorized', 'user': {
-                'sub':     user['google_sub'],
-                'name':    user['name'],
-                'email':   user['email'],
-                'picture': user['picture'],
+                'sub': user['google_sub'], 'name': user['name'],
+                'email': user['email'], 'picture': user['picture'],
             }})
     return jsonify({'status': 'pending'})
 
@@ -775,21 +690,17 @@ def poll_tv_pairing():
 def mobile_verify_tv():
     sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
     if not sub: return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-
     data    = request.get_json() or {}
     code    = data.get('code', '').strip().upper()
     now_str = datetime.utcnow().isoformat()
     if not code: return jsonify({'success': False, 'error': 'Missing code'}), 400
-
     url = (f"{SUPABASE_URL}/rest/v1/tv_pairing"
            f"?pairing_code=eq.{quote(code, safe='')}"
            f"&expires_at=gt.{quote(now_str, safe='')}")
     try:
         r    = requests.get(url, headers=_sb_headers(), timeout=10)
         rows = r.json() if r.status_code == 200 else []
-    except Exception:
-        rows = []
-
+    except Exception: rows = []
     if not rows: return jsonify({'success': False, 'error': 'Invalid or expired code'}), 404
     sb_update('tv_pairing', {'google_sub': sub}, {'pairing_code': code})
     return jsonify({'success': True})
@@ -803,17 +714,14 @@ def mobile_verify_tv():
 def verify_ghost_pin():
     sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
     if not sub: return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-
     data = request.get_json() or {}
     pin  = data.get('pin', '').strip()
     if not pin: return jsonify({'success': False}), 400
-
     h_input = hashlib.pbkdf2_hmac(
         'sha256', pin.encode('utf-8'), sub.encode('utf-8'), iterations=300_000
     ).hex()
     rows = sb_select('users', {'google_sub': sub}, columns='ghost_pin_hash')
     if not rows: return jsonify({'success': False}), 404
-
     stored_hash = rows[0].get('ghost_pin_hash')
     if not stored_hash:
         sb_update('users', {'ghost_pin_hash': h_input}, {'google_sub': sub})
@@ -885,7 +793,7 @@ def artwork_proxy():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# /api/suggest  — [FIX-TIMEOUT-5] timeout 8s → 4s
+# /api/suggest
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/suggest')
 @limiter.limit("120 per minute")
@@ -893,18 +801,16 @@ def get_suggestions():
     q = request.args.get('q', '').strip()[:100]
     if not q or len(q) < 2:
         return jsonify({'suggestions': []})
-
     cache_key = f"suggest:{q.lower()}"
     cached = _l1_meta.get(cache_key)
     if cached is not None:
         return jsonify({'suggestions': cached})
-
     try:
         r = _http_session.get(
             'https://itunes.apple.com/search',
             params={'term': q, 'media': 'music', 'entity': 'song',
                     'limit': 8, 'country': 'IN'},
-            timeout=4  # [FIX] 8 → 4
+            timeout=4
         )
         r.raise_for_status()
         results = r.json().get('results', [])
@@ -938,11 +844,11 @@ def health():
         'sources': ['saavn', 'jiosavan', 'ytmusic', 'piped', 'invidious', 'soundcloud', 'youtube'],
         'auth':    'google-oauth',
         'db':      'supabase',
-        'version': '3.2',
+        'version': '3.3',
     })
 
 
-# ── [FIX-RENDER-2] Startup warmup ────────────────────────────────────────────
+# ── Startup warmup ────────────────────────────────────────────────────────────
 def _startup_warmup():
     try:
         _http_session.get(
