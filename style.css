@@ -4610,3 +4610,17 @@ button.add-playlist-btn {
   width: 20px !important;
   height: 20px !important;
 }
+#mini-player.show .mini-art {
+  animation: mini-spin 12s linear infinite;
+  animation-play-state: paused;
+}
+#mini-player.show.playing .mini-art {
+  animation-play-state: running;
+}
+@keyframes mini-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.mini-progress-bar {
+  box-shadow: 0 0 6px rgba(184,150,64,0.5);
+}
