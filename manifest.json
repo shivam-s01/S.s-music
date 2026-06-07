@@ -5,18 +5,23 @@
   "description": "Stream millions of songs — powered by JioSaavn",
   "start_url": "https://aurum-stream.sharmashivam9109.workers.dev/?source=pwa",
   "scope": "https://aurum-stream.sharmashivam9109.workers.dev/",
+
   "display": "standalone",
-  "display_override": ["fullscreen", "window-controls-overlay", "standalone"],
+  "display_override": ["standalone", "window-controls-overlay"],
+
   "orientation": "portrait-primary",
   "background_color": "#050508",
   "theme_color": "#050508",
   "prefer_related_applications": false,
   "lang": "en-IN",
   "dir": "ltr",
+
   "launch_handler": {
     "client_mode": "focus-existing"
   },
+
   "handle_links": "preferred",
+
   "icons": [
     {
       "src": "/static/icon-192.png",
@@ -43,6 +48,7 @@
       "purpose": "maskable"
     }
   ],
+
   "shortcuts": [
     {
       "name": "Search Songs",
@@ -66,7 +72,9 @@
       "icons": [{ "src": "/static/icon-192.png", "sizes": "192x192" }]
     }
   ],
+
   "categories": ["music", "entertainment", "lifestyle"],
+
   "screenshots": [
     {
       "src": "/static/icon-512.png",
@@ -76,6 +84,7 @@
       "label": "Aurum — Stream & Discover"
     }
   ],
+
   "share_target": {
     "action": "/?share-target",
     "method": "GET",
@@ -85,6 +94,7 @@
       "url": "url"
     }
   },
+
   "file_handlers": [
     {
       "action": "/",
@@ -97,13 +107,16 @@
       }
     }
   ],
+
   "protocol_handlers": [
     {
       "protocol": "web+aurum",
       "url": "/?protocol=%s"
     }
   ],
+
   "related_applications": [],
+
   "edge_side_panel": {
     "preferred_width": 400
   }
