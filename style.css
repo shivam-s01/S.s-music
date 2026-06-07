@@ -4599,3 +4599,14 @@ button.add-playlist-btn {
 #fullscreen-player.open:not(.playing) .fp-seekbar.slider-squiggly::-webkit-slider-runnable-track {
   animation: aurum-breathe 4s ease-in-out infinite !important;
 }
+#mini-save-btn {
+  background: rgba(184,150,64,0.12) !important;
+  border-radius: 50% !important;
+  width: 34px !important;
+  height: 34px !important;
+}
+#mini-save-btn svg {
+  stroke: var(--gold-l) !important;
+  width: 20px !important;
+  height: 20px !important;
+}
