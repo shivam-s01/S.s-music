@@ -220,6 +220,15 @@ def _normalize_saavn_songs(raw_songs, query=''):
     # [FIX-SEARCH-FILTER] Query mein version request hai ya nahi
     _query_wants_ver = _query_requests_version(query) if query else False
 
+    # Extract request artist from query if present (format: "artist title" or "title artist")
+    # Used for soft artist pre-filter on search results
+    _req_artist_hint = ''
+    if query:
+        # If query looks like it has an artist (contains known artist patterns), extract it
+        # But we don't want to be too aggressive here — this is search, not play
+        # So we use a loose threshold: 0.45 (vs 0.55 in fetch_from_mirror)
+        pass  # artist hint extracted per-song below
+
     for song in raw_songs:
         song_id = song.get('id', '').strip()
         if not song_id: continue
@@ -251,11 +260,8 @@ def _normalize_saavn_songs(raw_songs, query=''):
             if has_version_words(title):
                 log.debug(f"[SearchFilter] VERSION WORD blocked: '{title}'")
                 continue
-            # [FIX-HOME-FEED] Generic queries pe DNA check skip karo
-            # "top bollywood songs hits" jaisi 5+ word queries = home feed = generic
-            # Sirf 4 words ya kam = specific song search = DNA check lagao
-            _query_words = len((query or '').split())
-            if query and _query_words <= 4 and not dna_compatible(query, title):
+            # Query se title DNA match — "Bahara" search pe "Badra Bahaar" ya "Bahara X" block
+            if query and not dna_compatible(query, title):
                 log.debug(f"[SearchFilter] DNA MISMATCH blocked: '{title}' for query='{query}'")
                 continue
 
@@ -355,10 +361,19 @@ def _resolve_itunes_to_saavn(itunes_song: dict) -> Optional[dict]:
                     itunes_song['_resolvedTitle']  = best.get('name') or best.get('title', title)
                     itunes_song['_resolvedArtist'] = best.get('primaryArtists') or best.get('primary_artists') or artist
                     itunes_song['_confidence']     = round(best_conf, 3)
-                    saavn_img = pick_image(best)
-                    if saavn_img:
-                        itunes_song['artworkUrl100'] = saavn_img
-                        _store_artwork(title, artist, saavn_img, 1)
+                    # [FIX-ITUNES-ART] iTunes artwork preserve karo — Saavn se REPLACE mat karo
+                    # iTunes 600x600 artwork best quality hai, Saavn ki 150x150 se better
+                    _itunes_art = itunes_song.get('artworkUrl100', '')
+                    if not _itunes_art:
+                        saavn_img = pick_image(best)
+                        if saavn_img:
+                            itunes_song['artworkUrl100'] = saavn_img
+                            _store_artwork(title, artist, saavn_img, 1)
+                    else:
+                        # iTunes art already hai — Saavn art background mein store karo (fallback ke liye)
+                        saavn_img = pick_image(best)
+                        if saavn_img:
+                            _store_artwork(title, artist, _itunes_art, 1)  # iTunes art = priority 1
                     log.info(f"[Resolve] ✓ '{title}' → {saavn_id} conf={best_conf:.2f}")
                     return itunes_song
                 except Exception:
@@ -502,7 +517,6 @@ def _ytm_get_stream_with_duration(video_id):
     except Exception as e:
         log.warning(f'[YTMusic] stream extract error {video_id}: {e}')
         return None, None, 0
-
 def fetch_from_ytmusic(title, artist='', anchor=None):
     """
     anchor: Saavn ground-truth metadata dict — if provided, TVE uses
@@ -531,18 +545,6 @@ def fetch_from_ytmusic(title, artist='', anchor=None):
 
     results = _ytm_search(query, limit=8)
     if not results: results = _ytm_search(clean_title, limit=5)
-    if not results: return None
-
-    # [FIX-CHANNEL-2] YTMusic mein bhi non-music content filter
-    _YTM_BLOCKED_TITLE = {
-        'interview', 'behind the scenes', 'making of', 'reaction',
-        'jukebox', 'all songs', 'nonstop', 'full episode', 'episode',
-        'press conference', 'award show', 'live show',
-    }
-    results = [
-        r for r in results
-        if not any(bw in (r.get('title') or '').lower() for bw in _YTM_BLOCKED_TITLE)
-    ]
     if not results: return None
 
     # ── TVE: build candidate list (duration=0 initially — fixed post-selection) ──
@@ -630,21 +632,20 @@ def fetch_from_ytdlp(title, artist='', anchor=None):
     clean_artist = artist.split(',')[0].split('&')[0].strip() if artist else ''
     clean_title  = re.sub(r'\(.*?\)|\[.*?\]', '', title).strip()
 
-    # [FIX-QUERY-1] "full song"/"audio" keywords removed — SET India/lyric channels attract karte the
-    # ytmsearch priority — YT Music index mein sirf official music hoti hai
     search_queries = []
     if clean_artist:
         search_queries += [
             f"ytmsearch5:{clean_artist} {clean_title}",
-            f"ytmsearch3:{clean_title} {clean_artist}",
-            f"ytsearch5:{clean_artist} {clean_title}",
-            f"ytsearch3:{clean_title}",
+            f"ytsearch5:{clean_artist} {clean_title} full song",
+            f"ytmsearch3:{clean_title}",
+            f"ytsearch3:{clean_title} {clean_artist} audio",
+            f"ytsearch2:{clean_title} song",
         ]
     else:
         search_queries += [
             f"ytmsearch5:{clean_title}",
-            f"ytmsearch3:{clean_title}",
-            f"ytsearch5:{clean_title}",
+            f"ytsearch5:{clean_title} full song audio",
+            f"ytsearch3:{clean_title} song",
         ]
 
     ydl_opts = {
@@ -666,39 +667,7 @@ def fetch_from_ytdlp(title, artist='', anchor=None):
                     if not entries:
                         entries = [e for e in info['entries'] if e]
 
-                    # [FIX-CHANNEL-1] Non-music channels block karo
-                    # SET India, Colors TV, Star Plus jaise channels shows/interviews dete hain
-                    _BLOCKED_CHANNELS = {
-                        'set india', 'sony entertainment', 'colors tv', 'star plus',
-                        'zee tv', 'star gold', 'sony max', 'star utsav',
-                        'mtv india', 'vh1 india', 'b4u music', 'b4u movies',
-                        'shemaroo', 'shemaroo movies', 'shemaroo filmi gaane',
-                        'pen movies', 'ultra bollywood', 'goldmines',
-                        'news18', 'aaj tak', 'ndtv', 'india tv', 'republic',
-                        'abp news', 'zee news', 'tv9', 'sun tv',
-                    }
-                    _BLOCKED_TITLE_WORDS = {
-                        'interview', 'behind the scenes', 'making of', 'bts',
-                        'reaction', 'review', 'watch online', 'full episode',
-                        'episode', 'serial', 'comedy show', 'award show',
-                        'live show', 'concert', 'press conference',
-                        'video jukebox', 'jukebox', 'all songs', 'nonstop',
-                    }
-                    filtered_entries = []
-                    for e in entries:
-                        _uploader = (e.get('uploader') or e.get('channel') or '').lower()
-                        _etitle   = (e.get('title') or '').lower()
-                        # Block known non-music channels
-                        if any(bc in _uploader for bc in _BLOCKED_CHANNELS):
-                            log.debug(f"[yt-dlp] CHANNEL BLOCK: '{e.get('title')}' by '{_uploader}'")
-                            continue
-                        # Block non-music title patterns
-                        if any(bw in _etitle for bw in _BLOCKED_TITLE_WORDS):
-                            log.debug(f"[yt-dlp] TITLE BLOCK: '{e.get('title')}'")
-                            continue
-                        filtered_entries.append(e)
-                    if filtered_entries:
-                        entries = filtered_entries
+                    # Convert entries → TVE candidate dicts
                     tve_candidates = []
                     for entry in entries[:5]:
                         tve_candidates.append({
@@ -768,8 +737,8 @@ def fetch_from_ytdlp(title, artist='', anchor=None):
                     if not thumb:
                         vid_id = best_result.get('id', '')
                         if vid_id:
-                            # Try hqdefault (480x360) — better than mqdefault (320x180)
-                            thumb = f"https://img.youtube.com/vi/{vid_id}/hqdefault.jpg"
+                            # [FIX-THUMB] maxresdefault (1280x720) best quality
+                            thumb = f"https://img.youtube.com/vi/{vid_id}/maxresdefault.jpg"
 
                     if not verify_via_fingerprint(best_fmt['url'], title, artist):
                         log.warning(f"[yt-dlp] Fingerprint FAILED: '{best_result.get('title')}'")
@@ -954,7 +923,7 @@ def _fetch_saavn_by_id(song_id, expected_title='', expected_artist=''):
                             id_result['title'], id_result.get('artist', ''),
                             source='saavn',
                         )
-                        if _id_verify_conf < 0.72:
+                        if _id_verify_conf < 0.80:
                             log.warning(
                                 f"[SaavnID] MISMATCH: expected='{expected_title}' "
                                 f"got='{id_result['title']}' conf={_id_verify_conf:.3f}"
@@ -1034,6 +1003,9 @@ def fetch_from_mirror(mirror, query, min_score=0.4, title='', artist='', languag
                 if dur > 1080: continue
 
                 # ── HARD ARTIST GATE ─────────────────────────────────────────
+                # Agar request mein artist diya hai toh artist match MANDATORY hai.
+                # Title match 100% hone pe bhi wrong artist = reject.
+                # Ye Bhojpuri/Bhakti/Hindi cross-contamination ka primary fix hai.
                 if _conf_artist and song_artist:
                     _art_sim = _best_artist_similarity(_conf_artist, song_artist)
                     if _art_sim < 0.55:
@@ -1096,13 +1068,13 @@ def fetch_saavn_parallel(query, title='', artist='', language=''):
         _lang = language
 
     threshold = dynamic_min_score(query)
-    mirrors   = _best_mirrors(n=6)
+    mirrors   = _best_mirrors(n=6)   # 8→6: top 6 healthy mirrors kaafi hain
     futures   = {_executor.submit(fetch_from_mirror, m, query, threshold, title, artist, _lang): m
                  for m in mirrors}
     all_results = []
-    _EARLY_EXIT_CONF = 0.82
+    _EARLY_EXIT_CONF = 0.82  # 0.88→0.82: zyada wait nahi, pehla good match le lo
     try:
-        for future in as_completed(futures, timeout=2.5):
+        for future in as_completed(futures, timeout=2.5):  # 4s→2.5s
             try:
                 result = future.result()
                 if result:
@@ -1270,7 +1242,7 @@ def fetch_from_invidious(query, title='', artist=''):
                 'url': best_fmt['url'],
                 'quality': f"{bitrate // 1000}kbps" if bitrate > 0 else 'unknown',
                 'title': best.get('title', title), 'artist': best.get('author', artist),
-                'image': f"https://img.youtube.com/vi/{video_id}/mqdefault.jpg",
+                'image': f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
                 'source': 'invidious', '_confidence': round(best_conf, 3),
             }
             cached_art = _get_artwork(title, artist)
@@ -1317,7 +1289,7 @@ def fetch_from_jiosavan(title, artist='', language=''):
             if not dna_compatible(title, song_title):
                 log.debug(f"[JioSavan] DNA MISMATCH: '{song_title}'"); continue
 
-            # ── HARD ARTIST GATE ───────────────────────────────────────────────
+            # ── HARD ARTIST GATE (same logic as fetch_from_mirror) ───────────
             if artist and song_artist:
                 _art_sim = _best_artist_similarity(artist, song_artist)
                 if _art_sim < 0.55:
@@ -1410,20 +1382,15 @@ def play_song():
                 _is_slowed_reverb(_ct) or
                 _is_live_version(_ct)):
                 return None
-            try:
-                from match_engine import hard_reject_by_version
-                _hr, _hr_reason = hard_reject_by_version(_ct, _ct, query_has_version=False)
-                if _hr:
-                    log.info(f"[Cache] HARD REJECT version in cache: '{_ct}' — {_hr_reason}")
-                    return None
-            except ImportError:
-                pass
 
         if title and _ct:
             if not dna_compatible(title, _ct):
                 log.info(f"[Cache] DNA MISMATCH — invalidating cached='{_ct}'")
                 return None
 
+        # [FIX-CACHE-ARTIST] Artist mismatch fast reject — same title different artist
+        # compute_confidence internally check karta hai lekin duration=0 force se
+        # false pass ho sakta tha. Yahan explicit fast reject.
         _cached_artist = entry.get('artist', '')
         if artist and _cached_artist:
             from core import _seq_ratio, _normalize_artist, normalize as _cn
@@ -1456,6 +1423,8 @@ def play_song():
     _verified_hit = None
 
     # ── TVE Match Cache Fast-Path ──────────────────────────────────────────────
+    # If this Saavn ID was already verified against a YT/SC source,
+    # skip the full search + validation pipeline entirely.
     if song_id and not audio_url:
         _tve_hit = tve_match_get_verified(song_id, req_title=title, req_artist=artist)
         if _tve_hit and _tve_hit.get('url'):
@@ -1469,6 +1438,7 @@ def play_song():
                 if not artist: artist = _tve_entry.get('artist', '')
                 log.info(f"[TVECache] ✓ Fast-path hit: id={song_id} src={source}")
             else:
+                # URL likely expired — evict and re-resolve
                 tve_match_invalidate(song_id)
                 log.debug(f"[TVECache] Evicted expired entry for id={song_id}")
 
@@ -1519,6 +1489,9 @@ def play_song():
         if _indexed_id and _indexed_id != song_id:
             _idx_result = _fetch_saavn_by_id(_indexed_id, expected_title=title, expected_artist=artist)
             if _idx_result and _idx_result.get('url'):
+                # [FIX-INDEX-STALE] Song index mein purana ID ho sakta hai same-title different-artist ka
+                # _fetch_saavn_by_id ke andar 0.65 conf check hoti hai lekin
+                # yahan stricter 0.75 + explicit confirm — stale index entry block karo
                 _ok, _idx_conf, _idx_reason = _is_confirmed_match(
                     title, artist,
                     _idx_result.get('title', ''), _idx_result.get('artist', ''),
@@ -1563,6 +1536,7 @@ def play_song():
                 if not title:  title  = _r_title
                 if not artist: artist = _r_artist
                 log.info(f"[Play] ✓ Saavn ID={song_id} conf={confidence:.2f} q={quality}")
+                # Store Saavn anchor for YT/SC fallback reference
                 if result: store_saavn_anchor(song_id, {**result, 'duration_s': result.get('duration', 0)})
 
     if not audio_url and title:
@@ -1577,9 +1551,11 @@ def play_song():
                 source     = 'saavn'
                 confidence = float(result.get('_confidence', result.get('score', 0.5)))
                 log.info(f"[Play] ✓ Saavn search '{result['title']}' q={quality}")
+                # Store anchor from search result
                 if result and song_id:
                     store_saavn_anchor(song_id, {**result, 'duration_s': int(result.get('duration', 0))})
                 elif result:
+                    # No song_id — store by title+artist key
                     store_saavn_anchor('title:' + normalize(title), {**result, 'duration_s': 0})
                 break
 
@@ -1592,7 +1568,7 @@ def play_song():
         }
         _phase1_candidates = []
         try:
-            for future in as_completed(_phase1_futures, timeout=1.5):
+            for future in as_completed(_phase1_futures, timeout=1.5):  # 3.0→1.5s
                 try:
                     res = future.result()
                     if res and res.get('url'):
@@ -1613,6 +1589,7 @@ def play_song():
             if not artist: artist = _p1_res.get('artist', artist)
 
         if not audio_url:
+            # Retrieve Saavn anchor for anchor-based TVE validation
             _fb_anchor = get_saavn_anchor(song_id=song_id, title=title, artist=artist)
             if _fb_anchor:
                 log.debug(f"[Play] Anchor found: dur={_fb_anchor.get('duration_s')}s "
@@ -1628,10 +1605,10 @@ def play_song():
             }
 
             _fb_candidates = []; _arrival_idx = 0
-            _deadline      = time.time() + 1.8
+            _deadline      = time.time() + 1.8  # 2.5→1.8s
 
             try:
-                for future in as_completed(_all_fb_futures, timeout=1.8):
+                for future in as_completed(_all_fb_futures, timeout=1.8):  # 2.5→1.8s
                     try:
                         res = future.result()
                         if res and res.get('url'):
@@ -1771,33 +1748,47 @@ def play_song():
                 url = re.sub(r'\b(50|150|250)x(50|150|250)\b', '500x500', url)
             elif re.search(r'\b(50|150|250)x(50|150|250)\b', url):
                 url = re.sub(r'\b(50|150|250)x(50|150|250)\b', '500x500', url)
+            # [FIX-THUMB] YT thumbnails maxresdefault upgrade
             if 'ytimg.com' in url:
-                url = re.sub(r'/(default|mqdefault|sddefault)\.jpg', '/hqdefault.jpg', url)
+                url = re.sub(r'/(default|mqdefault|sddefault|hqdefault)\.jpg', '/maxresdefault.jpg', url)
             if 'yt3.ggpht.com' in url or 'lh3.googleusercontent.com' in url:
                 url = re.sub(r'=w\d+-h\d+(-[a-z]+)?', '=w500-h500', url)
                 url = re.sub(r'=s\d+', '=s500', url)
+            # [FIX-ITUNES-500] iTunes mzstatic 600x600 ensure
+            if 'mzstatic.com' in url:
+                url = re.sub(r'/\d+x\d+bb', '/600x600bb', url)
+                url = re.sub(r'\b100x100\b', '600x600', url)
             return url
 
         candidates = []
 
+        # [FIX-ITUNES-PRIORITY] iTunes (mzstatic.com) = priority 1 hamesha
+        # Saavn se pehle check karo — iTunes 600x600 best quality hai
+        if title:
+            _art = _get_artwork(title, artist)
+            if _art:
+                _pri = 1 if 'mzstatic.com' in _art else 2
+                candidates.append((_pri, _ensure_500(_art)))
+
         if song_id:
             _id_hit = _l1_saavn.get(f"saavn_id:{song_id}")
             if _id_hit and _id_hit.get('image'):
-                candidates.append((1, _ensure_500(_id_hit['image'])))
-
-        if title:
-            _art = _get_artwork(title, artist)
-            if _art: candidates.append((2, _ensure_500(_art)))
+                _img = _id_hit['image']
+                _pri = 1 if 'mzstatic.com' in _img else 2
+                candidates.append((_pri, _ensure_500(_img)))
 
         if result_image and result_image.startswith('http'):
-            candidates.append((3, _ensure_500(result_image)))
+            _pri = 1 if 'mzstatic.com' in result_image else 3
+            candidates.append((_pri, _ensure_500(result_image)))
 
         if title:
             for _src_key in [f"saavn_q:{normalize(title)}", _play_ck, _play_ck_id, _play_ck_title]:
                 if not _src_key: continue
                 _cache_hit = _l1_saavn.get(_src_key)
                 if _cache_hit and _cache_hit.get('image'):
-                    candidates.append((4, _ensure_500(_cache_hit['image'])))
+                    _img = _cache_hit['image']
+                    _pri = 1 if 'mzstatic.com' in _img else 4
+                    candidates.append((_pri, _ensure_500(_img)))
                     break
 
         if candidates:
@@ -1844,6 +1835,8 @@ def play_song():
     _store_verified(song_id, title, artist, _cache_payload, confidence)
 
     # ── TVE Match Cache Write ──────────────────────────────────────────────────
+    # If the final source is a YT/SC fallback (not native Saavn), store the
+    # Saavn ID → result mapping so future plays skip the TVE pipeline entirely.
     if song_id and source not in ('saavn', 'jiosavan') and confidence >= 0.80:
         tve_match_set(song_id, _cache_payload,
                       req_title=request.args.get('title', '').strip(),
@@ -1945,6 +1938,9 @@ def prefetch_songs():
             for _qv in build_query_variants(_title, _artist, '')[:2]:
                 _res = fetch_saavn_parallel(_qv, title=_title, artist=_artist, language=_lang)
                 if _res and _res.get('url'):
+                    # [FIX-PREFETCH-CACHE] Validate before cache write — prevent cache pollution
+                    # fetch_saavn_parallel internal confidence check hoti hai lekin
+                    # yahan explicit DNA + confirm = wrong song cache mein nahi jayega
                     _res_title  = _res.get('title', '')
                     _res_artist = _res.get('artist', '')
                     if _title and _res_title:
@@ -1993,7 +1989,10 @@ def _fetch_itunes_artwork(query, artist='', limit=1):
         for item in results:
             art = item.get('artworkUrl100', '')
             if art:
-                return re.sub(r'\b\d+x\d+\b', '600x600', art)
+                # [FIX-ITUNES-MB] 100x100 → 600x600bb — best iTunes quality
+                art = re.sub(r'\b\d+x\d+bb\b', '600x600bb', art)
+                art = re.sub(r'\b\d+x\d+\b', '600x600', art)
+                return art
     except Exception:
         pass
     return ''
@@ -2065,6 +2064,8 @@ def _do_prefetch_song(song):
             for _qv in build_query_variants(_title, _artist, '')[:2]:
                 _res = fetch_saavn_parallel(_qv, title=_title, artist=_artist, language=_lang)
                 if _res and _res.get('url'):
+                    # [FIX-PREFETCH-CACHE] Same fix as inline _do_prefetch
+                    # Cache pollution prevent karo — wrong song cache mein nahi jayega
                     _res_title  = _res.get('title', '')
                     _res_artist = _res.get('artist', '')
                     if _title and _res_title:
