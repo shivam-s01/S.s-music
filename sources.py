@@ -120,13 +120,11 @@ def _is_source_alive(url: str) -> bool:
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # SAAVN MIRRORS
+# [FIX] Vercel + Railway mirrors PEHLE — ye always-on hain, spin down nahi hote
+# Render mirrors BAAD mein — ye free tier pe so jaate hain (50s delay)
 # ═══════════════════════════════════════════════════════════════════════════════
 _BASE_MIRRORS = [
-    'https://jiosaavn-op.onrender.com',
-    'https://jio-saavn-api.onrender.com',
-    'https://my-jiosaavn-api.onrender.com',
-    'https://saavn-backend.onrender.com',
-    'https://jiosaavn-api-node.onrender.com',
+    # ── ALWAYS-ON (Vercel + Railway) — pehle try karo ────────────────────────
     'https://saavn.dev',
     'https://jiosaavn-api-privatecvc2.vercel.app',
     'https://saavn-api-sigma.vercel.app',
@@ -147,6 +145,12 @@ _BASE_MIRRORS = [
     'https://saavn-api-seven.vercel.app',
     'https://jiosaavn-api-seven.vercel.app',
     'https://saavn-api-two.vercel.app',
+    # ── RENDER (free tier — spin down hote hain, last resort) ────────────────
+    'https://jiosaavn-op.onrender.com',
+    'https://jio-saavn-api.onrender.com',
+    'https://my-jiosaavn-api.onrender.com',
+    'https://saavn-backend.onrender.com',
+    'https://jiosaavn-api-node.onrender.com',
 ]
 
 SAAVN_MIRRORS   = list(_BASE_MIRRORS)
@@ -159,7 +163,6 @@ MIRROR_FAIL_COOLDOWN = 30
 
 def _mirror_ok(mirror):
     if not _health.is_alive(mirror): return False
-    # BUG-3 FIX: use _mirror_lock for thread-safe compound read
     with _mirror_lock:
         fails     = _mirror_fail_count.get(mirror, 0)
         last_fail = _mirror_fail_time.get(mirror, 0)
@@ -171,7 +174,6 @@ def _mirror_ok(mirror):
     return False
 
 def _mirror_failed(mirror):
-    # BUG-3 FIX: atomic read+write under lock
     with _mirror_lock:
         _mirror_fail_count[mirror] = _mirror_fail_count.get(mirror, 0) + 1
         _mirror_fail_time[mirror]  = time.time()
