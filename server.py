@@ -9,11 +9,38 @@ import secrets
 import string
 import logging
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from concurrent.futures import as_completed
 from flask import request, jsonify, send_file, Response, stream_with_context
 from urllib.parse import urlparse, quote
 from datetime import datetime, timedelta
 from typing import Optional
+
+# ── [FIX-RENDER-1] Persistent session with connection pooling ─────────────────
+# Render pe har request pe naya TCP connection banta tha — DNS + TLS overhead
+# Session reuse karne se same host pe 5-10x faster outbound requests
+_http_session = requests.Session()
+_retry_strategy = Retry(
+    total=3,
+    backoff_factor=0.5,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["GET", "POST"],
+    raise_on_status=False,
+)
+_adapter = HTTPAdapter(
+    max_retries=_retry_strategy,
+    pool_connections=20,
+    pool_maxsize=40,
+    pool_block=False,
+)
+_http_session.mount("https://", _adapter)
+_http_session.mount("http://",  _adapter)
+_http_session.headers.update({
+    'User-Agent': 'Mozilla/5.0 (compatible; Aurum/3.1)',
+    'Accept-Encoding': 'gzip, deflate',
+    'Connection': 'keep-alive',
+})
 from core import (
     app, limiter, log,
     GOOGLE_CLIENT_ID, ADMIN_KEY, SUPABASE_URL, SUPABASE_KEY,
@@ -99,9 +126,9 @@ def get_songs():
     def fetch_itunes():
         nonlocal itunes_results
         try:
-            r = requests.get('https://itunes.apple.com/search',
+            r = _http_session.get('https://itunes.apple.com/search',
                              params={'term': search_term, 'media': 'music', 'entity': 'song',
-                                     'limit': 50, 'country': 'IN'}, timeout=12)
+                                     'limit': 50, 'country': 'IN'}, timeout=25)
             r.raise_for_status()
             results = r.json().get('results', [])
             if is_90s:
@@ -150,13 +177,22 @@ def get_songs():
     t1 = threading.Thread(target=fetch_itunes)
     t2 = threading.Thread(target=fetch_saavn)
     t1.start(); t2.start()
-    t1.join(timeout=15)
-    t2.join(timeout=8)
+    t1.join(timeout=28)
+    t2.join(timeout=20)
 
     merged = list(itunes_results)
     for s in saavn_results:
         if not any(is_likely_duplicate(s, e) for e in merged):
             merged.append(s)
+
+    # [FIX-RENDER] Agar dono fail ho gaye — sirf Saavn se direct fetch karo
+    if not merged:
+        try:
+            raw = _fetch_saavn_search_parallel(search_term)
+            if raw:
+                merged = _normalize_saavn_songs(raw, query=search_term)[:30]
+        except Exception:
+            pass
 
     if merged:
         _l1_meta.set(cache_key, merged)
@@ -191,9 +227,9 @@ def get_90s_songs():
         return jsonify({'results': result, 'seed': seed})
 
     try:
-        r = requests.get('https://itunes.apple.com/search',
+        r = _http_session.get('https://itunes.apple.com/search',
                          params={'term': seed, 'media': 'music', 'entity': 'song',
-                                 'limit': 50, 'country': 'IN'}, timeout=15)
+                                 'limit': 50, 'country': 'IN'}, timeout=25)
         r.raise_for_status()
         results  = r.json().get('results', [])
         filtered = [s for s in results if s.get('trackName') and
@@ -855,11 +891,11 @@ def get_suggestions():
         return jsonify({'suggestions': cached})
 
     try:
-        r = requests.get(
+        r = _http_session.get(
             'https://itunes.apple.com/search',
             params={'term': q, 'media': 'music', 'entity': 'song',
                     'limit': 8, 'country': 'IN'},
-            timeout=4
+            timeout=8
         )
         r.raise_for_status()
         results = r.json().get('results', [])
@@ -896,6 +932,37 @@ def health():
         'db':      'supabase',
         'version': '3.1',
     })
+
+
+# ── [FIX-RENDER-2] Startup warmup — pre-establish connections ─────────────────
+# Render pe gunicorn start hone ke baad pehli request slow hoti thi kyunki
+# TCP connections cold hote hain. Ye warmup background mein connections
+# pre-establish kar leta hai taaki pehli user request fast mile.
+def _startup_warmup():
+    try:
+        # iTunes connection warm karo
+        _http_session.get(
+            'https://itunes.apple.com/search',
+            params={'term': 'arijit singh', 'media': 'music', 'entity': 'song', 'limit': 1},
+            timeout=10
+        )
+        log.info('[Warmup] iTunes connection established')
+    except Exception as e:
+        log.warning(f'[Warmup] iTunes failed: {e}')
+    try:
+        # Saavn mirrors warm karo
+        _fetch_saavn_search_parallel('arijit singh')
+        log.info('[Warmup] Saavn connection established')
+    except Exception as e:
+        log.warning(f'[Warmup] Saavn failed: {e}')
+
+# Gunicorn worker start hone ke 3s baad warmup karo
+# [FIX] __name__ check nahi — preload_app=True hai toh master process mein bhi chalega
+# Isliye environment variable se guard karo
+if os.environ.get('SERVER_SOFTWARE', '').startswith('gunicorn') or __name__ == '__main__':
+    _warmup_timer = threading.Timer(3.0, _startup_warmup)
+    _warmup_timer.daemon = True
+    _warmup_timer.start()
 
 
 if __name__ == '__main__':
