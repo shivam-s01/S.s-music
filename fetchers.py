@@ -220,15 +220,6 @@ def _normalize_saavn_songs(raw_songs, query=''):
     # [FIX-SEARCH-FILTER] Query mein version request hai ya nahi
     _query_wants_ver = _query_requests_version(query) if query else False
 
-    # Extract request artist from query if present (format: "artist title" or "title artist")
-    # Used for soft artist pre-filter on search results
-    _req_artist_hint = ''
-    if query:
-        # If query looks like it has an artist (contains known artist patterns), extract it
-        # But we don't want to be too aggressive here — this is search, not play
-        # So we use a loose threshold: 0.45 (vs 0.55 in fetch_from_mirror)
-        pass  # artist hint extracted per-song below
-
     for song in raw_songs:
         song_id = song.get('id', '').strip()
         if not song_id: continue
@@ -260,8 +251,11 @@ def _normalize_saavn_songs(raw_songs, query=''):
             if has_version_words(title):
                 log.debug(f"[SearchFilter] VERSION WORD blocked: '{title}'")
                 continue
-            # Query se title DNA match — "Bahara" search pe "Badra Bahaar" ya "Bahara X" block
-            if query and not dna_compatible(query, title):
+            # [FIX-HOME-FEED] Generic queries pe DNA check skip karo
+            # "top bollywood songs hits" jaisi 5+ word queries = home feed = generic
+            # Sirf 4 words ya kam = specific song search = DNA check lagao
+            _query_words = len((query or '').split())
+            if query and _query_words <= 4 and not dna_compatible(query, title):
                 log.debug(f"[SearchFilter] DNA MISMATCH blocked: '{title}' for query='{query}'")
                 continue
 
@@ -508,6 +502,7 @@ def _ytm_get_stream_with_duration(video_id):
     except Exception as e:
         log.warning(f'[YTMusic] stream extract error {video_id}: {e}')
         return None, None, 0
+
 def fetch_from_ytmusic(title, artist='', anchor=None):
     """
     anchor: Saavn ground-truth metadata dict — if provided, TVE uses
@@ -1039,9 +1034,6 @@ def fetch_from_mirror(mirror, query, min_score=0.4, title='', artist='', languag
                 if dur > 1080: continue
 
                 # ── HARD ARTIST GATE ─────────────────────────────────────────
-                # Agar request mein artist diya hai toh artist match MANDATORY hai.
-                # Title match 100% hone pe bhi wrong artist = reject.
-                # Ye Bhojpuri/Bhakti/Hindi cross-contamination ka primary fix hai.
                 if _conf_artist and song_artist:
                     _art_sim = _best_artist_similarity(_conf_artist, song_artist)
                     if _art_sim < 0.55:
@@ -1104,13 +1096,13 @@ def fetch_saavn_parallel(query, title='', artist='', language=''):
         _lang = language
 
     threshold = dynamic_min_score(query)
-    mirrors   = _best_mirrors(n=6)   # 8→6: top 6 healthy mirrors kaafi hain
+    mirrors   = _best_mirrors(n=6)
     futures   = {_executor.submit(fetch_from_mirror, m, query, threshold, title, artist, _lang): m
                  for m in mirrors}
     all_results = []
-    _EARLY_EXIT_CONF = 0.82  # 0.88→0.82: zyada wait nahi, pehla good match le lo
+    _EARLY_EXIT_CONF = 0.82
     try:
-        for future in as_completed(futures, timeout=2.5):  # 4s→2.5s
+        for future in as_completed(futures, timeout=2.5):
             try:
                 result = future.result()
                 if result:
@@ -1325,7 +1317,7 @@ def fetch_from_jiosavan(title, artist='', language=''):
             if not dna_compatible(title, song_title):
                 log.debug(f"[JioSavan] DNA MISMATCH: '{song_title}'"); continue
 
-            # ── HARD ARTIST GATE (same logic as fetch_from_mirror) ───────────
+            # ── HARD ARTIST GATE ───────────────────────────────────────────────
             if artist and song_artist:
                 _art_sim = _best_artist_similarity(artist, song_artist)
                 if _art_sim < 0.55:
@@ -1418,8 +1410,6 @@ def play_song():
                 _is_slowed_reverb(_ct) or
                 _is_live_version(_ct)):
                 return None
-            # [FIX-CACHE-REMIX] hard_reject_by_version — brackets ke andar bhi catch hoga
-            # e.g. "Ooh La La (Dhol Mix)" — _is_remix_or_cover miss kar sakta tha
             try:
                 from match_engine import hard_reject_by_version
                 _hr, _hr_reason = hard_reject_by_version(_ct, _ct, query_has_version=False)
@@ -1434,9 +1424,6 @@ def play_song():
                 log.info(f"[Cache] DNA MISMATCH — invalidating cached='{_ct}'")
                 return None
 
-        # [FIX-CACHE-ARTIST] Artist mismatch fast reject — same title different artist
-        # compute_confidence internally check karta hai lekin duration=0 force se
-        # false pass ho sakta tha. Yahan explicit fast reject.
         _cached_artist = entry.get('artist', '')
         if artist and _cached_artist:
             from core import _seq_ratio, _normalize_artist, normalize as _cn
@@ -1469,8 +1456,6 @@ def play_song():
     _verified_hit = None
 
     # ── TVE Match Cache Fast-Path ──────────────────────────────────────────────
-    # If this Saavn ID was already verified against a YT/SC source,
-    # skip the full search + validation pipeline entirely.
     if song_id and not audio_url:
         _tve_hit = tve_match_get_verified(song_id, req_title=title, req_artist=artist)
         if _tve_hit and _tve_hit.get('url'):
@@ -1484,7 +1469,6 @@ def play_song():
                 if not artist: artist = _tve_entry.get('artist', '')
                 log.info(f"[TVECache] ✓ Fast-path hit: id={song_id} src={source}")
             else:
-                # URL likely expired — evict and re-resolve
                 tve_match_invalidate(song_id)
                 log.debug(f"[TVECache] Evicted expired entry for id={song_id}")
 
@@ -1535,9 +1519,6 @@ def play_song():
         if _indexed_id and _indexed_id != song_id:
             _idx_result = _fetch_saavn_by_id(_indexed_id, expected_title=title, expected_artist=artist)
             if _idx_result and _idx_result.get('url'):
-                # [FIX-INDEX-STALE] Song index mein purana ID ho sakta hai same-title different-artist ka
-                # _fetch_saavn_by_id ke andar 0.65 conf check hoti hai lekin
-                # yahan stricter 0.75 + explicit confirm — stale index entry block karo
                 _ok, _idx_conf, _idx_reason = _is_confirmed_match(
                     title, artist,
                     _idx_result.get('title', ''), _idx_result.get('artist', ''),
@@ -1582,7 +1563,6 @@ def play_song():
                 if not title:  title  = _r_title
                 if not artist: artist = _r_artist
                 log.info(f"[Play] ✓ Saavn ID={song_id} conf={confidence:.2f} q={quality}")
-                # Store Saavn anchor for YT/SC fallback reference
                 if result: store_saavn_anchor(song_id, {**result, 'duration_s': result.get('duration', 0)})
 
     if not audio_url and title:
@@ -1597,11 +1577,9 @@ def play_song():
                 source     = 'saavn'
                 confidence = float(result.get('_confidence', result.get('score', 0.5)))
                 log.info(f"[Play] ✓ Saavn search '{result['title']}' q={quality}")
-                # Store anchor from search result
                 if result and song_id:
                     store_saavn_anchor(song_id, {**result, 'duration_s': int(result.get('duration', 0))})
                 elif result:
-                    # No song_id — store by title+artist key
                     store_saavn_anchor('title:' + normalize(title), {**result, 'duration_s': 0})
                 break
 
@@ -1614,7 +1592,7 @@ def play_song():
         }
         _phase1_candidates = []
         try:
-            for future in as_completed(_phase1_futures, timeout=1.5):  # 3.0→1.5s
+            for future in as_completed(_phase1_futures, timeout=1.5):
                 try:
                     res = future.result()
                     if res and res.get('url'):
@@ -1635,7 +1613,6 @@ def play_song():
             if not artist: artist = _p1_res.get('artist', artist)
 
         if not audio_url:
-            # Retrieve Saavn anchor for anchor-based TVE validation
             _fb_anchor = get_saavn_anchor(song_id=song_id, title=title, artist=artist)
             if _fb_anchor:
                 log.debug(f"[Play] Anchor found: dur={_fb_anchor.get('duration_s')}s "
@@ -1651,10 +1628,10 @@ def play_song():
             }
 
             _fb_candidates = []; _arrival_idx = 0
-            _deadline      = time.time() + 1.8  # 2.5→1.8s
+            _deadline      = time.time() + 1.8
 
             try:
-                for future in as_completed(_all_fb_futures, timeout=1.8):  # 2.5→1.8s
+                for future in as_completed(_all_fb_futures, timeout=1.8):
                     try:
                         res = future.result()
                         if res and res.get('url'):
@@ -1789,13 +1766,11 @@ def play_song():
         from match_engine import pick_image as _pick_img
         def _ensure_500(url):
             if not url or not url.startswith('http'): return ''
-            # Saavn/JioCDN — upgrade to 500x500
             if 'saavncdn.com' in url or 'jiocdn.com' in url:
                 url = re.sub(r'-(\d+)x(\d+)\.(jpg|jpeg|webp|png)', r'-500x500.\3', url)
                 url = re.sub(r'\b(50|150|250)x(50|150|250)\b', '500x500', url)
             elif re.search(r'\b(50|150|250)x(50|150|250)\b', url):
                 url = re.sub(r'\b(50|150|250)x(50|150|250)\b', '500x500', url)
-            # YT thumbnails — upgrade to best quality
             if 'ytimg.com' in url:
                 url = re.sub(r'/(default|mqdefault|sddefault)\.jpg', '/hqdefault.jpg', url)
             if 'yt3.ggpht.com' in url or 'lh3.googleusercontent.com' in url:
@@ -1869,8 +1844,6 @@ def play_song():
     _store_verified(song_id, title, artist, _cache_payload, confidence)
 
     # ── TVE Match Cache Write ──────────────────────────────────────────────────
-    # If the final source is a YT/SC fallback (not native Saavn), store the
-    # Saavn ID → result mapping so future plays skip the TVE pipeline entirely.
     if song_id and source not in ('saavn', 'jiosavan') and confidence >= 0.80:
         tve_match_set(song_id, _cache_payload,
                       req_title=request.args.get('title', '').strip(),
@@ -1972,9 +1945,6 @@ def prefetch_songs():
             for _qv in build_query_variants(_title, _artist, '')[:2]:
                 _res = fetch_saavn_parallel(_qv, title=_title, artist=_artist, language=_lang)
                 if _res and _res.get('url'):
-                    # [FIX-PREFETCH-CACHE] Validate before cache write — prevent cache pollution
-                    # fetch_saavn_parallel internal confidence check hoti hai lekin
-                    # yahan explicit DNA + confirm = wrong song cache mein nahi jayega
                     _res_title  = _res.get('title', '')
                     _res_artist = _res.get('artist', '')
                     if _title and _res_title:
@@ -2095,8 +2065,6 @@ def _do_prefetch_song(song):
             for _qv in build_query_variants(_title, _artist, '')[:2]:
                 _res = fetch_saavn_parallel(_qv, title=_title, artist=_artist, language=_lang)
                 if _res and _res.get('url'):
-                    # [FIX-PREFETCH-CACHE] Same fix as inline _do_prefetch
-                    # Cache pollution prevent karo — wrong song cache mein nahi jayega
                     _res_title  = _res.get('title', '')
                     _res_artist = _res.get('artist', '')
                     if _title and _res_title:
