@@ -270,12 +270,23 @@ def _normalize_saavn_songs(raw_songs, query=''):
             raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
         _, quality = pick_best_quality(raw_urls)
         if not quality: continue
+
+        # [FIX-THUMB] Saavn image 500x500 upgrade
+        if image:
+            image = re.sub(r'-(50|150|250)x(50|150|250)\.', '-500x500.', image)
+            image = re.sub(r'\b(50|150|250)x(50|150|250)\b', '500x500', image)
+
+        # [FIX-PREVIEWURL] title+artist bhi bhejo
+        _artist_str = artist if isinstance(artist, str) else (artist[0] if artist else '')
+        _preview = (f"/api/play?id={quote(song_id, safe='')}"
+                    f"&title={quote(title, safe='')}&artist={quote(_artist_str, safe='')}")
+
         normalized.append({
             'trackId':         song_id,
             'trackName':       title,
             'artistName':      artist,
             'artworkUrl100':   image if image else '',
-            'previewUrl':      f"/api/play?id={quote(song_id, safe='')}",
+            'previewUrl':      _preview,
             'trackTimeMillis': dur_ms,
             'releaseDate':     f"{year}-01-01T00:00:00Z",
             '_saavnId':        song_id,
@@ -2015,16 +2026,22 @@ def _is_allowed_domain(domain: str) -> bool:
 _url_refresh_queue = set()
 
 def _auto_prefetch_search_results(results):
-    """Automatically prefetch top songs from search results"""
+    """Automatically prefetch top songs from search results — parallel, top 5"""
     if not results:
         return
     try:
-        for song in results[:3]:
-            song_id = song.get('trackId') or song.get('id') or ''
+        songs_to_prefetch = results[:5]
+        futures = []
+        for song in songs_to_prefetch:
+            song_id    = song.get('trackId') or song.get('id') or ''
             song_title = song.get('trackName') or song.get('title') or ''
             song_artist = song.get('artistName') or song.get('artist') or ''
             if song_id or song_title:
-                _do_prefetch_song({'id': song_id, 'title': song_title, 'artist': song_artist})
+                f = _executor_bg.submit(
+                    _do_prefetch_song,
+                    {'id': song_id, 'title': song_title, 'artist': song_artist}
+                )
+                futures.append(f)
     except Exception as e:
         log.debug(f"[AutoPrefetch] Error: {e}")
 
