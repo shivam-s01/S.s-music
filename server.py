@@ -141,17 +141,23 @@ def get_songs():
             candidates = [s for s in raw if s.get('trackName')][:30]
 
         for s in candidates:
-            # artwork upgrade karo
+            # artwork upgrade karo — 600x600bb best quality
             art = s.get('artworkUrl100', '')
             if art:
                 art = re.sub(r'\b\d+x\d+bb\b', '600x600bb', art)
                 art = re.sub(r'\b\d+x\d+\b', '600x600', art)
                 s['artworkUrl100'] = art
-            # previewUrl → /api/saavn route pe bhejo (title+artist se)
+            # previewUrl → /api/play (direct Saavn ID fetch — fast + accurate)
             title  = s.get('trackName', '')
             artist = s.get('artistName', '')
-            s['_itunesPreview'] = s.get('previewUrl', '')
-            s['previewUrl'] = f"/api/saavn?q={quote(title, safe='')}&artist={quote(artist, safe='')}"
+            track_id = str(s.get('trackId', '')).strip()
+            # _saavnId already set if iTunes was resolved — use it
+            saavn_id = s.get('_saavnId', '')
+            if saavn_id:
+                s['previewUrl'] = f"/api/play?id={quote(saavn_id, safe='')}&title={quote(title, safe='')}&artist={quote(artist, safe='')}"
+            else:
+                # No Saavn ID yet — use title+artist, /api/play will resolve it
+                s['previewUrl'] = f"/api/play?title={quote(title, safe='')}&artist={quote(artist, safe='')}"
             results.append(s)
 
     except Exception as e:
@@ -266,15 +272,25 @@ def get_saavn_song():
             pass
 
     def _best_image(res_img):
+        def _fix_img(url):
+            if not url or not url.startswith('http'): return url or ''
+            import re as _re
+            if 'saavncdn.com' in url or 'jiocdn.com' in url:
+                url = _re.sub(r'-(\d+)x(\d+)\.(jpg|jpeg|webp|png)', r'-500x500.\3', url)
+            if 'mzstatic.com' in url:
+                url = _re.sub(r'/\d+x\d+bb', '/600x600bb', url)
+            if 'ytimg.com' in url:
+                url = _re.sub(r'/(default|mqdefault|sddefault|hqdefault)\.jpg', '/maxresdefault.jpg', url)
+            return url
         art = _get_artwork(q, artist)
-        if art: return art
-        if res_img and res_img.startswith('http'): return res_img
+        if art: return _fix_img(art)
+        if res_img and res_img.startswith('http'): return _fix_img(res_img)
         try:
             _f = _executor_bg.submit(_fetch_itunes_artwork, q, artist)
             _a = _f.result(timeout=1.5)
-            if _a: _store_artwork(q, artist, _a, 2); return _a
+            if _a: _store_artwork(q, artist, _a, 2); return _fix_img(_a)
         except Exception: pass
-        return res_img or ''
+        return _fix_img(res_img) if res_img else ''
 
     for query in build_query_variants(q, artist, fallback):
         result = fetch_saavn_parallel(query, title=q, artist=artist, language=_lang)
@@ -329,7 +345,7 @@ def play_by_id():
     if not song_id:
         return jsonify({'success': False, 'url': None, 'token': token}), 400
 
-    result = _fetch_saavn_by_id(song_id, expected_title=title, expected_artist=artist)
+    result = _fetch_saavn_by_id(song_id, expected_title=title, expected_artist=artist)  # direct fetch
     if result and result.get('url'):
         return jsonify({'success': True, 'token': token, **result})
 
