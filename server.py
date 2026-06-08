@@ -38,6 +38,7 @@ _http_session.headers.update({
     'Accept-Encoding': 'gzip, deflate',
     'Connection': 'keep-alive',
 })
+
 from core import (
     app, limiter, log,
     GOOGLE_CLIENT_ID, ADMIN_KEY, SUPABASE_URL, SUPABASE_KEY,
@@ -55,6 +56,7 @@ from core import (
     _is_remix_or_cover, _is_live_version, _is_slowed_reverb,
     compute_confidence,
 )
+
 from match_engine import (
     normalize, clean_query, build_query_variants,
     _detect_language, _is_devotional_query,
@@ -63,6 +65,7 @@ from match_engine import (
     _safe_year, _pick_low_quality, _ensure_500,
     is_likely_duplicate,
 )
+
 from sources import (
     SAAVN_MIRRORS, PIPED_INSTANCES, INVIDIOUS_INSTANCES,
     _best_mirrors, _health,
@@ -72,6 +75,7 @@ from sources import (
     _refresh_soundcloud_client_id,
     _maybe_reactive_heal,
 )
+
 from fetchers import (
     fetch_saavn_parallel, fetch_from_ytmusic, fetch_from_ytdlp,
     fetch_from_soundcloud, fetch_from_piped, fetch_from_invidious,
@@ -88,31 +92,21 @@ from fetchers import (
 
 def _sb_headers():
     return {
-        'apikey':        SUPABASE_KEY,
+        'apikey': SUPABASE_KEY,
         'Authorization': f'Bearer {SUPABASE_KEY}',
-        'Content-Type':  'application/json',
+        'Content-Type': 'application/json',
     }
 
-def _cache_get(key):
-    return _l1_meta.get(f"legacy:{key}")
-
-def _cache_set(key, value):
-    _l1_meta.set(f"legacy:{key}", value)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# /api/songs — iTunes PRIMARY
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/songs')
 @limiter.limit("60 per minute")
 def get_songs():
-    q           = request.args.get('q', 'top bollywood songs').strip()
-    era         = request.args.get('era', '').strip()
-    is_90s      = (era == '90s') or any(t in q.lower() for t in NINETIES_TRIGGERS)
+    q = request.args.get('q', 'top bollywood songs').strip()
+    era = request.args.get('era', '').strip()
+    is_90s = (era == '90s') or any(t in q.lower() for t in NINETIES_TRIGGERS)
     search_term = random.choice(NINETIES_SEEDS) if is_90s else q
 
     cache_key = f"songs:{search_term.lower()}"
-    cached    = _l1_meta.get(cache_key)
+    cached = _l1_meta.get(cache_key)
     if cached is not None:
         _executor_bg.submit(_auto_prefetch_search_results, cached)
         return jsonify({'results': cached, '_cached': True})
@@ -145,9 +139,8 @@ def get_songs():
                 art = re.sub(r'\b\d+x\d+bb\b', '600x600bb', art)
                 art = re.sub(r'\b\d+x\d+\b', '600x600', art)
                 s['artworkUrl100'] = art
-            title  = s.get('trackName', '')
+            title = s.get('trackName', '')
             artist = s.get('artistName', '')
-            track_id = str(s.get('trackId', '')).strip()
             saavn_id = s.get('_saavnId', '')
             if saavn_id:
                 s['previewUrl'] = f"/api/play?id={quote(saavn_id, safe='')}&title={quote(title, safe='')}&artist={quote(artist, safe='')}"
@@ -174,15 +167,12 @@ def get_songs():
     return jsonify({'results': [], 'error': 'No results found'})
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# /api/songs/90s
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/songs/90s')
 @limiter.limit("60 per minute")
 def get_90s_songs():
-    seed      = random.choice(NINETIES_SEEDS)
+    seed = random.choice(NINETIES_SEEDS)
     cache_key = f"songs:{seed.lower()}"
-    cached    = _l1_meta.get(cache_key)
+    cached = _l1_meta.get(cache_key)
     if cached is not None:
         _executor_bg.submit(_auto_prefetch_search_results, cached)
         return jsonify({'results': cached, 'seed': seed, '_cached': True})
@@ -190,8 +180,8 @@ def get_90s_songs():
     raw = _fetch_saavn_search_parallel(seed)
     if raw:
         normalized = _normalize_saavn_songs(raw, query=seed)
-        filtered   = [s for s in normalized if 1990 <= _safe_year(s.get('releaseDate')) <= 1999]
-        result     = (filtered if len(filtered) >= 5 else normalized)[:30]
+        filtered = [s for s in normalized if 1990 <= _safe_year(s.get('releaseDate')) <= 1999]
+        result = (filtered if len(filtered) >= 5 else normalized)[:30]
         random.shuffle(result)
         _l1_meta.set(cache_key, result)
         _executor_bg.submit(_auto_prefetch_search_results, result)
@@ -202,7 +192,7 @@ def get_90s_songs():
                          params={'term': seed, 'media': 'music', 'entity': 'song',
                                  'limit': 50, 'country': 'IN'}, timeout=6)
         r.raise_for_status()
-        results  = r.json().get('results', [])
+        results = r.json().get('results', [])
         filtered = [s for s in results if s.get('trackName') and
                     1990 <= _safe_year(s.get('releaseDate')) <= 1999]
         if len(filtered) < 5: filtered = [s for s in results if s.get('trackName')]
@@ -215,21 +205,18 @@ def get_90s_songs():
         return jsonify({'results': [], 'error': str(e)})
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# /api/saavn
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/saavn')
 @limiter.limit("100 per minute")
 def get_saavn_song():
-    q           = request.args.get('q', '').strip()[:200]
-    artist      = request.args.get('artist', '').strip()[:100]
-    fallback    = request.args.get('fallback', '').strip()[:200]
-    token       = request.args.get('token', '').strip()[:200]
+    q = request.args.get('q', '').strip()[:200]
+    artist = request.args.get('artist', '').strip()[:100]
+    fallback = request.args.get('fallback', '').strip()[:200]
+    token = request.args.get('token', '').strip()[:200]
     low_quality = request.args.get('low_quality', 'false').lower() == 'true'
     if not q:
         return jsonify({'success': False, 'url': None, 'token': token})
 
-    _ck   = f"saavn:{normalize(q)}:{normalize(artist)}"
+    _ck = f"saavn:{normalize(q)}:{normalize(artist)}"
     _lang = _detect_language(q + ' ' + artist)
 
     def _saavn_cache_valid(entry):
@@ -268,13 +255,12 @@ def get_saavn_song():
     def _best_image(res_img):
         def _fix_img(url):
             if not url or not url.startswith('http'): return url or ''
-            import re as _re
             if 'saavncdn.com' in url or 'jiocdn.com' in url:
-                url = _re.sub(r'-(\d+)x(\d+)\.(jpg|jpeg|webp|png)', r'-500x500.\3', url)
+                url = re.sub(r'-(\d+)x(\d+)\.(jpg|jpeg|webp|png)', r'-500x500.\3', url)
             if 'mzstatic.com' in url:
-                url = _re.sub(r'/\d+x\d+bb', '/600x600bb', url)
+                url = re.sub(r'/\d+x\d+bb', '/600x600bb', url)
             if 'ytimg.com' in url:
-                url = _re.sub(r'/(default|mqdefault|sddefault|hqdefault)\.jpg', '/maxresdefault.jpg', url)
+                url = re.sub(r'/(default|mqdefault|sddefault|hqdefault)\.jpg', '/maxresdefault.jpg', url)
             return url
         art = _get_artwork(q, artist)
         if art: return _fix_img(art)
@@ -326,23 +312,13 @@ def get_saavn_song():
     return jsonify({'success': False, 'url': None, 'token': token})
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# ⚠️ /api/play - ROUTE REMOVED - NOW IN fetchers.py ⚠️
-# ═══════════════════════════════════════════════════════════════════════════════
-# This route has been moved to fetchers.py with complete rewrite
-# Do not add it back here - it will cause duplicate route conflict
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# /api/resolve
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/resolve')
 @limiter.limit("100 per minute")
 def resolve_song():
-    q        = request.args.get('q', '').strip()[:200]
-    artist   = request.args.get('artist', '').strip()[:100]
+    q = request.args.get('q', '').strip()[:200]
+    artist = request.args.get('artist', '').strip()[:100]
     fallback = request.args.get('fallback', '').strip()[:200]
-    token    = request.args.get('token', '').strip()[:200]
+    token = request.args.get('token', '').strip()[:200]
     if not q:
         return jsonify({'success': False, 'url': None, 'token': token})
 
@@ -354,16 +330,16 @@ def resolve_song():
             _rart = _get_artwork(q, artist) or result.get('image', '')
             return jsonify({
                 'success': True, 'token': token,
-                'url':     f"/api/stream?url={quote(result['url'], safe='')}",
+                'url': f"/api/stream?url={quote(result['url'], safe='')}",
                 'quality': result['quality'], 'title': result['title'],
-                'artist':  result['artist'],  'image': _rart,
-                'source':  'saavn',
+                'artist': result['artist'], 'image': _rart,
+                'source': 'saavn',
             })
 
     for fetcher, src_name in [
-        (lambda: fetch_from_ytmusic(q, artist),               'ytmusic'),
-        (lambda: fetch_from_ytdlp(q, artist),                 'youtube'),
-        (lambda: fetch_from_soundcloud(q, artist),            'soundcloud'),
+        (lambda: fetch_from_ytmusic(q, artist), 'ytmusic'),
+        (lambda: fetch_from_ytdlp(q, artist), 'youtube'),
+        (lambda: fetch_from_soundcloud(q, artist), 'soundcloud'),
         (lambda: fetch_from_piped(q, title=q, artist=artist), 'piped'),
         (lambda: fetch_from_invidious(q, title=q, artist=artist), 'invidious'),
     ]:
@@ -382,9 +358,6 @@ def resolve_song():
     return jsonify({'success': False, 'url': None, 'token': token})
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# STREAM PROXY
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/stream')
 @limiter.limit("200 per minute")
 def stream_audio():
@@ -399,10 +372,10 @@ def stream_audio():
         return jsonify({'error': 'Invalid URL'}), 400
     try:
         req_headers = {
-            'User-Agent':      'Mozilla/5.0',
-            'Accept':          'audio/mpeg,audio/webm,audio/ogg,audio/*;q=0.9,*/*;q=0.5',
+            'User-Agent': 'Mozilla/5.0',
+            'Accept': 'audio/mpeg,audio/webm,audio/ogg,audio/*;q=0.9,*/*;q=0.5',
             'Accept-Encoding': 'identity',
-            'Connection':      'keep-alive',
+            'Connection': 'keep-alive',
         }
         range_header = request.headers.get('Range')
         if range_header: req_headers['Range'] = range_header
@@ -412,8 +385,8 @@ def stream_audio():
         resp_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in excluded}
         resp_headers.update({
             'Access-Control-Allow-Origin': '*',
-            'Accept-Ranges':  'bytes',
-            'Cache-Control':  'no-store',
+            'Accept-Ranges': 'bytes',
+            'Cache-Control': 'no-store',
         })
         if 'content-type' not in {k.lower() for k in resp_headers}:
             resp_headers['Content-Type'] = 'audio/mpeg'
@@ -430,21 +403,18 @@ def stream_audio():
         return jsonify({'error': str(e)}), 500
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# DOWNLOAD
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/download')
 @limiter.limit("20 per minute")
 def download_song():
-    q       = request.args.get('q', '').strip()
-    artist  = request.args.get('artist', '').strip()
+    q = request.args.get('q', '').strip()
+    artist = request.args.get('artist', '').strip()
     quality = request.args.get('quality', 'full').strip()
     if not q: return jsonify({'error': 'Missing query'}), 400
 
-    stream_url    = None
-    content_type  = 'audio/mpeg'
+    stream_url = None
+    content_type = 'audio/mpeg'
     filename_base = f"{q} - {artist}".strip(' -') if artist else q
-    _lang         = _detect_language(q + ' ' + artist)
+    _lang = _detect_language(q + ' ' + artist)
 
     for query in build_query_variants(q, artist, ''):
         result = fetch_saavn_parallel(query, title=q, artist=artist, language=_lang)
@@ -461,14 +431,14 @@ def download_song():
     if not stream_url:
         yt = fetch_from_ytdlp(q, artist)
         if yt and yt.get('url'):
-            stream_url    = yt['url']
+            stream_url = yt['url']
             filename_base = f"{yt['title']} - {yt['artist']}".strip(' -')
-            content_type  = 'audio/webm'
+            content_type = 'audio/webm'
 
     if not stream_url:
         sc = fetch_from_soundcloud(q, artist)
         if sc and sc.get('url'):
-            stream_url    = sc['url']
+            stream_url = sc['url']
             filename_base = f"{sc['title']} - {sc['artist']}".strip(' -')
 
     if not stream_url: return jsonify({'error': 'Song not found'}), 404
@@ -485,16 +455,16 @@ def download_song():
 
     try:
         clean_name = re.sub(r'[/\\?%*:|"<>]', '-', filename_base)
-        upstream   = requests.get(stream_url,
+        upstream = requests.get(stream_url,
                                   headers={'User-Agent': 'Mozilla/5.0', 'Accept-Encoding': 'identity'},
                                   stream=True, timeout=(10, None), allow_redirects=True)
         if not upstream.ok: return jsonify({'error': f'Upstream {upstream.status_code}'}), 502
-        actual_ct  = upstream.headers.get('Content-Type', content_type)
-        ext        = 'webm' if 'webm' in actual_ct else ('m4a' if ('mp4' in actual_ct or 'm4a' in actual_ct) else 'mp3')
+        actual_ct = upstream.headers.get('Content-Type', content_type)
+        ext = 'webm' if 'webm' in actual_ct else ('m4a' if ('mp4' in actual_ct or 'm4a' in actual_ct) else 'mp3')
         resp_headers = {
             'Content-Disposition': f'attachment; filename="{clean_name}.{ext}"',
-            'Content-Type':        actual_ct,
-            'Accept-Ranges':       'bytes',
+            'Content-Type': actual_ct,
+            'Accept-Ranges': 'bytes',
             'Access-Control-Allow-Origin': '*',
         }
         if 'Content-Length' in upstream.headers:
@@ -511,9 +481,6 @@ def download_song():
         return jsonify({'error': str(e)}), 500
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# /api/godmode/status
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/godmode/status')
 @limiter.limit("10 per minute")
 def godmode_status():
@@ -521,33 +488,30 @@ def godmode_status():
     if not secret or not hmac.compare_digest(secret, ADMIN_KEY):
         return jsonify({'error': 'Unauthorized'}), 401
     return jsonify({
-        'circuit_breakers':     _cb.status(),
-        'source_performance':   _src_perf.status(),
-        'conf_tuner_floors':    _conf_tuner.status(),
-        'url_refresh_pending':  list(_url_refresh_queue),
+        'circuit_breakers': _cb.status(),
+        'source_performance': _src_perf.status(),
+        'conf_tuner_floors': _conf_tuner.status(),
+        'url_refresh_pending': list(_url_refresh_queue),
         'mirror_count': len(SAAVN_MIRRORS),
-        'piped_count':  len(PIPED_INSTANCES),
-        'inv_count':    len(INVIDIOUS_INSTANCES),
+        'piped_count': len(PIPED_INSTANCES),
+        'inv_count': len(INVIDIOUS_INSTANCES),
         'cache_sizes': {
-            'l1_saavn':    _l1_saavn.size(),
-            'l1_audio':    _l1_audio.size(),
-            'l1_artwork':  _l1_artwork.size(),
+            'l1_saavn': _l1_saavn.size(),
+            'l1_audio': _l1_audio.size(),
+            'l1_artwork': _l1_artwork.size(),
             'l1_verified': _l1_verified.size(),
-            'l1_meta':     _l1_meta.size(),
+            'l1_meta': _l1_meta.size(),
         },
         'timestamp': round(time.time()),
     })
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# /api/health
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/health')
 @limiter.limit("30 per minute")
 def health_status():
-    with _mirror_lock:    saavn_list = list(SAAVN_MIRRORS)
-    with _piped_lock:     piped_list = list(PIPED_INSTANCES)
-    with _invidious_lock: inv_list   = list(INVIDIOUS_INSTANCES)
+    with _mirror_lock: saavn_list = list(SAAVN_MIRRORS)
+    with _piped_lock: piped_list = list(PIPED_INSTANCES)
+    with _invidious_lock: inv_list = list(INVIDIOUS_INSTANCES)
 
     def summarize(urls):
         return sorted(
@@ -559,33 +523,30 @@ def health_status():
         sc_id = SOUNDCLOUD_CLIENT_ID
 
     return jsonify({
-        'saavn':      {'count': len(saavn_list),  'instances': summarize(saavn_list)},
-        'piped':      {'count': len(piped_list),  'instances': summarize(piped_list)},
-        'invidious':  {'count': len(inv_list),    'instances': summarize(inv_list)},
+        'saavn': {'count': len(saavn_list), 'instances': summarize(saavn_list)},
+        'piped': {'count': len(piped_list), 'instances': summarize(piped_list)},
+        'invidious': {'count': len(inv_list), 'instances': summarize(inv_list)},
         'soundcloud': {'client_id_prefix': sc_id[:8] + '...' if sc_id else 'missing'},
         'cache': {
-            'l1_meta_size':     _l1_meta.size(),
-            'l1_audio_size':    _l1_audio.size(),
-            'l1_popular_size':  _l1_popular.size(),
-            'l1_saavn_size':    _l1_saavn.size(),
-            'l1_artwork_size':  _l1_artwork.size(),
+            'l1_meta_size': _l1_meta.size(),
+            'l1_audio_size': _l1_audio.size(),
+            'l1_popular_size': _l1_popular.size(),
+            'l1_saavn_size': _l1_saavn.size(),
+            'l1_artwork_size': _l1_artwork.size(),
             'l1_verified_size': _l1_verified.size(),
         },
-        'circuit_breakers':       _cb.status(),
-        'source_performance':     _src_perf.status(),
-        'conf_tuner_floors':      _conf_tuner.status(),
+        'circuit_breakers': _cb.status(),
+        'source_performance': _src_perf.status(),
+        'conf_tuner_floors': _conf_tuner.status(),
         'url_refresh_queue_size': len(_url_refresh_queue),
         'timestamp': round(time.time()),
     })
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# AUTH
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/auth/google', methods=['POST'])
 @limiter.limit("20 per minute")
 def handle_google_auth():
-    data       = request.get_json() or {}
+    data = request.get_json() or {}
     credential = data.get('credential', '').strip()
     if not credential: return jsonify({'error': 'Missing credential'}), 400
     profile = _verify_google_jwt(credential)
@@ -594,27 +555,24 @@ def handle_google_auth():
     if not sub: return jsonify({'error': 'Missing sub'}), 400
     sb_upsert('users', {
         'google_sub': sub,
-        'name':       profile.get('name', ''),
-        'email':      profile.get('email', ''),
-        'picture':    profile.get('picture', ''),
+        'name': profile.get('name', ''),
+        'email': profile.get('email', ''),
+        'picture': profile.get('picture', ''),
     }, on_conflict='google_sub')
     return jsonify({
         'success': True, 'sub': sub,
-        'name':    profile.get('name', ''),
-        'email':   profile.get('email', ''),
+        'name': profile.get('name', ''),
+        'email': profile.get('email', ''),
         'picture': profile.get('picture', ''),
     })
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# SYNC
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/sync/state', methods=['POST'])
 @limiter.limit("60 per minute")
 def save_playback_state():
     sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
     if not sub: return jsonify({'error': 'Unauthorized'}), 401
-    data    = request.get_json() or {}
+    data = request.get_json() or {}
     song_id = (data.get('songId') or '').strip()
     try: progress = max(0.0, min(float(data.get('progress', 0)), 3600.0))
     except: progress = 0.0
@@ -640,9 +598,9 @@ def save_playback_state():
     sb_upsert('playback_state', {
         'google_sub': sub, 'song_id': song_id[:100],
         'song_title': str(data.get('songTitle', '') or '')[:200],
-        'artist':     str(data.get('artist', '') or '')[:100],
-        'art_url':    art_url, 'progress': progress,
-        'device':     device, 'updated_at': datetime.utcnow().isoformat(),
+        'artist': str(data.get('artist', '') or '')[:100],
+        'art_url': art_url, 'progress': progress,
+        'device': device, 'updated_at': datetime.utcnow().isoformat(),
     }, on_conflict='google_sub')
     return jsonify({'status': 'ok'})
 
@@ -663,16 +621,13 @@ def get_playback_state():
     return jsonify({'success': False})
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# TV PAIRING
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/auth/tv-generate-code', methods=['POST'])
 @limiter.limit("10 per minute")
 def generate_tv_code():
-    data       = request.get_json() or {}
+    data = request.get_json() or {}
     session_id = data.get('sessionId') or secrets.token_hex(8)
-    code       = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
-    expiry     = (datetime.utcnow() + timedelta(minutes=5)).isoformat()
+    code = ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
+    expiry = (datetime.utcnow() + timedelta(minutes=5)).isoformat()
     sb_delete('tv_pairing', {'tv_session_id': session_id})
     sb_upsert('tv_pairing', {
         'pairing_code': code, 'tv_session_id': session_id, 'expires_at': expiry,
@@ -682,14 +637,14 @@ def generate_tv_code():
 @app.route('/api/auth/tv-poll')
 @limiter.limit("60 per minute")
 def poll_tv_pairing():
-    code    = request.args.get('code', '').strip().upper()
+    code = request.args.get('code', '').strip().upper()
     now_str = datetime.utcnow().isoformat()
     if not code: return jsonify({'status': 'pending'}), 400
     url = (f"{SUPABASE_URL}/rest/v1/tv_pairing"
            f"?pairing_code=eq.{quote(code, safe='')}"
            f"&expires_at=gt.{quote(now_str, safe='')}")
     try:
-        r    = requests.get(url, headers=_sb_headers(), timeout=10)
+        r = requests.get(url, headers=_sb_headers(), timeout=10)
         rows = r.json() if r.status_code == 200 else []
     except Exception: rows = []
     if not rows: return jsonify({'status': 'expired'})
@@ -710,15 +665,15 @@ def poll_tv_pairing():
 def mobile_verify_tv():
     sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
     if not sub: return jsonify({'success': False, 'error': 'Unauthorized'}), 401
-    data    = request.get_json() or {}
-    code    = data.get('code', '').strip().upper()
+    data = request.get_json() or {}
+    code = data.get('code', '').strip().upper()
     now_str = datetime.utcnow().isoformat()
     if not code: return jsonify({'success': False, 'error': 'Missing code'}), 400
     url = (f"{SUPABASE_URL}/rest/v1/tv_pairing"
            f"?pairing_code=eq.{quote(code, safe='')}"
            f"&expires_at=gt.{quote(now_str, safe='')}")
     try:
-        r    = requests.get(url, headers=_sb_headers(), timeout=10)
+        r = requests.get(url, headers=_sb_headers(), timeout=10)
         rows = r.json() if r.status_code == 200 else []
     except Exception: rows = []
     if not rows: return jsonify({'success': False, 'error': 'Invalid or expired code'}), 404
@@ -726,16 +681,13 @@ def mobile_verify_tv():
     return jsonify({'success': True})
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# GHOST PIN
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/auth/verify-ghost-pin', methods=['POST'])
 @limiter.limit("10 per minute")
 def verify_ghost_pin():
     sub = _extract_bearer_sub(request.headers.get('Authorization', ''))
     if not sub: return jsonify({'success': False, 'error': 'Unauthorized'}), 401
     data = request.get_json() or {}
-    pin  = data.get('pin', '').strip()
+    pin = data.get('pin', '').strip()
     if not pin: return jsonify({'success': False}), 400
     h_input = hashlib.pbkdf2_hmac(
         'sha256', pin.encode('utf-8'), sub.encode('utf-8'), iterations=300_000
@@ -751,9 +703,6 @@ def verify_ghost_pin():
     return jsonify({'success': False})
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# ADMIN
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/admin/users')
 @limiter.limit("10 per minute")
 def admin_users():
@@ -764,9 +713,6 @@ def admin_users():
     return jsonify({'users': rows, 'total': len(rows)})
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# ARTWORK PROXY
-# ═══════════════════════════════════════════════════════════════════════════════
 _ARTWORK_ALLOWED_DOMAINS = [
     'saavncdn.com', 'cf.saavncdn.com', 'c.saavncdn.com', 'aac.saavncdn.com',
     'static.saavncdn.com', 'h.saavncdn.com',
@@ -788,7 +734,7 @@ def artwork_proxy():
     try:
         parsed = urlparse(url)
         if parsed.scheme not in ('http', 'https'): return jsonify({'error': 'Invalid scheme'}), 400
-        domain  = parsed.netloc.lower().split(':')[0]
+        domain = parsed.netloc.lower().split(':')[0]
         allowed = any(domain == d or domain.endswith('.' + d) for d in _ARTWORK_ALLOWED_DOMAINS)
         if not allowed: return jsonify({'error': 'Domain not allowed'}), 403
     except Exception:
@@ -812,9 +758,6 @@ def artwork_proxy():
         return jsonify({'error': str(e)}), 500
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# /api/suggest
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/suggest')
 @limiter.limit("120 per minute")
 def get_suggestions():
@@ -842,10 +785,10 @@ def get_suggestions():
                 raw_art.replace('100x100bb', '500x500bb').replace('100x100', '500x500')
             ) if raw_art else ''
             suggestions.append({
-                'trackName':  s.get('trackName', ''),
+                'trackName': s.get('trackName', ''),
                 'artistName': s.get('artistName', ''),
                 'artworkUrl': art_url,
-                'trackId':    s.get('trackId'),
+                'trackId': s.get('trackId'),
             })
         suggestions = suggestions[:6]
         _l1_meta.set(cache_key, suggestions)
@@ -854,21 +797,17 @@ def get_suggestions():
         return jsonify({'suggestions': []})
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# /health
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/health')
 def health():
     return jsonify({
-        'status':  'ok',
+        'status': 'ok',
         'sources': ['saavn', 'jiosavan', 'ytmusic', 'piped', 'invidious', 'soundcloud', 'youtube'],
-        'auth':    'google-oauth',
-        'db':      'supabase',
+        'auth': 'google-oauth',
+        'db': 'supabase',
         'version': '3.3',
     })
 
 
-# ── Startup warmup ────────────────────────────────────────────────────────────
 def _startup_warmup():
     try:
         _http_session.get(
