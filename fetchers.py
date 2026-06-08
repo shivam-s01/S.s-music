@@ -68,11 +68,8 @@ def _fix_image_url(url: str) -> str:
     if not url or not url.startswith('http'):
         return url or ''
     if 'saavncdn.com' in url or 'jiocdn.com' in url:
-        # Replace explicit WxH size patterns in filename
         url = re.sub(r'-(\d+)x(\d+)\.(jpg|jpeg|webp|png)', r'-500x500.\3', url)
-        # [FIX] Was \b(50|150|250)\b — matched anywhere including domain/path numbers.
-        # Now restricted to size suffix pattern at end of path only: /50x50, /150x150 etc.
-        url = re.sub(r'/(50|150|250)x(50|150|250)(?=[./]|$)', '/500x500', url)
+        url = re.sub(r'\b(50|150|250)\b', '500', url)
         return url
     if 'mzstatic.com' in url:
         url = re.sub(r'/\d+x\d+bb', '/600x600bb', url)
@@ -208,36 +205,15 @@ def _pick_best_direct(raw_results: list, query: str, title: str, artist: str) ->
 def _cache_cleanup_loop():
     while True:
         time.sleep(600)
-        # [FIX] Split: always evict known caches first, then try optional ones.
-        # Previously, if _l1_fingerprint import failed the entire except swallowed
-        # the error and NO caches were evicted — memory leak on every cycle.
-        for cache in [_l1_meta, _l1_audio, _l1_popular, _l1_saavn]:
-            try:
+        try:
+            from core import _l1_artwork, _l1_verified, _l1_fingerprint
+            for cache in [_l1_meta, _l1_audio, _l1_popular, _l1_saavn,
+                          _l1_artwork, _l1_verified, _l1_fingerprint]:
                 evicted = cache.evict_expired()
                 if evicted:
                     log.debug(f'[Cache:Cleanup] Evicted {evicted} expired entries')
-            except Exception as e:
-                log.warning(f'[Cache:Cleanup] Core cache error: {e}')
-        # Optional caches — may not exist in all deployments
-        try:
-            from core import _l1_artwork, _l1_verified
-            for cache in [_l1_artwork, _l1_verified]:
-                try:
-                    evicted = cache.evict_expired()
-                    if evicted:
-                        log.debug(f'[Cache:Cleanup] Evicted {evicted} expired entries')
-                except Exception as e:
-                    log.warning(f'[Cache:Cleanup] Optional cache error: {e}')
-        except ImportError:
-            pass
-        # Fingerprint cache — optional, Railway may not have AcoustID configured
-        try:
-            from core import _l1_fingerprint
-            evicted = _l1_fingerprint.evict_expired()
-            if evicted:
-                log.debug(f'[Cache:Cleanup] Fingerprint evicted {evicted}')
-        except (ImportError, Exception):
-            pass
+        except Exception as e:
+            log.warning(f'[Cache:Cleanup] Error: {e}')
 
 threading.Thread(target=_cache_cleanup_loop, daemon=True).start()
 
@@ -477,8 +453,6 @@ def _resolve_itunes_to_saavn(itunes_song: dict) -> Optional[dict]:
 
     mirrors = _best_mirrors(n=4)
     _deadline = time.time() + 5.0  # 5s hard deadline
-    # [FIX] _lang was undefined — NameError crash on every call. Detect here.
-    _lang = _detect_language(title + ' ' + artist)
 
     # ── Phase 1: saavn.dev + direct (parallel) ────────────────────────────────
     for query in build_query_variants(title, artist, ''):
@@ -879,9 +853,8 @@ def fetch_from_ytdlp(title, artist='', anchor=None):
                         })
 
                     # ── Retrieve Saavn duration hint if available ─────────────
-                    # [FIX] Was hardcoded 0 — anchor.duration_s ignored.
-                    # This disabled Tier 1 duration check for all YT results.
-                    _saavn_dur = int(anchor.get('duration_s', 0) or 0) if anchor else 0
+                    # Pass 0 if unknown — Tier 1 skips gracefully
+                    _saavn_dur = 0  # ytdlp path: no Saavn reference duration
 
                     _saavn_lang2 = anchor.get('language', '') if anchor else ''
                     best_candidate, scores = tve_pick_best(
@@ -1084,10 +1057,7 @@ def _fetch_saavn_by_id(song_id, expected_title='', expected_artist=''):
         if expected_title and id_result.get('title'):
             _c = compute_confidence(expected_title, expected_artist,
                                     id_result['title'], id_result.get('artist',''), source='saavn')
-            # [FIX] Was 0.80 — inconsistent with play pipeline min_conf=0.70.
-            # Songs were passing the play pipeline check but failing here,
-            # causing silent fallback to slower sources unnecessarily.
-            if _c < 0.70:
+            if _c < 0.80:
                 log.warning(f"[SaavnID] MISMATCH: expected='{expected_title}' got='{id_result['title']}' conf={_c:.3f}")
                 return None
         _t = id_result.get('title', '')
@@ -2128,11 +2098,7 @@ def prefetch_songs():
     queue = songs.get('songs', [])[:3]
     if not queue: return jsonify({'status': 'empty'})
 
-    # [FIX] Renamed from _do_prefetch to _do_prefetch_inline.
-    # Previously the inline function shadowed the module-level alias
-    # _do_prefetch = _do_prefetch_song (defined at bottom of file),
-    # making the alias unreachable whenever prefetch_songs() was in scope.
-    def _do_prefetch_inline(s):
+    def _do_prefetch(s):
         _id     = str(s.get('id', '')).strip()[:100]
         _title  = str(s.get('title', '')).strip()[:200]
         _artist = str(s.get('artist', '')).strip()[:100]
@@ -2189,7 +2155,7 @@ def prefetch_songs():
                     return
 
     for song in queue:
-        _executor_bg.submit(_do_prefetch_inline, song)
+        _executor_bg.submit(_do_prefetch, song)
     return jsonify({'status': 'prefetching', 'count': len(queue)})
 
 
