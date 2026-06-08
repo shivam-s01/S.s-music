@@ -25,10 +25,10 @@ class VerificationConfig:
     """Centralized configuration — tune in one place"""
 
     # Title matching
-    TITLE_MIN_SIMILARITY: float = 0.92
+    TITLE_MIN_SIMILARITY: float = 0.72
 
     # Artist matching — NO EXCEPTIONS
-    ARTIST_MIN_SIMILARITY: float = 0.90
+    ARTIST_MIN_SIMILARITY: float = 0.68
 
     # Duration validation — STRICT
     DURATION_PERFECT_DELTA_S: int = 2
@@ -37,7 +37,7 @@ class VerificationConfig:
     DURATION_MAX_DELTA_S: int = 10
 
     # Overall confidence
-    MIN_CONFIDENCE_SCORE: float = 0.92
+    MIN_CONFIDENCE_SCORE: float = 0.68
 
     # Cache
     CACHE_TTL_SECONDS: int = 86400
@@ -45,10 +45,10 @@ class VerificationConfig:
     CACHE_MAX_SIZE: int = 10000
 
     # Weighting for confidence score
-    WEIGHT_TITLE: float = 0.40
-    WEIGHT_ARTIST: float = 0.30
-    WEIGHT_DURATION: float = 0.20
-    WEIGHT_SOURCE: float = 0.10
+    WEIGHT_TITLE: float = 0.45
+    WEIGHT_ARTIST: float = 0.35
+    WEIGHT_DURATION: float = 0.12
+    WEIGHT_SOURCE: float = 0.08
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -890,7 +890,7 @@ class VerifiedMatchCache:
         Returns True if stored, False otherwise.
         """
         # Absolute production floor — config cannot override below 0.92
-        effective_min: float = max(float(0.92), float(self.config.CACHE_MIN_CONFIDENCE))
+        effective_min: float = max(float(0.68), float(self.config.CACHE_MIN_CONFIDENCE))
         if confidence < effective_min:
             return False
 
@@ -1626,7 +1626,7 @@ def tve_tier5_artist_hard(saavn_artist, target_artist, source='', title_exact=Fa
     if source == 'soundcloud': return True, 'sc_skip'
     if not saavn_artist or not target_artist: return True, 'ok'
     sim = calculate_artist_similarity(saavn_artist, target_artist)
-    if sim < 0.90: return False, f'artist_hard:{sim:.2f}'
+    if sim < 0.65: return False, f'artist_hard:{sim:.2f}'
     return True, 'ok'
 
 def tve_pick_best(saavn_title='', saavn_artist='', saavn_duration_s=0,
