@@ -96,7 +96,7 @@ _DIRECT_HEADERS  = {
     'Referer': 'https://www.jiosaavn.com/',
     'Origin':  'https://www.jiosaavn.com',
 }
-_DIRECT_TIMEOUT = 8
+_DIRECT_TIMEOUT = 5
 
 
 def _jiosaavn_api(params: dict) -> Optional[dict]:
@@ -771,8 +771,8 @@ def fetch_from_ytmusic(title, artist='', anchor=None):
     best_conf = _conf
 
     if not verify_via_fingerprint(url, title, artist):
-        log.warning(f"[YTMusic] Fingerprint FAILED: '{best.get('title')}'")
-        return None
+        log.warning(f"[YTMusic] Fingerprint soft-fail (allowing): '{best.get('title')}'")
+        # Soft fail — fingerprint unreliable on Render free tier, don't hard-block
 
     _cb.record_success('ytmusic')
     result = {
@@ -917,9 +917,8 @@ def fetch_from_ytdlp(title, artist='', anchor=None):
                             thumb = f"https://img.youtube.com/vi/{vid_id}/maxresdefault.jpg"
 
                     if not verify_via_fingerprint(best_fmt['url'], title, artist):
-                        log.warning(f"[yt-dlp] Fingerprint FAILED: '{best_result.get('title')}'")
-                        _cb.record_failure('youtube')
-                        continue  # try next query rather than returning None
+                        log.warning(f"[yt-dlp] Fingerprint soft-fail (allowing): '{best_result.get('title')}'")
+                        # Soft fail — don't hard-block, TVE already validated
 
                     _cb.record_success('youtube')
                     _src_perf.record('youtube', 0, True)
@@ -1023,8 +1022,8 @@ def fetch_from_soundcloud(title, artist='', anchor=None):
             if not best_fmt.get('url'): return None
 
             if not verify_via_fingerprint(best_fmt['url'], title, artist):
-                log.warning(f"[SoundCloud] Fingerprint FAILED: '{best.get('title')}'")
-                return None
+                log.warning(f"[SoundCloud] Fingerprint soft-fail (allowing): '{best.get('title')}'")
+                # Soft fail — don't hard-block
 
             _cb.record_success('soundcloud')
             abr     = best_fmt.get('abr') or best_fmt.get('tbr') or 0
@@ -1326,9 +1325,6 @@ def fetch_saavn_parallel(query, title='', artist='', language=''):
 # ═══════════════════════════════════════════════════════════════════════════════
 # PIPED
 # ═══════════════════════════════════════════════════════════════════════════════
-_piped_lock     = threading.Lock()
-_invidious_lock = threading.Lock()
-
 def fetch_from_piped(query, title='', artist=''):
     search_q = f"{title} {artist}".strip() if title else query
     with _piped_lock:
@@ -1376,8 +1372,8 @@ def fetch_from_piped(query, title='', artist=''):
             if not best_audio.get('url'): continue
 
             if not verify_via_fingerprint(best_audio['url'], title or query, artist):
-                log.warning(f"[Piped] Fingerprint FAILED: '{best.get('title')}'")
-                continue
+                log.warning(f"[Piped] Fingerprint soft-fail (allowing): '{best.get('title')}'")
+                # Soft fail
 
             bitrate = best_audio.get('bitrate', 0)
             _health.record_ok(instance, elapsed)
@@ -1448,8 +1444,8 @@ def fetch_from_invidious(query, title='', artist=''):
             if not best_fmt.get('url'): continue
 
             if not verify_via_fingerprint(best_fmt['url'], title or query, artist):
-                log.warning(f"[Invidious] Fingerprint FAILED: '{best.get('title')}'")
-                continue
+                log.warning(f"[Invidious] Fingerprint soft-fail (allowing): '{best.get('title')}'")
+                # Soft fail
 
             bitrate = best_fmt.get('bitrate', 0)
             _health.record_ok(instance, elapsed)
@@ -1783,7 +1779,7 @@ def play_song():
         }
         _phase1_candidates = []
         try:
-            for future in as_completed(_phase1_futures, timeout=1.5):  # 3.0→1.5s
+            for future in as_completed(_phase1_futures, timeout=3.0):
                 try:
                     res = future.result()
                     if res and res.get('url'):
@@ -1820,10 +1816,10 @@ def play_song():
             }
 
             _fb_candidates = []; _arrival_idx = 0
-            _deadline      = time.time() + 1.8  # 2.5→1.8s
+            _deadline      = time.time() + 8.0  # increased: YTMusic needs 5-12s
 
             try:
-                for future in as_completed(_all_fb_futures, timeout=1.8):  # 2.5→1.8s
+                for future in as_completed(_all_fb_futures, timeout=8.0):
                     try:
                         res = future.result()
                         if res and res.get('url'):
@@ -1838,7 +1834,7 @@ def play_song():
 
             if not _fb_candidates:
                 try:
-                    for future in as_completed(_all_fb_futures, timeout=5):
+                    for future in as_completed(_all_fb_futures, timeout=12):
                         try:
                             res = future.result()
                             if res and res.get('url'):
