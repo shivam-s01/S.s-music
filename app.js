@@ -407,45 +407,84 @@ async function _autoFetchFullSong(song, autoplay = true, ctrl, myGen) {
 
     let d = null, proxyUrl = null;
 
+    // [FIX] /api/play is a STREAMING endpoint — it returns audio bytes, NOT JSON.
+    // Previous code called r.json() which always failed silently.
+    // Correct approach: use /api/play URL directly as audio src, read metadata from headers.
     try {
-     const r = await fetch(
-  `/api/play?title=${primaryQ}&artist=${artistQ}`,
-  { signal: ctrl.signal }
-);
+      // Step 1: HEAD request to verify the song exists + grab metadata from headers
+      const headUrl = `/api/play?title=${primaryQ}&artist=${artistQ}`;
+      const headR = await fetch(headUrl, { method: 'HEAD', signal: ctrl.signal });
       if (!_stillValid()) return;
-      if (r.ok) {
-        const j = await r.json();
-        if (!_stillValid()) return;
-        if (j.success && j.url) {
-          const _wV = _userWantsVersion(requested.trackName, requested.artistName || '');
-          // [MISMATCH-GUARD] Version song reject karo agar user ne nahi manga
-          if (_isVersionSong(j.title || '') && !_wV) {
-            console.info('[AutoFetch] VERSION REJECTED: ' + j.title);
-          } else if (j.source === 'saavn' || _titleMatches(j.title, requested.trackName)) {
-            // [MISMATCH-GUARD] Artist bhi verify karo — alag artist = reject
-            const _reqArtistNorm = (requested.artistName || '').toLowerCase().split(/[&,]/)[0].trim();
-            const _resArtistNorm = (j.artist || '').toLowerCase().split(/[&,]/)[0].trim();
-            const _artistOk = !_reqArtistNorm || !_resArtistNorm ||
-              _resArtistNorm.includes(_reqArtistNorm) || _reqArtistNorm.includes(_resArtistNorm) ||
-              _reqArtistNorm.split(' ').some(w => w.length > 3 && _resArtistNorm.includes(w));
-            if (!_artistOk) {
-              console.info(`[AutoFetch] ARTIST MISMATCH: req="${_reqArtistNorm}" got="${_resArtistNorm}"`);
-            } else {
-              d = j;
-              proxyUrl = j.url.startsWith('http')
-  ? `/api/stream?url=${encodeURIComponent(j.url)}`
-  : j.url;
+
+      if (headR.ok) {
+        const resTitle  = headR.headers.get('X-Song-Title')  || '';
+        const resArtist = headR.headers.get('X-Song-Artist') || '';
+        const resSource = headR.headers.get('X-Audio-Source') || '';
+        const resQuality = headR.headers.get('X-Audio-Quality') || 'unknown';
+        const resArtUrl  = headR.headers.get('X-Artwork-URL') || '';
+
+        const _wV = _userWantsVersion(requested.trackName, requested.artistName || '');
+
+        // Version guard
+        if (_isVersionSong(resTitle) && !_wV) {
+          console.info('[AutoFetch] VERSION REJECTED: ' + resTitle);
+        } else if (resSource === 'saavn' || resSource === 'jiosavan' || _titleMatches(resTitle, requested.trackName)) {
+          // Artist guard
+          const _reqArtistNorm = (requested.artistName || '').toLowerCase().split(/[&,]/)[0].trim();
+          const _resArtistNorm = (resArtist || '').toLowerCase().split(/[&,]/)[0].trim();
+          const _artistOk = !_reqArtistNorm || !_resArtistNorm ||
+            _resArtistNorm.includes(_reqArtistNorm) || _reqArtistNorm.includes(_resArtistNorm) ||
+            _reqArtistNorm.split(' ').some(w => w.length > 3 && _resArtistNorm.includes(w));
+
+          if (!_artistOk) {
+            console.info(`[AutoFetch] ARTIST MISMATCH: req="${_reqArtistNorm}" got="${_resArtistNorm}"`);
+          } else {
+            // iTunes artwork update — best quality mzstatic URL backend ne bheja
+            if (resArtUrl && resArtUrl.startsWith('http')) {
+              requested.artworkUrl100 = resArtUrl;
+              requested.image = resArtUrl;
+              if (song) { song.artworkUrl100 = resArtUrl; song.image = resArtUrl; }
             }
+            // /api/play URL directly as stream — no /api/stream wrapping needed
+            proxyUrl = headUrl;
+            d = {
+              quality: resQuality,
+              title:   resTitle  || requested.trackName,
+              artist:  resArtist || requested.artistName,
+              source:  resSource,
+            };
           }
+        }
+      } else if (headR.status === 404) {
+        // Saavn pe nahi mila — fallback query try karo
+        const fallbackUrl = `/api/play?title=${fallbackQ}&artist=${artistQ}`;
+        const fallR = await fetch(fallbackUrl, { method: 'HEAD', signal: ctrl.signal });
+        if (!_stillValid()) return;
+        if (fallR.ok) {
+          const resQuality = fallR.headers.get('X-Audio-Quality') || 'unknown';
+          const resTitle   = fallR.headers.get('X-Song-Title')  || '';
+          const resArtist  = fallR.headers.get('X-Song-Artist') || '';
+          const resArtUrl  = fallR.headers.get('X-Artwork-URL') || '';
+          if (resArtUrl && resArtUrl.startsWith('http')) {
+            requested.artworkUrl100 = resArtUrl;
+            requested.image = resArtUrl;
+            if (song) { song.artworkUrl100 = resArtUrl; song.image = resArtUrl; }
+          }
+          proxyUrl = fallbackUrl;
+          d = { quality: resQuality, title: resTitle, artist: resArtist, source: 'saavn' };
         }
       }
     } catch (e) {
       if (e.name === 'AbortError') return;
+      console.info('[AutoFetch] HEAD failed, trying direct stream:', e.message);
+      // HEAD fail hua (CORS / server issue) — direct stream try karo as last resort
+      proxyUrl = `/api/play?title=${primaryQ}&artist=${artistQ}`;
+      d = { quality: 'unknown', title: requested.trackName, artist: requested.artistName, source: 'saavn' };
     }
 
     if (!_stillValid()) return;
     if (!d || !proxyUrl) {
-      if (song._source === 'saavn') showToast('Song unavailable — try another');
+      showToast('Song unavailable — try another');
       return;
     }
 
