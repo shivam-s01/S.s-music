@@ -61,6 +61,7 @@ from match_engine import (
     _query_requests_version, NINETIES_TRIGGERS, NINETIES_SEEDS,
     ALLOWED_STREAM_DOMAINS, dna_compatible,
     _safe_year, _pick_low_quality, _ensure_500,
+    is_likely_duplicate,
 )
 from sources import (
     SAAVN_MIRRORS, PIPED_INSTANCES, INVIDIOUS_INSTANCES,
@@ -77,7 +78,7 @@ from fetchers import (
     fetch_from_jiosavan,
     _fetch_saavn_search_parallel, _normalize_saavn_songs,
     _resolve_itunes_to_saavn,
-    _is_allowed_domain, is_likely_duplicate,
+    _is_allowed_domain,
     _do_prefetch, _auto_prefetch_search_results,
     _url_refresh_queue,
     _l1_artwork, _l1_verified,
