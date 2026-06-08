@@ -3,83 +3,56 @@ const ORIGINS = [
   'https://s-s-music-0uxa.onrender.com',
 ];
 
-const CACHE_TTL = {
-  stream: 3600, songs: 120, song: 300, static: 0, default: 60,
-};
+const CACHE_TTL = { stream: 3600, songs: 120, song: 300, static: 0, default: 60 };
 const NO_CACHE = ['/health', '/api/yt', '/api/play'];
 
-// ── YouTube InnerTube API — Cloudflare IP se kaam karta hai ──────────────────
-const YT_INNERTUBE_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
-const YT_CONTEXT = {
-  client: {
-    clientName: 'ANDROID_MUSIC',
-    clientVersion: '6.42.52',
-    androidSdkVersion: 30,
-    hl: 'en', gl: 'IN',
-  }
-};
+// Piped instances — free YouTube proxy
+const PIPED_INSTANCES = [
+  'https://pipedapi.kavin.rocks',
+  'https://piped-api.garudalinux.org',
+  'https://api.piped.projectsegfau.lt',
+  'https://piped.tokhmi.xyz',
+];
 
-async function ytSearch(query) {
-  try {
-    const resp = await fetch(
-      `https://www.youtube.com/youtubei/v1/search?key=${YT_INNERTUBE_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0' },
-        body: JSON.stringify({
-          context: YT_CONTEXT,
-          query: query,
-          params: 'EgWKAQIIAWoKEAkQBRAKEAMQBA==',
-        }),
+async function ytSearchPiped(query) {
+  for (const instance of PIPED_INSTANCES) {
+    try {
+      const resp = await fetch(
+        `${instance}/search?q=${encodeURIComponent(query)}&filter=music_songs`,
+        { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(5000) }
+      );
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      const items = data.items || [];
+      for (const item of items) {
+        if (item.url && item.duration > 60) {
+          const videoId = item.url.replace('/watch?v=', '');
+          return { videoId, instance, title: item.title, thumbnail: item.thumbnail };
+        }
       }
-    );
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    const items = data?.contents?.sectionListRenderer?.contents?.[0]
-      ?.musicShelfRenderer?.contents || [];
-    for (const item of items) {
-      const r = item?.musicResponsiveListItemRenderer;
-      if (!r) continue;
-      const videoId = r?.overlay?.musicItemThumbnailOverlayRenderer
-        ?.content?.musicPlayButtonRenderer?.playNavigationEndpoint
-        ?.watchEndpoint?.videoId;
-      if (videoId) return videoId;
-    }
-  } catch (e) {}
+    } catch (e) { continue; }
+  }
   return null;
 }
 
-async function ytAudioUrl(videoId) {
+async function ytAudioPiped(videoId, instance) {
   try {
     const resp = await fetch(
-      `https://www.youtube.com/youtubei/v1/player?key=${YT_INNERTUBE_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0' },
-        body: JSON.stringify({
-          context: YT_CONTEXT,
-          videoId: videoId,
-          params: '2AMBCgIQBg==',
-        }),
-      }
+      `${instance}/streams/${videoId}`,
+      { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) }
     );
     if (!resp.ok) return null;
     const data = await resp.json();
-    const formats = data?.streamingData?.adaptiveFormats || [];
-    // Sirf audio formats
-    const audio = formats.filter(f => f.mimeType?.startsWith('audio/') && f.url);
-    if (!audio.length) return null;
-    // Best bitrate
-    audio.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
-    const best = audio[0];
+    const streams = (data.audioStreams || []).filter(s => s.url);
+    if (!streams.length) return null;
+    streams.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
     return {
-      url: best.url,
-      quality: best.bitrate ? `${Math.round(best.bitrate / 1000)}kbps` : 'unknown',
-      title: data?.videoDetails?.title || '',
-      thumbnail: data?.videoDetails?.thumbnail?.thumbnails?.slice(-1)[0]?.url || '',
+      url: streams[0].url,
+      quality: streams[0].quality || 'unknown',
+      title: data.title || '',
+      thumbnail: data.thumbnailUrl || '',
     };
-  } catch (e) {}
-  return null;
+  } catch (e) { return null; }
 }
 
 export default {
@@ -93,35 +66,43 @@ export default {
           'Access-Control-Allow-Origin': '*',
           'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
           'Access-Control-Allow-Headers': '*',
-          'Access-Control-Max-Age': '86400',
         },
       });
     }
 
-    // ── /api/yt — YouTube audio directly from Cloudflare ─────────────────────
+    // /api/yt — Piped se YouTube audio
     if (pathname === '/api/yt') {
       const q = searchParams.get('q') || '';
-      const videoId = searchParams.get('id') || await ytSearch(q);
-      if (!videoId) {
+      if (!q) {
+        return new Response(JSON.stringify({ success: false, error: 'Missing q' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        });
+      }
+
+      const found = await ytSearchPiped(q);
+      if (!found) {
         return new Response(JSON.stringify({ success: false, error: 'Not found' }), {
           status: 404,
           headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
         });
       }
-      const result = await ytAudioUrl(videoId);
-      if (!result) {
+
+      const audio = await ytAudioPiped(found.videoId, found.instance);
+      if (!audio) {
         return new Response(JSON.stringify({ success: false, error: 'No audio URL' }), {
           status: 502,
           headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
         });
       }
-      return new Response(JSON.stringify({ success: true, ...result }), {
+
+      return new Response(JSON.stringify({ success: true, ...audio, videoId: found.videoId }), {
         status: 200,
         headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
       });
     }
 
-    // ── Baaki sab Railway/Render pe forward ───────────────────────────────────
+    // Baaki sab Railway/Render pe forward
     const skipCache = NO_CACHE.some(r => pathname.startsWith(r));
     const isStream = pathname.startsWith('/api/stream');
     const hasRange = request.headers.has('Range');
@@ -148,15 +129,12 @@ export default {
         headers.set('Host', new URL(origin).hostname);
         headers.delete('CF-Ray');
         headers.delete('CF-Visitor');
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 10000);
         const resp = await fetch(new Request(url.toString(), {
           method: request.method,
           headers,
           body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body,
-          signal: controller.signal,
+          signal: AbortSignal.timeout(10000),
         }));
-        clearTimeout(timer);
         if (resp.status >= 500) continue;
         originResp = resp;
         usedOrigin = origin;
@@ -175,10 +153,7 @@ export default {
     h.set('Access-Control-Allow-Origin', '*');
     h.set('X-Cache', 'MISS');
     h.set('X-Origin', usedOrigin);
-    if (isStream) {
-      h.set('Accept-Ranges', 'bytes');
-      h.set('Cache-Control', `public, max-age=${CACHE_TTL.stream}`);
-    }
+    if (isStream) h.set('Accept-Ranges', 'bytes');
 
     const response = new Response(originResp.body, {
       status: originResp.status,
@@ -197,11 +172,11 @@ export default {
   },
 };
 
-function getTTL(pathname) {
-  if (pathname.startsWith('/api/stream')) return CACHE_TTL.stream;
-  if (pathname.startsWith('/api/songs')) return CACHE_TTL.songs;
-  if (pathname.startsWith('/api/song')) return CACHE_TTL.song;
-  if (pathname.startsWith('/api/saavn')) return CACHE_TTL.song;
-  if (/\.(js|css|html|json|png|ico|webp|woff2?)$/.test(pathname)) return CACHE_TTL.static;
+function getTTL(p) {
+  if (p.startsWith('/api/stream')) return CACHE_TTL.stream;
+  if (p.startsWith('/api/songs')) return CACHE_TTL.songs;
+  if (p.startsWith('/api/song')) return CACHE_TTL.song;
+  if (p.startsWith('/api/saavn')) return CACHE_TTL.song;
+  if (/\.(js|css|html|json|png|ico|webp|woff2?)$/.test(p)) return CACHE_TTL.static;
   return CACHE_TTL.default;
 }
