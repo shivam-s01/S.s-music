@@ -150,6 +150,7 @@ def get_songs():
             # previewUrl → /api/saavn route pe bhejo (title+artist se)
             title  = s.get('trackName', '')
             artist = s.get('artistName', '')
+            s['_itunesPreview'] = s.get('previewUrl', '')
             s['previewUrl'] = f"/api/saavn?q={quote(title, safe='')}&artist={quote(artist, safe='')}"
             results.append(s)
 
@@ -315,8 +316,31 @@ def get_saavn_song():
     return jsonify({'success': False, 'url': None, 'token': token})
 
 
-# /api/play — fetchers.py mein defined hai (full pipeline: Saavn → YTMusic → YouTube → SC → Piped → Invidious)
-# server.py se remove kiya — duplicate route tha jo fetchers.py wale smart pipeline ko override kar raha tha
+# ═══════════════════════════════════════════════════════════════════════════════
+# /api/play  — Saavn song ID se direct audio URL resolve
+# ═══════════════════════════════════════════════════════════════════════════════
+@app.route('/api/play')
+@limiter.limit("120 per minute")
+def play_by_id():
+    song_id = request.args.get('id', '').strip()[:100]
+    title   = request.args.get('title', '').strip()[:200]
+    artist  = request.args.get('artist', '').strip()[:100]
+    token   = request.args.get('token', '').strip()[:200]
+    if not song_id:
+        return jsonify({'success': False, 'url': None, 'token': token}), 400
+
+    result = _fetch_saavn_by_id(song_id, expected_title=title, expected_artist=artist)
+    if result and result.get('url'):
+        return jsonify({'success': True, 'token': token, **result})
+
+    # ID se nahi mila — title/artist se try karo
+    if title:
+        from fetchers import fetch_saavn_parallel as _fsp
+        res = _fsp(title, title=title, artist=artist)
+        if res and res.get('url'):
+            return jsonify({'success': True, 'token': token, **res})
+
+    return jsonify({'success': False, 'url': None, 'token': token})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
