@@ -99,48 +99,45 @@ def _sb_headers():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# FRONTEND ROUTES - YEH IMPORTANT HAI! APP YAHI SE LOAD HOTI HAI
+# FRONTEND ROUTES
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@app.route('/')
-def index():
-    """Serve main HTML page"""
-    return send_file(os.path.join(BASE_DIR, 'index.html'))
+# Note: core.py might already have '/' route, so we check before adding
+if not any(rule.endpoint == 'index' for rule in app.url_map.iter_rules()):
+    @app.route('/')
+    def index():
+        return send_file(os.path.join(BASE_DIR, 'index.html'))
 
-@app.route('/app.js')
-def serve_app_js():
-    """Serve app.js - frontend logic"""
-    return send_file(os.path.join(BASE_DIR, 'app.js'), mimetype='application/javascript')
+# Serve static files - only if not already defined
+if not any(rule.endpoint == 'serve_app_js' for rule in app.url_map.iter_rules()):
+    @app.route('/app.js')
+    def serve_app_js():
+        return send_file(os.path.join(BASE_DIR, 'app.js'), mimetype='application/javascript')
 
-@app.route('/style.css')
-def serve_style_css():
-    """Serve style.css - frontend styles"""
-    return send_file(os.path.join(BASE_DIR, 'style.css'), mimetype='text/css')
+if not any(rule.endpoint == 'serve_style_css' for rule in app.url_map.iter_rules()):
+    @app.route('/style.css')
+    def serve_style_css():
+        return send_file(os.path.join(BASE_DIR, 'style.css'), mimetype='text/css')
 
-@app.route('/manifest.json')
-def serve_manifest():
-    """Serve PWA manifest"""
-    return send_file(os.path.join(BASE_DIR, 'manifest.json'), mimetype='application/manifest+json')
+if not any(rule.endpoint == 'serve_manifest' for rule in app.url_map.iter_rules()):
+    @app.route('/manifest.json')
+    def serve_manifest():
+        return send_file(os.path.join(BASE_DIR, 'manifest.json'), mimetype='application/manifest+json')
 
-@app.route('/sw.js')
-def serve_service_worker():
-    """Serve service worker for PWA"""
-    resp = send_file(os.path.join(BASE_DIR, 'sw.js'), mimetype='application/javascript')
-    resp.headers['Service-Worker-Allowed'] = '/'
-    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    return resp
+if not any(rule.endpoint == 'serve_service_worker' for rule in app.url_map.iter_rules()):
+    @app.route('/sw.js')
+    def serve_service_worker():
+        resp = send_file(os.path.join(BASE_DIR, 'sw.js'), mimetype='application/javascript')
+        resp.headers['Service-Worker-Allowed'] = '/'
+        resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        return resp
 
-@app.route('/static/<path:filename>')
-def serve_static(filename):
-    """Serve static files (icons, images)"""
-    return send_file(os.path.join(BASE_DIR, 'static', filename))
+if not any(rule.endpoint == 'serve_static' for rule in app.url_map.iter_rules()):
+    @app.route('/static/<path:filename>')
+    def serve_static(filename):
+        return send_file(os.path.join(BASE_DIR, 'static', filename))
 
-@app.route('/.well-known/<path:filename>')
-def serve_well_known(filename):
-    """Serve .well-known files for PWA"""
-    return send_file(os.path.join(BASE_DIR, '.well-known', filename))
-
-# CORS for all routes
+# CORS
 @app.after_request
 def add_cors_headers(response):
     response.headers['Access-Control-Allow-Origin'] = '*'
