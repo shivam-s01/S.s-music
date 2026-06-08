@@ -342,19 +342,27 @@ def play_by_id():
     title   = request.args.get('title', '').strip()[:200]
     artist  = request.args.get('artist', '').strip()[:100]
     token   = request.args.get('token', '').strip()[:200]
-    if not song_id:
-        return jsonify({'success': False, 'url': None, 'token': token}), 400
 
-    result = _fetch_saavn_by_id(song_id, expected_title=title, expected_artist=artist)  # direct fetch
-    if result and result.get('url'):
-        return jsonify({'success': True, 'token': token, **result})
+    # ID se try karo
+    if song_id:
+        result = _fetch_saavn_by_id(song_id, expected_title=title, expected_artist=artist)
+        if result and result.get('url'):
+            stream_url = result['url']
+            if not stream_url.startswith('http'):
+                stream_url = f"/api/stream?url={quote(stream_url, safe='')}"
+            return jsonify({'success': True, 'token': token, 'url': stream_url, **{k:v for k,v in result.items() if k != 'url'}})
 
-    # ID se nahi mila — title/artist se try karo
+    # Title+artist se try karo
     if title:
         from fetchers import fetch_saavn_parallel as _fsp
-        res = _fsp(title, title=title, artist=artist)
-        if res and res.get('url'):
-            return jsonify({'success': True, 'token': token, **res})
+        _lang = _detect_language(title + ' ' + artist)
+        for query in build_query_variants(title, artist, ''):
+            res = _fsp(query, title=title, artist=artist, language=_lang)
+            if res and res.get('url'):
+                stream_url = res['url']
+                if not stream_url.startswith('http'):
+                    stream_url = f"/api/stream?url={quote(stream_url, safe='')}"
+                return jsonify({'success': True, 'token': token, 'url': stream_url, **{k:v for k,v in res.items() if k != 'url'}})
 
     return jsonify({'success': False, 'url': None, 'token': token})
 
