@@ -18,7 +18,7 @@ max_requests_jitter = 150
 
 accesslog = '-'
 errorlog = '-'
-loglevel = os.environ.get('LOG_LEVEL', 'warning')
+loglevel = os.environ.get('LOG_LEVEL', 'info')
 access_log_format = '%(h)s %(r)s %(s)s %(b)sB %(T)ss'
 
 limit_request_line = 4096
