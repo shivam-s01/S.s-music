@@ -83,7 +83,7 @@ from fetchers import (
     _url_refresh_queue,
     _l1_artwork, _l1_verified,
     _fetch_itunes_artwork,
-    _fetch_saavn_by_id,
+    _fetch_saavn_by_id,  # ✅ ADDED - important for playback
 )
 
 def _sb_headers():
@@ -333,30 +333,12 @@ def get_saavn_song():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# /api/play  — Saavn song ID se direct audio URL resolve
+# ⚠️ /api/play — REMOVED DUPLICATE ROUTE ⚠️
+# Ye route ab fetchers.py mein hai (complete rewrite with proper frontend format)
+# Agar tumne fetchers.py replace kar diya hai toh yahan se DELETE karo duplicate.
+# 
+# Pehle yahan /api/play tha, jo ab fetchers.py mein shift ho chuka hai.
 # ═══════════════════════════════════════════════════════════════════════════════
-@app.route('/api/play')
-@limiter.limit("120 per minute")
-def play_by_id():
-    song_id = request.args.get('id', '').strip()[:100]
-    title   = request.args.get('title', '').strip()[:200]
-    artist  = request.args.get('artist', '').strip()[:100]
-    token   = request.args.get('token', '').strip()[:200]
-    if not song_id:
-        return jsonify({'success': False, 'url': None, 'token': token}), 400
-
-    result = _fetch_saavn_by_id(song_id, expected_title=title, expected_artist=artist)  # direct fetch
-    if result and result.get('url'):
-        return jsonify({'success': True, 'token': token, **result})
-
-    # ID se nahi mila — title/artist se try karo
-    if title:
-        from fetchers import fetch_saavn_parallel as _fsp
-        res = _fsp(title, title=title, artist=artist)
-        if res and res.get('url'):
-            return jsonify({'success': True, 'token': token, **res})
-
-    return jsonify({'success': False, 'url': None, 'token': token})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
