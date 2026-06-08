@@ -96,7 +96,7 @@ _DIRECT_HEADERS  = {
     'Referer': 'https://www.jiosaavn.com/',
     'Origin':  'https://www.jiosaavn.com',
 }
-_DIRECT_TIMEOUT = 5
+_DIRECT_TIMEOUT = 8
 
 
 def _jiosaavn_api(params: dict) -> Optional[dict]:
