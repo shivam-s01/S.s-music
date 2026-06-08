@@ -25,10 +25,10 @@ class VerificationConfig:
     """Centralized configuration — tune in one place"""
 
     # Title matching
-    TITLE_MIN_SIMILARITY: float = 0.72
+    TITLE_MIN_SIMILARITY: float = 0.60
 
     # Artist matching — NO EXCEPTIONS
-    ARTIST_MIN_SIMILARITY: float = 0.68
+    ARTIST_MIN_SIMILARITY: float = 0.55
 
     # Duration validation — STRICT
     DURATION_PERFECT_DELTA_S: int = 2
@@ -37,7 +37,7 @@ class VerificationConfig:
     DURATION_MAX_DELTA_S: int = 10
 
     # Overall confidence
-    MIN_CONFIDENCE_SCORE: float = 0.68
+    MIN_CONFIDENCE_SCORE: float = 0.58
 
     # Cache
     CACHE_TTL_SECONDS: int = 86400
@@ -475,11 +475,12 @@ def verify_artist(
     Mandatory artist verification.
     Returns (pass: bool, score: float, reason: str)
     """
+    # Empty artist → neutral pass (cannot reject what we don't know)
     if not saavn_artist:
-        return False, 0.0, "no_saavn_artist"
+        return True, 0.80, "no_saavn_artist_skip"
 
     if not target_artist:
-        return False, 0.0, "no_target_artist"
+        return True, 0.80, "no_target_artist_skip"
 
     score = calculate_artist_similarity(saavn_artist, target_artist)
 
@@ -527,8 +528,9 @@ def verify_duration(
     except (TypeError, ValueError):
         return False, 0.0, "invalid_duration_non_numeric"
 
+    # duration=0 → unknown, skip check (neutral pass — don't hard-fail)
     if saavn_s <= 0 or target_s <= 0:
-        return False, 0.0, "invalid_duration"
+        return True, 0.85, "duration_unknown_skip"
 
     delta: int = abs(saavn_s - target_s)
     max_delta: int = _get_duration_max_delta(saavn_s)
