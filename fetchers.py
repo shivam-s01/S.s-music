@@ -1,13 +1,3 @@
-# fetchers.py - COMPLETE PRODUCTION FIXED VERSION
-# ═══════════════════════════════════════════════════════════════════════════════
-# FIXES INCLUDED:
-# 1. Corrupted parameter cleaning (id="title=xxx" issue)
-# 2. Lowered DNA compatibility threshold (0.6 instead of 0.8)
-# 3. JioSaavn direct API priority over saavndev
-# 4. Proper frontend response format (trackName, artistName, artworkUrl100, etc.)
-# 5. Full fallback chain: Saavn → JioSavan → YTMusic → YTDLP → SoundCloud → Piped → Invidious
-# ═══════════════════════════════════════════════════════════════════════════════
-
 import re
 import os
 import time
@@ -18,7 +8,7 @@ import requests
 import yt_dlp
 from concurrent.futures import as_completed
 from typing import Optional, Dict, Any, List, Tuple
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 from core import (
     log, _executor, _executor_bg, _executor_cache,
     _l1_meta, _l1_audio, _l1_saavn, _l1_popular,
@@ -140,9 +130,6 @@ def _search_direct_jiosaavn(query: str, language: str = '') -> list:
     raw = (data.get('results') or
            (data.get('songs', {}).get('results') if isinstance(data.get('songs'), dict) else None) or
            (data.get('data', {}).get('results') if isinstance(data.get('data'), dict) else None) or [])
-    if not raw and isinstance(data, dict):
-        for v in data.values():
-            if isinstance(v, list) and v: raw = v; break
     return raw or []
 
 
@@ -182,15 +169,7 @@ def _pick_best_direct(raw_results: list, query: str, title: str, artist: str) ->
         song_artist = (song.get('primaryArtists') or song.get('primary_artists') or
                        song.get('singers') or song.get('artist', ''))
         if not song_title: continue
-        
-        # 🔥 FIX: Lowered DNA compatibility threshold to 0.6
-        if not dna_compatible(_conf_title, song_title, threshold=0.6):
-            # Try without special characters as fallback
-            clean_req = re.sub(r'[^\w\s]', '', _conf_title.lower())
-            clean_res = re.sub(r'[^\w\s]', '', song_title.lower())
-            if clean_req not in clean_res and clean_res not in clean_req:
-                continue
-        
+        if not dna_compatible(_conf_title, song_title): continue
         if not has_word_match(_conf_title, song_title): continue
         dur = int(song.get('duration', 999) or 999)
         if dur > 1080: continue
@@ -235,14 +214,9 @@ threading.Thread(target=_cache_cleanup_loop, daemon=True).start()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ARTIST SIMILARITY HELPER — used by fetch_from_mirror + _normalize_saavn_songs
+# ARTIST SIMILARITY HELPER
 # ═══════════════════════════════════════════════════════════════════════════════
 def _best_artist_similarity(req_artist: str, result_artist: str) -> float:
-    """
-    Artist similarity — delegates to production TVE engine.
-    Returns 0.0–1.0. Used as hard gate: < 0.55 = reject.
-    Empty artist → 1.0 (neutral, cannot reject).
-    """
     if not req_artist or not result_artist:
         return 1.0
     return calculate_artist_similarity(req_artist, result_artist)
@@ -281,7 +255,7 @@ def add_cors(resp):
     resp.headers['Access-Control-Allow-Origin']   = '*'
     resp.headers['Access-Control-Allow-Methods']  = 'GET, POST, OPTIONS'
     resp.headers['Access-Control-Allow-Headers']  = '*'
-    resp.headers['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range, X-Audio-Quality, X-Audio-Source, X-Confidence, X-Artwork-URL, X-Song-Title, X-Song-Artist'
+    resp.headers['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range'
     return resp
 
 @app.after_request
@@ -355,7 +329,6 @@ def _fetch_saavn_search_mirror(mirror, search_term, language=''):
 
 def _fetch_saavn_search_parallel(search_term, language=''):
     if not language: language = _detect_language(search_term)
-    # Phase 1: direct APIs (5s)
     _df = {_executor.submit(_search_saavndev,        search_term, language): 'saavndev',
            _executor.submit(_search_direct_jiosaavn, search_term, language): 'direct'}
     try:
@@ -367,7 +340,6 @@ def _fetch_saavn_search_parallel(search_term, language=''):
                     return result
             except Exception: pass
     except Exception: pass
-    # Phase 2: mirrors fallback (3s)
     mirrors = _best_mirrors(n=4)
     futures = {_executor.submit(_fetch_saavn_search_mirror, m, search_term, language): m
                for m in mirrors}
@@ -395,7 +367,6 @@ def _normalize_saavn_songs(raw_songs, query=''):
         year   = str(song.get('year') or '0')[:4]
         dur_s  = int(song.get('duration', 0) or 0)
         dur_ms = dur_s * 1000
-        from core import _is_devotional_query
         _is_devotional = _is_devotional_query(title + ' ' + artist)
         if dur_s == 0: continue
         if dur_s > 1800 and not _is_devotional: continue
@@ -403,12 +374,19 @@ def _normalize_saavn_songs(raw_songs, query=''):
 
         if not _query_wants_ver:
             if _is_remix_or_cover(title):
+                log.debug(f"[SearchFilter] REMIX/COVER blocked: '{title}'")
                 continue
             if _is_slowed_reverb(title):
+                log.debug(f"[SearchFilter] SLOWED/REVERB blocked: '{title}'")
                 continue
             if _is_live_version(title):
+                log.debug(f"[SearchFilter] LIVE blocked: '{title}'")
                 continue
             if has_version_words(title):
+                log.debug(f"[SearchFilter] VERSION WORD blocked: '{title}'")
+                continue
+            if query and not dna_compatible(query, title):
+                log.debug(f"[SearchFilter] DNA MISMATCH blocked: '{title}' for query='{query}'")
                 continue
 
         raw_urls = song.get('downloadUrl') or song.get('download_url') or []
@@ -465,9 +443,7 @@ def _resolve_itunes_to_saavn(itunes_song: dict) -> Optional[dict]:
                         song_artist = (song.get('primaryArtists') or song.get('primary_artists') or
                                        song.get('singers') or song.get('artist', ''))
                         song_dur = int(song.get('duration', 0) or 0)
-                        
-                        # 🔥 FIX: Lowered DNA compatibility threshold
-                        if not dna_compatible(title, song_title, threshold=0.6): continue
+                        if not dna_compatible(title, song_title): continue
                         if artist and song_artist and _best_artist_similarity(artist, song_artist) < 0.55: continue
                         _ok, _conf, _reason = _is_confirmed_match(
                             title, artist, song_title, song_artist,
@@ -520,9 +496,7 @@ def _resolve_itunes_to_saavn(itunes_song: dict) -> Optional[dict]:
                         song_title  = song.get('name') or song.get('title', '')
                         song_artist = song.get('primaryArtists') or song.get('primary_artists') or ''
                         song_dur    = int(song.get('duration', 0) or 0)
-                        
-                        # 🔥 FIX: Lowered DNA compatibility threshold
-                        if not dna_compatible(title, song_title, threshold=0.6): continue
+                        if not dna_compatible(title, song_title): continue
                         if artist and song_artist and _best_artist_similarity(artist, song_artist) < 0.55: continue
                         _ok, _conf, _ = _is_confirmed_match(
                             title, artist, song_title, song_artist,
@@ -1014,7 +988,7 @@ def fetch_from_soundcloud(title, artist='', anchor=None):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SAAVN BY ID — saavn.dev primary, jiosaavn.com secondary, mirrors fallback
+# SAAVN BY ID
 # ═══════════════════════════════════════════════════════════════════════════════
 def _fetch_saavn_by_id(song_id, expected_title='', expected_artist=''):
     l1_key = f"saavn_id:{song_id}"
@@ -1026,15 +1000,15 @@ def _fetch_saavn_by_id(song_id, expected_title='', expected_artist=''):
         if expected_title and id_result.get('title'):
             _c = compute_confidence(expected_title, expected_artist,
                                     id_result['title'], id_result.get('artist',''), source='saavn')
-            if _c < 0.75:  # 🔥 FIX: Lowered from 0.80 to 0.75
+            if _c < 0.80:
                 log.warning(f"[SaavnID] MISMATCH: expected='{expected_title}' got='{id_result['title']}' conf={_c:.3f}")
                 return None
         _t = id_result.get('title', '')
         if not _query_requests_version(expected_title):
             if _is_live_version(_t) or _is_remix_or_cover(_t) or _is_slowed_reverb(_t):
-                log.warning(f"[SaavnID] VERSION REJECTED: '{_t}'"); return None
-            if expected_title and not dna_compatible(expected_title, _t, threshold=0.6):  # 🔥 FIX: Lowered threshold
-                log.warning(f"[SaavnID] DNA MISMATCH: '{_t}'"); return None
+                log.warning(f"[SaavnID] VERSION REJECTED: '{_t}'); return None")
+            if expected_title and not dna_compatible(expected_title, _t):
+                log.warning(f"[SaavnID] DNA MISMATCH: '{_t}'); return None")
         id_result['image'] = _fix_image_url(id_result.get('image','') or _get_artwork(id_result.get('title',''), id_result.get('artist','')))
         if id_result['image']: _store_artwork(id_result['title'], id_result['artist'], id_result['image'], 1)
         _l1_saavn.set(l1_key, id_result)
@@ -1084,9 +1058,8 @@ def _fetch_saavn_by_id(song_id, expected_title='', expected_artist=''):
             except Exception: _mirror_failed(mirror)
         return None
 
-    # 🔥 FIX: Priority to direct jiosaavn API (more reliable)
-    _d = {_executor.submit(_try_direct):   'direct',
-          _executor.submit(_try_saavndev): 'saavndev'}
+    _d = {_executor.submit(_try_saavndev): 'saavndev',
+          _executor.submit(_try_direct):   'direct'}
     result = None
     try:
         for future in as_completed(_d, timeout=5):
@@ -1144,14 +1117,9 @@ def fetch_from_mirror(mirror, query, min_score=0.4, title='', artist='', languag
                 song_title  = song.get('name') or song.get('title', '')
                 song_artist = song.get('primaryArtists') or song.get('primary_artists') or ''
 
-                # 🔥 FIX: Lowered DNA compatibility threshold
-                if not dna_compatible(_conf_title, song_title, threshold=0.6):
-                    # Try without special characters
-                    clean_req = re.sub(r'[^\w\s]', '', _conf_title.lower())
-                    clean_res = re.sub(r'[^\w\s]', '', song_title.lower())
-                    if clean_req not in clean_res and clean_res not in clean_req:
-                        log.debug(f"[Mirror] DNA MISMATCH: '{song_title}'")
-                        continue
+                if not dna_compatible(_conf_title, song_title):
+                    log.debug(f"[Mirror] DNA MISMATCH: '{song_title}'")
+                    continue
 
                 if not has_word_match(_conf_title, song_title): continue
                 dur = int(song.get('duration', 999) or 999)
@@ -1221,9 +1189,8 @@ def fetch_saavn_parallel(query, title='', artist='', language=''):
     _EARLY_EXIT_CONF = 0.82
     best = None
 
-    # 🔥 FIX: Priority to direct jiosaavn API (more reliable)
-    _df = {_executor.submit(_search_direct_jiosaavn, query, _lang): 'direct',
-           _executor.submit(_search_saavndev,        query, _lang): 'saavndev'}
+    _df = {_executor.submit(_search_saavndev,        query, _lang): 'saavndev',
+           _executor.submit(_search_direct_jiosaavn, query, _lang): 'direct'}
     _p1 = []
     try:
         for future in as_completed(_df, timeout=5):
@@ -1316,8 +1283,7 @@ def fetch_from_piped(query, title='', artist=''):
             for item in results[:5]:
                 if item.get('type') != 'stream': continue
                 piped_title = item.get('title', '')
-                # 🔥 FIX: Lowered DNA compatibility threshold
-                if not dna_compatible(title or query, piped_title, threshold=0.6): continue
+                if not dna_compatible(title or query, piped_title): continue
                 if not has_word_match(query, piped_title): continue
                 _ok, _conf, _reason = _is_confirmed_match(
                     title or query, artist, piped_title, item.get('uploaderName', ''),
@@ -1387,8 +1353,7 @@ def fetch_from_invidious(query, title='', artist=''):
             best = None; best_conf = -1.0
             for item in results[:5]:
                 inv_title = item.get('title', '')
-                # 🔥 FIX: Lowered DNA compatibility threshold
-                if not dna_compatible(title or query, inv_title, threshold=0.6): continue
+                if not dna_compatible(title or query, inv_title): continue
                 if not has_word_match(query, inv_title): continue
                 _ok, _conf, _reason = _is_confirmed_match(
                     title or query, artist, inv_title, item.get('author', ''),
@@ -1466,8 +1431,8 @@ def fetch_from_jiosavan(title, artist='', language=''):
             song_artist = song.get('primary_artists') or song.get('singers') or song.get('artist', '')
             song_dur    = int(song.get('duration', 0) or 0)
 
-            # 🔥 FIX: Lowered DNA compatibility threshold
-            if not dna_compatible(title, song_title, threshold=0.6): continue
+            if not dna_compatible(title, song_title):
+                log.debug(f"[JioSavan] DNA MISMATCH: '{song_title}'"); continue
 
             if artist and song_artist:
                 _art_sim = _best_artist_similarity(artist, song_artist)
@@ -1528,346 +1493,349 @@ def fetch_from_jiosavan(title, artist='', language=''):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# /api/play — COMPLETE PRODUCTION FIX WITH PARAMETER CLEANING
+# /api/play — SMART PLAYBACK PIPELINE (REWRITTEN - FIXED)
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/play')
 @limiter.limit("200 per minute")
 def play_song():
     """
-    COMPLETE FIXED VERSION with:
-    1. Corrupted parameter cleaning (id="title=xxx" issue from logs)
-    2. Proper frontend response format
-    3. Full fallback chain
-    4. Production logging
+    Play song endpoint with corrupted parameter cleaning.
+    Handles: id='title=Falak Tak...' corruption from frontend
+    Returns format expected by frontend via headers
     """
     
-    # ═══════════════════════════════════════════════════════════════════════
-    # 🔥 CRITICAL FIX 1: Clean corrupted parameters from frontend
-    # Logs showed: id='title=Dil To Pagal Hai Lata Mangeshkar'
-    # ═══════════════════════════════════════════════════════════════════════
+    # ========== STEP 1: CLEAN CORRUPTED PARAMETERS ==========
     raw_id = request.args.get('id', '').strip()
     raw_title = request.args.get('title', '').strip()
     raw_artist = request.args.get('artist', '').strip()
-    token = request.args.get('token', '').strip()[:200]
     
-    # Log raw request for debugging
-    log.info(f"[Play] RAW REQUEST: id='{raw_id[:100]}' title='{raw_title[:50]}' artist='{raw_artist[:30]}'")
+    log.info(f"[Play] RAW request: id='{raw_id[:100]}', title='{raw_title[:50]}', artist='{raw_artist[:50]}'")
     
-    # Fix 1: Agar id "title=something" jaisa corrupted hai
-    if raw_id and ('title=' in raw_id or 'artist=' in raw_id):
-        import re
+    # Detect and fix corrupted 'id' parameter (contains 'title=...')
+    if raw_id and 'title=' in raw_id:
         log.warning(f"[Play] Corrupted id detected: '{raw_id[:100]}'")
-        # Extract actual values from corrupted string
-        title_match = re.search(r'title=([^&]+)', raw_id)
-        artist_match = re.search(r'artist=([^&]+)', raw_id)
-        if title_match and not raw_title:
-            raw_title = title_match.group(1)
-            log.info(f"[Play] Extracted title from corrupted id: '{raw_title[:50]}'")
-        if artist_match and not raw_artist:
-            raw_artist = artist_match.group(1)
-            log.info(f"[Play] Extracted artist from corrupted id: '{raw_artist[:30]}'")
-        raw_id = ''  # Corrupted id ko ignore karo
+        # Extract actual title from corrupted id
+        import re
+        match = re.search(r'title=([^&]+)', raw_id)
+        if match:
+            extracted_title = unquote(match.group(1))
+            if not raw_title:
+                raw_title = extracted_title
+                log.info(f"[Play] Extracted title from corrupted id: '{raw_title[:50]}'")
+        raw_id = ''  # Clear corrupted id
     
-    # Fix 2: Agar id "id=12345" format mein hai toh extract karo
-    if raw_id and raw_id.startswith('id='):
-        raw_id = raw_id[3:]  # Remove "id=" prefix
-        log.info(f"[Play] Removed 'id=' prefix: '{raw_id[:30]}'")
+    # If id looks like a title (contains spaces or special chars), treat as title
+    if raw_id and (' ' in raw_id or '%20' in raw_id):
+        log.warning(f"[Play] id contains spaces, treating as title: '{raw_id[:100]}'")
+        if not raw_title:
+            raw_title = raw_id
+        raw_id = ''
     
-    # Fix 3: URL decode if needed
-    from urllib.parse import unquote
-    song_id = unquote(raw_id)[:100] if raw_id else ''
-    title = unquote(raw_title)[:200] if raw_title else ''
-    artist = unquote(raw_artist)[:100] if raw_artist else ''
+    # URL decode
+    try:
+        if raw_title:
+            raw_title = unquote(raw_title)
+        if raw_artist:
+            raw_artist = unquote(raw_artist)
+        if raw_id:
+            raw_id = unquote(raw_id)
+    except Exception:
+        pass
     
-    log.info(f"[Play] CLEANED: id='{song_id[:30]}' title='{title[:50]}' artist='{artist[:30]}'")
+    # Clean up: remove common prefixes/suffixes that indicate corrupted data
+    if raw_title and raw_title.startswith('title='):
+        raw_title = raw_title[6:]
+    if raw_title and '&' in raw_title:
+        raw_title = raw_title.split('&')[0]
     
-    # ═══════════════════════════════════════════════════════════════════════
-    # Validate request
-    # ═══════════════════════════════════════════════════════════════════════
+    song_id = raw_id[:100] if raw_id else ''
+    title = raw_title[:200] if raw_title else ''
+    artist = raw_artist[:100] if raw_artist else ''
+    
+    # Validate we have at least title
     if not song_id and not title:
-        log.error("[Play] ERROR: Neither id nor title provided")
-        return jsonify({'success': False, 'error': 'Missing id or title parameter', 'token': token}), 400
+        log.error(f"[Play] Missing both id and title. Raw: id={raw_id}, title={raw_title}")
+        return jsonify({'error': 'Missing id or title'}), 400
     
-    # ═══════════════════════════════════════════════════════════════════════
-    # Check caches
-    # ═══════════════════════════════════════════════════════════════════════
-    import hashlib
-    cache_key = f"play:{song_id or hashlib.md5(f"{title}:{artist}".encode()).hexdigest()[:16]}:{normalize(artist)}"
+    log.info(f"[Play] Cleaned: id='{song_id}', title='{title}', artist='{artist}'")
     
-    # Check L1 cache
-    cached_result = _l1_saavn.get(cache_key)
-    if cached_result and cached_result.get('url') and cached_result.get('trackName'):
-        log.info(f"[Play] L1 CACHE HIT: '{cached_result.get('trackName')}'")
-        return jsonify({
-            'success': True,
-            'token': token,
-            'url': cached_result.get('url'),
-            'trackName': cached_result.get('trackName'),
-            'artistName': cached_result.get('artistName'),
-            'artworkUrl100': cached_result.get('artworkUrl100', ''),
-            'trackId': cached_result.get('trackId', song_id),
-            '_saavnId': cached_result.get('_saavnId', song_id),
-            'quality': cached_result.get('quality', 'unknown'),
-            'source': cached_result.get('source', 'cached'),
-        })
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # Resolve audio source
-    # ═══════════════════════════════════════════════════════════════════════
+    # ========== STEP 2: CACHE CHECK ==========
     audio_url = None
+    quality = 'unknown'
+    source = 'unknown'
+    confidence = 0.0
     result_title = title
     result_artist = artist
-    result_artwork = ''
-    result_quality = 'unknown'
-    result_source = 'unknown'
-    result_confidence = 0.0
-    result_track_id = song_id
+    result_image = ''
+    result_saavn_id = song_id
     
-    # ── 1. If we have song_id, fetch Saavn by ID ──────────────────────────
-    if song_id:
-        log.info(f"[Play] Fetching by ID: {song_id}")
-        saavn_result = _fetch_saavn_by_id(song_id, expected_title=title, expected_artist=artist)
-        if saavn_result and saavn_result.get('url'):
-            audio_url = saavn_result['url']
-            result_quality = saavn_result.get('quality', '320kbps')
-            result_title = saavn_result.get('title', title)
-            result_artist = saavn_result.get('artist', artist)
-            result_artwork = saavn_result.get('image', '')
-            result_source = 'saavn'
-            result_confidence = saavn_result.get('_confidence', 0.90)
-            log.info(f"[Play] ID RESOLVE SUCCESS: '{result_title}' -> {result_quality}")
+    # Build cache keys
+    cache_key = f"play:{song_id or normalize(title)}:{normalize(artist)}"
+    cache_key_id = f"play:{song_id}:{normalize(artist)}" if song_id else None
+    cache_key_title = f"play:{normalize(title)}:{normalize(artist)}" if title else None
     
-    # ── 2. If ID failed or not provided, search Saavn ──────────────────────
+    def check_cache_entry(entry):
+        if not entry or not entry.get('url'):
+            return None
+        # Don't serve version songs if user didn't request them
+        if not _query_requests_version(title or ''):
+            if (_is_remix_or_cover(entry.get('title', '')) or
+                _is_slowed_reverb(entry.get('title', '')) or
+                _is_live_version(entry.get('title', ''))):
+                return None
+        return entry
+    
+    # Check L1 cache
+    for ck in [cache_key_id, cache_key_title, cache_key]:
+        if not ck:
+            continue
+        cached = _l1_saavn.get(ck)
+        if check_cache_entry(cached):
+            audio_url = cached['url']
+            quality = cached.get('quality', 'unknown')
+            source = cached.get('source', 'unknown')
+            confidence = float(cached.get('confidence', cached.get('_confidence', 0.85)))
+            result_title = cached.get('title', title)
+            result_artist = cached.get('artist', artist)
+            result_image = cached.get('image', '')
+            result_saavn_id = cached.get('_saavnId', song_id)
+            log.info(f"[Play] Cache L1 hit: {source} conf={confidence:.2f}")
+            break
+    
+    # ========== STEP 3: SAAVN BY ID ==========
+    if not audio_url and song_id:
+        # Validate song_id looks like real ID (alphanumeric, no spaces, not too long)
+        import re
+        if re.match(r'^[a-zA-Z0-9_-]{5,50}$', song_id):
+            result = _fetch_saavn_by_id(song_id, expected_title=title, expected_artist=artist)
+            if result and result.get('url'):
+                audio_url = result['url']
+                quality = result.get('quality', 'unknown')
+                source = 'saavn'
+                confidence = float(result.get('_confidence', result.get('score', 0.92)))
+                result_title = result.get('title', title)
+                result_artist = result.get('artist', artist)
+                result_image = result.get('image', '')
+                result_saavn_id = song_id
+                log.info(f"[Play] Saavn ID fetch success: {result_title} conf={confidence:.2f}")
+    
+    # ========== STEP 4: SAAVN SEARCH ==========
     if not audio_url and title:
-        log.info(f"[Play] Searching Saavn: '{title}' by '{artist}'")
-        language = _detect_language(title + ' ' + artist)
-        
-        search_variants = build_query_variants(title, artist, '')
-        
-        for variant in search_variants:
-            if audio_url: break
-            saavn_search = fetch_saavn_parallel(variant, title=title, artist=artist, language=language)
-            if saavn_search and saavn_search.get('url'):
-                _ok, _conf, _reason = _is_confirmed_match(
-                    title, artist,
-                    saavn_search.get('title', ''),
-                    saavn_search.get('artist', ''),
-                    source='saavn',
-                    min_conf=0.65
-                )
-                if _ok:
-                    audio_url = saavn_search['url']
-                    result_quality = saavn_search.get('quality', '320kbps')
-                    result_title = saavn_search.get('title', title)
-                    result_artist = saavn_search.get('artist', artist)
-                    result_artwork = saavn_search.get('image', '')
-                    result_source = 'saavn'
-                    result_confidence = _conf
-                    log.info(f"[Play] SAAVN SEARCH SUCCESS: '{result_title}' conf={_conf:.2f}")
+        for query_var in build_query_variants(title, artist, ''):
+            result = fetch_saavn_parallel(query_var, title=title, artist=artist)
+            if result and result.get('url'):
+                conf = float(result.get('_confidence', result.get('score', 0)))
+                if conf >= 0.65:
+                    audio_url = result['url']
+                    quality = result.get('quality', 'unknown')
+                    source = 'saavn'
+                    confidence = conf
+                    result_title = result.get('title', title)
+                    result_artist = result.get('artist', artist)
+                    result_image = result.get('image', '')
+                    log.info(f"[Play] Saavn search success: {result_title} conf={conf:.2f}")
                     break
-                else:
-                    log.debug(f"[Play] SAAVN SEARCH REJECTED: {_reason}")
     
-    # ── 3. Fallback to JioSavan ───────────────────────────────────────────
+    # ========== STEP 5: FALLBACK SOURCES ==========
     if not audio_url and title:
-        log.info(f"[Play] Trying JioSavan: '{title}'")
-        jiosavan_result = fetch_from_jiosavan(title, artist)
-        if jiosavan_result and jiosavan_result.get('url'):
-            _ok, _conf, _reason = _is_confirmed_match(
-                title, artist,
-                jiosavan_result.get('title', ''),
-                jiosavan_result.get('artist', ''),
-                source='jiosavan',
-                min_conf=0.60
-            )
-            if _ok:
-                audio_url = jiosavan_result['url']
-                result_quality = jiosavan_result.get('quality', '320kbps')
-                result_title = jiosavan_result.get('title', title)
-                result_artist = jiosavan_result.get('artist', artist)
-                result_artwork = jiosavan_result.get('image', '')
-                result_source = 'jiosavan'
-                result_confidence = _conf
-                log.info(f"[Play] JIOSAVAN SUCCESS: '{result_title}' conf={_conf:.2f}")
-            else:
-                log.debug(f"[Play] JIOSAVAN REJECTED: {_reason}")
+        log.info(f"[Play] Saavn miss, trying fallbacks: '{title[:50]}'")
+        
+        # Try JioSavan first (often has results)
+        jio_result = fetch_from_jiosavan(title, artist)
+        if jio_result and jio_result.get('url'):
+            conf = float(jio_result.get('_confidence', 0.7))
+            if conf >= 0.60:
+                audio_url = jio_result['url']
+                quality = jio_result.get('quality', 'unknown')
+                source = 'jiosavan'
+                confidence = conf
+                result_title = jio_result.get('title', title)
+                result_artist = jio_result.get('artist', artist)
+                result_image = jio_result.get('image', '')
+                log.info(f"[Play] JioSavan success: {result_title}")
+        
+        # Try YouTube Music
+        if not audio_url:
+            ytm_result = fetch_from_ytmusic(title, artist)
+            if ytm_result and ytm_result.get('url'):
+                conf = float(ytm_result.get('_confidence', 0.7))
+                if conf >= 0.55:
+                    audio_url = ytm_result['url']
+                    quality = ytm_result.get('quality', 'unknown')
+                    source = 'ytmusic'
+                    confidence = conf
+                    result_title = ytm_result.get('title', title)
+                    result_artist = ytm_result.get('artist', artist)
+                    result_image = ytm_result.get('image', '')
+                    log.info(f"[Play] YTMusic success: {result_title}")
+        
+        # Try yt-dlp
+        if not audio_url:
+            ytdlp_result = fetch_from_ytdlp(title, artist)
+            if ytdlp_result and ytdlp_result.get('url'):
+                conf = float(ytdlp_result.get('_confidence', 0.65))
+                if conf >= 0.55:
+                    audio_url = ytdlp_result['url']
+                    quality = ytdlp_result.get('quality', 'unknown')
+                    source = 'youtube'
+                    confidence = conf
+                    result_title = ytdlp_result.get('title', title)
+                    result_artist = ytdlp_result.get('artist', artist)
+                    result_image = ytdlp_result.get('image', '')
+                    log.info(f"[Play] yt-dlp success: {result_title}")
+        
+        # Try SoundCloud
+        if not audio_url:
+            sc_result = fetch_from_soundcloud(title, artist)
+            if sc_result and sc_result.get('url'):
+                conf = float(sc_result.get('_confidence', 0.6))
+                if conf >= 0.55:
+                    audio_url = sc_result['url']
+                    quality = sc_result.get('quality', 'unknown')
+                    source = 'soundcloud'
+                    confidence = conf
+                    result_title = sc_result.get('title', title)
+                    result_artist = sc_result.get('artist', artist)
+                    result_image = sc_result.get('image', '')
+                    log.info(f"[Play] SoundCloud success: {result_title}")
     
-    # ── 4. Fallback to YouTube Music ───────────────────────────────────────
-    if not audio_url and title:
-        log.info(f"[Play] Trying YouTube Music: '{title}'")
-        anchor = {'title': title, 'artist': artist}
-        ytm_result = fetch_from_ytmusic(title, artist, anchor)
-        if ytm_result and ytm_result.get('url'):
-            _ok, _conf, _reason = _is_confirmed_match(
-                title, artist,
-                ytm_result.get('title', ''),
-                ytm_result.get('artist', ''),
-                source='ytmusic',
-                min_conf=0.55
-            )
-            if _ok:
-                audio_url = ytm_result['url']
-                result_quality = ytm_result.get('quality', '128kbps')
-                result_title = ytm_result.get('title', title)
-                result_artist = ytm_result.get('artist', artist)
-                result_artwork = ytm_result.get('image', '')
-                result_source = 'ytmusic'
-                result_confidence = _conf
-                log.info(f"[Play] YTMUSIC SUCCESS: '{result_title}' conf={_conf:.2f}")
-            else:
-                log.debug(f"[Play] YTMUSIC REJECTED: {_reason}")
-    
-    # ── 5. Fallback to yt-dlp ──────────────────────────────────────────────
-    if not audio_url and title:
-        log.info(f"[Play] Trying yt-dlp: '{title}'")
-        ytdlp_result = fetch_from_ytdlp(title, artist)
-        if ytdlp_result and ytdlp_result.get('url'):
-            _ok, _conf, _reason = _is_confirmed_match(
-                title, artist,
-                ytdlp_result.get('title', ''),
-                ytdlp_result.get('artist', ''),
-                source='youtube',
-                min_conf=0.50
-            )
-            if _ok:
-                audio_url = ytdlp_result['url']
-                result_quality = ytdlp_result.get('quality', '128kbps')
-                result_title = ytdlp_result.get('title', title)
-                result_artist = ytdlp_result.get('artist', artist)
-                result_artwork = ytdlp_result.get('image', '')
-                result_source = 'youtube'
-                result_confidence = _conf
-                log.info(f"[Play] YTDLP SUCCESS: '{result_title}' conf={_conf:.2f}")
-            else:
-                log.debug(f"[Play] YTDLP REJECTED: {_reason}")
-    
-    # ── 6. Fallback to SoundCloud ──────────────────────────────────────────
-    if not audio_url and title:
-        log.info(f"[Play] Trying SoundCloud: '{title}'")
-        sc_result = fetch_from_soundcloud(title, artist)
-        if sc_result and sc_result.get('url'):
-            _ok, _conf, _reason = _is_confirmed_match(
-                title, artist,
-                sc_result.get('title', ''),
-                sc_result.get('artist', ''),
-                source='soundcloud',
-                min_conf=0.50
-            )
-            if _ok:
-                audio_url = sc_result['url']
-                result_quality = sc_result.get('quality', '128kbps')
-                result_title = sc_result.get('title', title)
-                result_artist = sc_result.get('artist', artist)
-                result_artwork = sc_result.get('image', '')
-                result_source = 'soundcloud'
-                result_confidence = _conf
-                log.info(f"[Play] SOUNDCLOUD SUCCESS: '{result_title}' conf={_conf:.2f}")
-            else:
-                log.debug(f"[Play] SOUNDCLOUD REJECTED: {_reason}")
-    
-    # ── 7. Final fallback to Piped/Invidious ────────────────────────────────
-    if not audio_url and title:
-        log.info(f"[Play] Trying Piped: '{title}'")
-        piped_result = fetch_from_piped(title, title=title, artist=artist)
-        if piped_result and piped_result.get('url'):
-            audio_url = piped_result['url']
-            result_quality = piped_result.get('quality', '128kbps')
-            result_title = piped_result.get('title', title)
-            result_artist = piped_result.get('artist', artist)
-            result_artwork = piped_result.get('image', '')
-            result_source = 'piped'
-            result_confidence = 0.60
-            log.info(f"[Play] PIPED SUCCESS: '{result_title}'")
-    
-    if not audio_url and title:
-        log.info(f"[Play] Trying Invidious: '{title}'")
-        inv_result = fetch_from_invidious(title, title=title, artist=artist)
-        if inv_result and inv_result.get('url'):
-            audio_url = inv_result['url']
-            result_quality = inv_result.get('quality', '128kbps')
-            result_title = inv_result.get('title', title)
-            result_artist = inv_result.get('artist', artist)
-            result_artwork = inv_result.get('image', '')
-            result_source = 'invidious'
-            result_confidence = 0.55
-            log.info(f"[Play] INVIDIOUS SUCCESS: '{result_title}'")
-    
-    # ═══════════════════════════════════════════════════════════════════════
-    # Check if we have audio URL
-    # ═══════════════════════════════════════════════════════════════════════
+    # ========== STEP 6: FINAL VALIDATION ==========
     if not audio_url:
-        log.error(f"[Play] FAILED: No audio source found for id='{song_id}' title='{title}' artist='{artist}'")
-        return jsonify({'success': False, 'error': 'No audio source found', 'token': token}), 404
+        log.warning(f"[Play] All sources failed for: title='{title}'")
+        return jsonify({'error': 'No audio source found', 'title': title}), 404
     
-    # ═══════════════════════════════════════════════════════════════════════
-    # Enhance artwork
-    # ═══════════════════════════════════════════════════════════════════════
-    final_artwork = result_artwork
-    if not final_artwork and title:
-        final_artwork = _get_artwork(title, result_artist)
-    if not final_artwork and title:
-        try:
-            from core import _fetch_itunes_artwork
-            final_artwork = _fetch_itunes_artwork(title, result_artist)
-            if final_artwork:
-                _store_artwork(title, result_artist, final_artwork, 5)
-        except Exception:
-            pass
+    # Confidence gate
+    min_confidence = 0.55 if source in ('saavn', 'jiosavan') else 0.50
+    if confidence < min_confidence:
+        log.warning(f"[Play] Low confidence rejected: {confidence:.3f} < {min_confidence}")
+        return jsonify({'error': 'Low confidence match', 'confidence': confidence}), 404
     
-    if final_artwork:
-        final_artwork = _fix_image_url(final_artwork)
+    # DNA compatibility final check
+    if title and result_title:
+        if not dna_compatible(title, result_title):
+            log.warning(f"[Play] DNA mismatch: '{title}' vs '{result_title}'")
+            return jsonify({'error': 'Song DNA mismatch'}), 404
     
-    # Generate track ID if not available
-    if not result_track_id and title:
-        result_track_id = hashlib.md5(f"{result_title}:{result_artist}".encode()).hexdigest()[:16]
+    # ========== STEP 7: GET BEST ARTWORK ==========
+    final_image = result_image
+    if not final_image:
+        final_image = _get_artwork(result_title, result_artist)
+    if not final_image and title:
+        final_image = _fetch_itunes_artwork(result_title, result_artist)
+    if not final_image and song_id:
+        cached = _l1_saavn.get(f"saavn_id:{song_id}")
+        if cached and cached.get('image'):
+            final_image = cached['image']
     
-    # ═══════════════════════════════════════════════════════════════════════
-    # Prepare response (frontend-expected format)
-    # ═══════════════════════════════════════════════════════════════════════
-    response_data = {
-        'success': True,
-        'token': token,
-        'url': audio_url,
-        'trackName': result_title,
-        'artistName': result_artist,
-        'artworkUrl100': final_artwork or '',
-        'trackId': result_track_id,
-        '_saavnId': song_id or result_track_id,
-        'quality': result_quality,
-        'source': result_source,
-        'confidence': round(result_confidence, 3),
-    }
+    if final_image:
+        final_image = _fix_image_url(final_image)
     
-    # ═══════════════════════════════════════════════════════════════════════
-    # Cache the successful result
-    # ═══════════════════════════════════════════════════════════════════════
+    # ========== STEP 8: CACHE RESULT ==========
     cache_payload = {
         'url': audio_url,
-        'trackName': result_title,
-        'artistName': result_artist,
-        'artworkUrl100': final_artwork or '',
-        'trackId': result_track_id,
-        '_saavnId': song_id or result_track_id,
-        'quality': result_quality,
-        'source': result_source,
-        'confidence': round(result_confidence, 3),
+        'quality': quality,
+        'source': source,
+        'title': result_title,
+        'artist': result_artist,
+        'image': final_image,
+        'confidence': round(confidence, 3),
+        '_saavnId': result_saavn_id or song_id,
     }
     
-    _l1_saavn.set(cache_key, cache_payload)
+    if confidence >= 0.70:
+        for ck in [cache_key_id, cache_key_title, cache_key]:
+            if ck:
+                _l1_saavn.set(ck, cache_payload)
+        try:
+            _executor_cache.submit(_supabase_cache_set, cache_key, cache_payload, confidence)
+        except Exception as e:
+            log.debug(f"[Play] Cache write error: {e}")
     
-    if result_confidence >= 0.65:
-        _executor_cache.submit(_supabase_cache_set, cache_key, cache_payload, result_confidence)
+    if final_image and result_title:
+        _store_artwork(result_title, result_artist, final_image, 1)
     
-    if song_id and result_confidence >= 0.75:
-        _store_verified(song_id, result_title, result_artist, cache_payload, result_confidence)
+    # ========== STEP 9: STREAM RESPONSE WITH FRONTEND FORMAT ==========
+    response_headers = {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Expose-Headers': 'Content-Length, Content-Range, X-Audio-Quality, X-Audio-Source, X-Confidence, X-Artwork-URL, X-Song-Title, X-Song-Artist, X-Track-Id, X-Track-Name, X-Artist-Name',
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': 'no-store',
+        'X-Audio-Quality': quality,
+        'X-Audio-Source': source,
+        'X-Confidence': str(round(confidence, 3)),
+        'X-Artwork-URL': final_image or '',
+        'X-Song-Title': result_title[:200],
+        'X-Song-Artist': result_artist[:100],
+        'X-Track-Id': result_saavn_id or song_id or '',
+        'X-Track-Name': result_title[:200],
+        'X-Artist-Name': result_artist[:100],
+    }
     
-    if final_artwork and result_title:
-        priority = 1 if result_source in ('saavn', 'jiosavan') else 2 if result_source == 'ytmusic' else 3
-        _store_artwork(result_title, result_artist, final_artwork, priority)
-    
-    log.info(f"[Play] ✅ SUCCESS: '{result_title}' src={result_source} q={result_quality} conf={result_confidence:.2f}")
-    
-    return jsonify(response_data)
+    try:
+        req_headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'audio/mpeg,audio/webm,audio/ogg,audio/*;q=0.9,*/*;q=0.5',
+            'Accept-Encoding': 'identity',
+            'Connection': 'keep-alive',
+        }
+        
+        range_header = request.headers.get('Range')
+        if range_header:
+            req_headers['Range'] = range_header
+        
+        upstream = requests.get(audio_url, headers=req_headers, stream=True,
+                                timeout=(10, None), allow_redirects=True)
+        
+        # Filter response headers
+        excluded = {'content-encoding', 'transfer-encoding', 'connection', 'content-length'}
+        for k, v in upstream.headers.items():
+            if k.lower() not in excluded:
+                response_headers[k] = v
+        
+        if 'content-type' not in {k.lower() for k in response_headers}:
+            response_headers['Content-Type'] = 'audio/mpeg'
+        
+        def generate():
+            try:
+                for chunk in upstream.iter_content(chunk_size=32768):
+                    if chunk:
+                        yield chunk
+            finally:
+                upstream.close()
+        
+        return Response(stream_with_context(generate()),
+                       status=upstream.status_code,
+                       headers=response_headers,
+                       direct_passthrough=True)
+                       
+    except Exception as e:
+        log.error(f"[Play] Stream error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HELPER: Fetch iTunes Artwork
+# ═══════════════════════════════════════════════════════════════════════════════
+def _fetch_itunes_artwork(query, artist='', limit=1):
+    """Fetch high-quality artwork from iTunes"""
+    try:
+        term = f"{query} {artist}".strip()
+        r = requests.get(
+            'https://itunes.apple.com/search',
+            params={'term': term, 'media': 'music', 'entity': 'song',
+                    'limit': 5, 'country': 'IN'},
+            timeout=5
+        )
+        results = r.json().get('results', [])
+        for item in results:
+            art = item.get('artworkUrl100', '')
+            if art:
+                art = re.sub(r'\b\d+x\d+bb\b', '600x600bb', art)
+                art = re.sub(r'\b\d+x\d+\b', '600x600', art)
+                return art
+    except Exception:
+        pass
+    return ''
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1920,7 +1888,7 @@ def prefetch_songs():
                     _res_title  = _res.get('title', '')
                     _res_artist = _res.get('artist', '')
                     if _title and _res_title:
-                        if not dna_compatible(_title, _res_title, threshold=0.6):
+                        if not dna_compatible(_title, _res_title):
                             log.warning(f"[Prefetch] DNA MISMATCH cache write blocked: '{_res_title}'")
                             continue
                         _ok, _pconf, _reason = _is_confirmed_match(
@@ -1936,48 +1904,6 @@ def prefetch_songs():
     for song in queue:
         _executor_bg.submit(_do_prefetch, song)
     return jsonify({'status': 'prefetching', 'count': len(queue)})
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# FIX: TRY-EXCEPT BLOCK FOR CORE IMPORTS
-# ═══════════════════════════════════════════════════════════════════════════════
-try:
-    from core import _l1_artwork, _l1_verified
-except ImportError:
-    from cachetools import TTLCache
-    _l1_artwork = TTLCache(maxsize=500, ttl=3600)
-    _l1_verified = TTLCache(maxsize=500, ttl=3600)
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# UTILITY FUNCTIONS
-# ═══════════════════════════════════════════════════════════════════════════════
-def _fetch_itunes_artwork(query, artist='', limit=1):
-    try:
-        term = f"{query} {artist}".strip()
-        r = requests.get(
-            'https://itunes.apple.com/search',
-            params={'term': term, 'media': 'music', 'entity': 'song',
-                    'limit': 5, 'country': 'IN'},
-            timeout=5
-        )
-        results = r.json().get('results', [])
-        for item in results:
-            art = item.get('artworkUrl100', '')
-            if art:
-                art = re.sub(r'\b\d+x\d+bb\b', '600x600bb', art)
-                art = re.sub(r'\b\d+x\d+\b', '600x600', art)
-                return art
-    except Exception:
-        pass
-    return ''
-
-
-def _is_allowed_domain(domain: str) -> bool:
-    return any(
-        domain == d or domain.endswith('.' + d)
-        for d in ALLOWED_STREAM_DOMAINS
-    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -2040,7 +1966,7 @@ def _do_prefetch_song(song):
                     _res_title  = _res.get('title', '')
                     _res_artist = _res.get('artist', '')
                     if _title and _res_title:
-                        if not dna_compatible(_title, _res_title, threshold=0.6):
+                        if not dna_compatible(_title, _res_title):
                             log.warning(f"[PrefetchSong] DNA MISMATCH blocked: '{_res_title}'")
                             continue
                         _ok, _pconf, _reason = _is_confirmed_match(
@@ -2056,3 +1982,14 @@ def _do_prefetch_song(song):
         log.debug(f"[Prefetch] Error: {e}")
 
 _do_prefetch = _do_prefetch_song
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRY-EXCEPT BLOCK FOR CORE IMPORTS
+# ═══════════════════════════════════════════════════════════════════════════════
+try:
+    from core import _l1_artwork, _l1_verified
+except ImportError:
+    from cachetools import TTLCache
+    _l1_artwork = TTLCache(maxsize=500, ttl=3600)
+    _l1_verified = TTLCache(maxsize=500, ttl=3600)
