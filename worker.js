@@ -1,21 +1,90 @@
 const ORIGINS = [
-  'https://aurumusic.up.railway.app/',   // PRIMARY - Railway
-  'https://s-s-music-0uxa.onrender.com',  // FALLBACK - Render
+  'https://ss-music-production.up.railway.app',
+  'https://s-s-music-0uxa.onrender.com',
 ];
 
 const CACHE_TTL = {
-  stream: 3600,
-  songs: 120,
-  song: 300,
-  static: 0,
-  default: 60,
+  stream: 3600, songs: 120, song: 300, static: 0, default: 60,
+};
+const NO_CACHE = ['/health', '/api/yt', '/api/play'];
+
+// ── YouTube InnerTube API — Cloudflare IP se kaam karta hai ──────────────────
+const YT_INNERTUBE_KEY = 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
+const YT_CONTEXT = {
+  client: {
+    clientName: 'ANDROID_MUSIC',
+    clientVersion: '6.42.52',
+    androidSdkVersion: 30,
+    hl: 'en', gl: 'IN',
+  }
 };
 
-const NO_CACHE = ['/health', '/api/yt', '/api/download'];
+async function ytSearch(query) {
+  try {
+    const resp = await fetch(
+      `https://www.youtube.com/youtubei/v1/search?key=${YT_INNERTUBE_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0' },
+        body: JSON.stringify({
+          context: YT_CONTEXT,
+          query: query,
+          params: 'EgWKAQIIAWoKEAkQBRAKEAMQBA==',
+        }),
+      }
+    );
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const items = data?.contents?.sectionListRenderer?.contents?.[0]
+      ?.musicShelfRenderer?.contents || [];
+    for (const item of items) {
+      const r = item?.musicResponsiveListItemRenderer;
+      if (!r) continue;
+      const videoId = r?.overlay?.musicItemThumbnailOverlayRenderer
+        ?.content?.musicPlayButtonRenderer?.playNavigationEndpoint
+        ?.watchEndpoint?.videoId;
+      if (videoId) return videoId;
+    }
+  } catch (e) {}
+  return null;
+}
+
+async function ytAudioUrl(videoId) {
+  try {
+    const resp = await fetch(
+      `https://www.youtube.com/youtubei/v1/player?key=${YT_INNERTUBE_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0' },
+        body: JSON.stringify({
+          context: YT_CONTEXT,
+          videoId: videoId,
+          params: '2AMBCgIQBg==',
+        }),
+      }
+    );
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const formats = data?.streamingData?.adaptiveFormats || [];
+    // Sirf audio formats
+    const audio = formats.filter(f => f.mimeType?.startsWith('audio/') && f.url);
+    if (!audio.length) return null;
+    // Best bitrate
+    audio.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+    const best = audio[0];
+    return {
+      url: best.url,
+      quality: best.bitrate ? `${Math.round(best.bitrate / 1000)}kbps` : 'unknown',
+      title: data?.videoDetails?.title || '',
+      thumbnail: data?.videoDetails?.thumbnail?.thumbnails?.slice(-1)[0]?.url || '',
+    };
+  } catch (e) {}
+  return null;
+}
 
 export default {
   async fetch(request, env, ctx) {
-    const { pathname } = new URL(request.url);
+    const { pathname, searchParams } = new URL(request.url);
 
     if (request.method === 'OPTIONS') {
       return new Response(null, {
@@ -29,11 +98,34 @@ export default {
       });
     }
 
+    // ── /api/yt — YouTube audio directly from Cloudflare ─────────────────────
+    if (pathname === '/api/yt') {
+      const q = searchParams.get('q') || '';
+      const videoId = searchParams.get('id') || await ytSearch(q);
+      if (!videoId) {
+        return new Response(JSON.stringify({ success: false, error: 'Not found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        });
+      }
+      const result = await ytAudioUrl(videoId);
+      if (!result) {
+        return new Response(JSON.stringify({ success: false, error: 'No audio URL' }), {
+          status: 502,
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        });
+      }
+      return new Response(JSON.stringify({ success: true, ...result }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      });
+    }
+
+    // ── Baaki sab Railway/Render pe forward ───────────────────────────────────
     const skipCache = NO_CACHE.some(r => pathname.startsWith(r));
     const isStream = pathname.startsWith('/api/stream');
     const hasRange = request.headers.has('Range');
 
-    // cache check
     if (!skipCache && !isStream && !hasRange && request.method === 'GET') {
       const cached = await caches.default.match(new Request(request.url, { method: 'GET' }));
       if (cached) {
@@ -44,7 +136,6 @@ export default {
       }
     }
 
-    // origin pe bhejo
     let originResp, usedOrigin;
     for (const origin of ORIGINS) {
       try {
@@ -52,36 +143,25 @@ export default {
         url.hostname = new URL(origin).hostname;
         url.protocol = 'https:';
         url.port = '';
-
         const headers = new Headers(request.headers);
-        const ip = request.headers.get('CF-Connecting-IP') || '127.0.0.1';
-        headers.set('X-Forwarded-For', ip);
-        headers.set('X-Real-IP', ip);
-        headers.set('X-Forwarded-Proto', 'https');
+        headers.set('X-Forwarded-For', request.headers.get('CF-Connecting-IP') || '127.0.0.1');
         headers.set('Host', new URL(origin).hostname);
         headers.delete('CF-Ray');
         headers.delete('CF-Visitor');
-
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 8000);
-
+        const timer = setTimeout(() => controller.abort(), 10000);
         const resp = await fetch(new Request(url.toString(), {
           method: request.method,
           headers,
           body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body,
           signal: controller.signal,
         }));
-
         clearTimeout(timer);
-
         if (resp.status >= 500) continue;
-
         originResp = resp;
         usedOrigin = origin;
         break;
-      } catch (e) {
-        continue;
-      }
+      } catch (e) { continue; }
     }
 
     if (!originResp) {
@@ -93,12 +173,8 @@ export default {
 
     const h = new Headers(originResp.headers);
     h.set('Access-Control-Allow-Origin', '*');
-    h.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    h.set('Access-Control-Allow-Headers', '*');
-    h.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range');
     h.set('X-Cache', 'MISS');
     h.set('X-Origin', usedOrigin);
-
     if (isStream) {
       h.set('Accept-Ranges', 'bytes');
       h.set('Cache-Control', `public, max-age=${CACHE_TTL.stream}`);
@@ -110,7 +186,6 @@ export default {
       headers: h,
     });
 
-    // cache store
     if (!skipCache && !isStream && !hasRange && request.method === 'GET' && originResp.status === 200) {
       const ttl = getTTL(pathname);
       const toCache = response.clone();
