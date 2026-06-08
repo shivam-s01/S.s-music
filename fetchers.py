@@ -62,20 +62,182 @@ from sources import (
 from flask import request, jsonify, Response, send_file, stream_with_context
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# IMAGE URL FIXER — always 500x500 Saavn, 600x600 iTunes, maxres YT
+# ═══════════════════════════════════════════════════════════════════════════════
+def _fix_image_url(url: str) -> str:
+    if not url or not url.startswith('http'):
+        return url or ''
+    if 'saavncdn.com' in url or 'jiocdn.com' in url:
+        # Replace explicit WxH size patterns in filename
+        url = re.sub(r'-(\d+)x(\d+)\.(jpg|jpeg|webp|png)', r'-500x500.\3', url)
+        # [FIX] Was \b(50|150|250)\b — matched anywhere including domain/path numbers.
+        # Now restricted to size suffix pattern at end of path only: /50x50, /150x150 etc.
+        url = re.sub(r'/(50|150|250)x(50|150|250)(?=[./]|$)', '/500x500', url)
+        return url
+    if 'mzstatic.com' in url:
+        url = re.sub(r'/\d+x\d+bb', '/600x600bb', url)
+        url = re.sub(r'\b\d+x\d+\b', '600x600', url)
+        return url
+    if 'ytimg.com' in url:
+        url = re.sub(r'/(default|mqdefault|sddefault|hqdefault)\.jpg', '/maxresdefault.jpg', url)
+        return url
+    if 'yt3.ggpht.com' in url or 'lh3.googleusercontent.com' in url:
+        url = re.sub(r'=w\d+-h\d+(-[a-z]+)?', '=w500-h500', url)
+        url = re.sub(r'=s\d+', '=s500', url)
+        return url
+    return url
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DIRECT JIOSAAVN + SAAVN.DEV API  (primary — faster than mirrors)
+# ═══════════════════════════════════════════════════════════════════════════════
+_JIOSAAVN_DIRECT = 'https://www.jiosaavn.com/api.php'
+_SAAVNDEV_BASE   = 'https://saavn.dev'
+_DIRECT_HEADERS  = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Accept': 'application/json, text/plain, */*',
+    'Referer': 'https://www.jiosaavn.com/',
+    'Origin':  'https://www.jiosaavn.com',
+}
+_DIRECT_TIMEOUT = 5
+
+
+def _jiosaavn_api(params: dict) -> Optional[dict]:
+    base = {'__call': '', '_format': 'json', '_marker': '0',
+            'ctx': 'web6dot0', 'api_version': '4'}
+    base.update(params)
+    try:
+        r = requests.get(_JIOSAAVN_DIRECT, params=base,
+                         headers=_DIRECT_HEADERS, timeout=_DIRECT_TIMEOUT)
+        if r.status_code == 200:
+            return r.json()
+    except Exception as e:
+        log.debug(f"[DirectAPI] jiosaavn.com: {e}")
+    return None
+
+
+def _saavndev_get(path: str, params: dict) -> Optional[dict]:
+    try:
+        r = requests.get(f'{_SAAVNDEV_BASE}{path}', params=params,
+                         headers={'User-Agent': 'Mozilla/5.0'}, timeout=_DIRECT_TIMEOUT)
+        if r.status_code == 200:
+            return r.json()
+    except Exception as e:
+        log.debug(f"[DirectAPI] saavn.dev: {e}")
+    return None
+
+
+def _search_direct_jiosaavn(query: str, language: str = '') -> list:
+    params = {'__call': 'search.getResults', 'q': query, 'p': 1, 'n': 20}
+    if language: params['language'] = language
+    data = _jiosaavn_api(params)
+    if not data: return []
+    raw = (data.get('results') or
+           (data.get('songs', {}).get('results') if isinstance(data.get('songs'), dict) else None) or
+           (data.get('data', {}).get('results') if isinstance(data.get('data'), dict) else None) or [])
+    if not raw and isinstance(data, dict):
+        for v in data.values():
+            if isinstance(v, list) and v: raw = v; break
+    return raw or []
+
+
+def _search_saavndev(query: str, language: str = '') -> list:
+    params = {'query': query, 'limit': 20}
+    if language: params['language'] = language
+    data = _saavndev_get('/api/search/songs', params)
+    if not data: return []
+    return (data.get('data', {}).get('results') or data.get('results') or [])
+
+
+def _parse_saavn_song_raw(song: dict) -> Optional[dict]:
+    """Parse raw song dict from any Saavn API — returns normalised result or None."""
+    raw_urls = song.get('downloadUrl') or song.get('download_url') or []
+    if isinstance(raw_urls, str):
+        raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
+    if not raw_urls:
+        dl = song.get('media_preview_url') or song.get('perma_url') or ''
+        if dl: raw_urls = [{'url': dl, 'quality': '96kbps'}]
+    best_url, quality = pick_best_quality(raw_urls)
+    if not best_url: return None
+    if best_url.startswith('http://'): best_url = 'https://' + best_url[7:]
+    title  = song.get('name') or song.get('title') or song.get('song', '')
+    artist = (song.get('primaryArtists') or song.get('primary_artists') or
+              song.get('singers') or song.get('artist', ''))
+    image  = _fix_image_url(pick_image(song))
+    return {'url': best_url, 'quality': quality, 'title': title,
+            'artist': artist, 'image': image, '_raw_urls': raw_urls}
+
+
+def _pick_best_direct(raw_results: list, query: str, title: str, artist: str) -> Optional[dict]:
+    _conf_title  = title or query
+    _conf_artist = artist or ''
+    candidates   = []
+    for idx, song in enumerate(raw_results):
+        song_title  = song.get('name') or song.get('title') or song.get('song', '')
+        song_artist = (song.get('primaryArtists') or song.get('primary_artists') or
+                       song.get('singers') or song.get('artist', ''))
+        if not song_title: continue
+        if not dna_compatible(_conf_title, song_title): continue
+        if not has_word_match(_conf_title, song_title): continue
+        dur = int(song.get('duration', 999) or 999)
+        if dur > 1080: continue
+        if _conf_artist and song_artist:
+            if _best_artist_similarity(_conf_artist, song_artist) < 0.55: continue
+        _ok, _conf, _ = _is_confirmed_match(
+            _conf_title, _conf_artist, song_title, song_artist,
+            source='saavn', res_dur_s=dur, min_conf=0.65)
+        if not _ok: continue
+        _pos_penalty = min(0.08, max(0.0, 0.015 * (idx - 2))) if idx >= 3 else 0.0
+        candidates.append((_conf - _pos_penalty, title_score(query, song_title, song_artist), song))
+    if not candidates: return None
+    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    best_conf, best_legacy, best_song = candidates[0]
+    if best_conf < 0.65: return None
+    parsed = _parse_saavn_song_raw(best_song)
+    if not parsed: return None
+    parsed['score'] = round(best_legacy, 3)
+    parsed['_confidence'] = round(best_conf, 3)
+    parsed['source'] = 'saavn'
+    if parsed.get('image'): _store_artwork(parsed['title'], parsed['artist'], parsed['image'], 1)
+    return parsed
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # BACKGROUND CACHE CLEANUP
 # ═══════════════════════════════════════════════════════════════════════════════
 def _cache_cleanup_loop():
     while True:
         time.sleep(600)
-        try:
-            from core import _l1_artwork, _l1_verified, _l1_fingerprint
-            for cache in [_l1_meta, _l1_audio, _l1_popular, _l1_saavn,
-                          _l1_artwork, _l1_verified, _l1_fingerprint]:
+        # [FIX] Split: always evict known caches first, then try optional ones.
+        # Previously, if _l1_fingerprint import failed the entire except swallowed
+        # the error and NO caches were evicted — memory leak on every cycle.
+        for cache in [_l1_meta, _l1_audio, _l1_popular, _l1_saavn]:
+            try:
                 evicted = cache.evict_expired()
                 if evicted:
                     log.debug(f'[Cache:Cleanup] Evicted {evicted} expired entries')
-        except Exception as e:
-            log.warning(f'[Cache:Cleanup] Error: {e}')
+            except Exception as e:
+                log.warning(f'[Cache:Cleanup] Core cache error: {e}')
+        # Optional caches — may not exist in all deployments
+        try:
+            from core import _l1_artwork, _l1_verified
+            for cache in [_l1_artwork, _l1_verified]:
+                try:
+                    evicted = cache.evict_expired()
+                    if evicted:
+                        log.debug(f'[Cache:Cleanup] Evicted {evicted} expired entries')
+                except Exception as e:
+                    log.warning(f'[Cache:Cleanup] Optional cache error: {e}')
+        except ImportError:
+            pass
+        # Fingerprint cache — optional, Railway may not have AcoustID configured
+        try:
+            from core import _l1_fingerprint
+            evicted = _l1_fingerprint.evict_expired()
+            if evicted:
+                log.debug(f'[Cache:Cleanup] Fingerprint evicted {evicted}')
+        except (ImportError, Exception):
+            pass
 
 threading.Thread(target=_cache_cleanup_loop, daemon=True).start()
 
@@ -201,11 +363,24 @@ def _fetch_saavn_search_mirror(mirror, search_term, language=''):
 
 def _fetch_saavn_search_parallel(search_term, language=''):
     if not language: language = _detect_language(search_term)
-    mirrors = _best_mirrors(n=6)
+    # Phase 1: direct APIs (5s)
+    _df = {_executor.submit(_search_saavndev,        search_term, language): 'saavndev',
+           _executor.submit(_search_direct_jiosaavn, search_term, language): 'direct'}
+    try:
+        for future in as_completed(_df, timeout=5):
+            try:
+                result = future.result()
+                if result:
+                    for f in _df: f.cancel()
+                    return result
+            except Exception: pass
+    except Exception: pass
+    # Phase 2: mirrors fallback (3s)
+    mirrors = _best_mirrors(n=4)
     futures = {_executor.submit(_fetch_saavn_search_mirror, m, search_term, language): m
                for m in mirrors}
     try:
-        for future in as_completed(futures, timeout=5):  # [FIX-499] 8s → 5s
+        for future in as_completed(futures, timeout=3):
             try:
                 result = future.result()
                 if result:
@@ -270,23 +445,13 @@ def _normalize_saavn_songs(raw_songs, query=''):
             raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
         _, quality = pick_best_quality(raw_urls)
         if not quality: continue
-
-        # [FIX-THUMB] Saavn image 500x500 upgrade
-        if image:
-            image = re.sub(r'-(50|150|250)x(50|150|250)\.', '-500x500.', image)
-            image = re.sub(r'\b(50|150|250)x(50|150|250)\b', '500x500', image)
-
-        # [FIX-PREVIEWURL] title+artist bhi bhejo
-        _artist_str = artist if isinstance(artist, str) else (artist[0] if artist else '')
-        _preview = (f"/api/play?id={quote(song_id, safe='')}"
-                    f"&title={quote(title, safe='')}&artist={quote(_artist_str, safe='')}")
-
+        image = _fix_image_url(image) if image else ''
         normalized.append({
             'trackId':         song_id,
             'trackName':       title,
             'artistName':      artist,
-            'artworkUrl100':   image if image else '',
-            'previewUrl':      _preview,
+            'artworkUrl100':   image,
+            'previewUrl':      f"/api/play?id={quote(song_id, safe='')}&title={quote(title, safe='')}&artist={quote(artist, safe='')}",
             'trackTimeMillis': dur_ms,
             'releaseDate':     f"{year}-01-01T00:00:00Z",
             '_saavnId':        song_id,
@@ -310,89 +475,110 @@ def _resolve_itunes_to_saavn(itunes_song: dict) -> Optional[dict]:
             r'\b\d+x\d+\b', '600x600', itunes_song['artworkUrl100'])
         _store_artwork(title, artist, itunes_song['artworkUrl100'], 2)
 
-    mirrors = _best_mirrors(n=6)
-    _deadline = time.time() + 4.0  # [FIX-499] Hard 4s deadline
+    mirrors = _best_mirrors(n=4)
+    _deadline = time.time() + 5.0  # 5s hard deadline
+    # [FIX] _lang was undefined — NameError crash on every call. Detect here.
+    _lang = _detect_language(title + ' ' + artist)
 
+    # ── Phase 1: saavn.dev + direct (parallel) ────────────────────────────────
     for query in build_query_variants(title, artist, ''):
-        if time.time() > _deadline: break  # [FIX-499]
-        for mirror in mirrors[:6]:
-            if time.time() > _deadline: break  # [FIX-499]
-            for endpoint in ['/api/search/songs', '/api/search', '/search/songs']:
-                if time.time() > _deadline: break  # [FIX-499]
+        if time.time() > _deadline: break
+        _df = {_executor.submit(_search_saavndev,        query, _lang): 'saavndev',
+               _executor.submit(_search_direct_jiosaavn, query, _lang): 'direct'}
+        try:
+            for future in as_completed(_df, timeout=max(0.5, _deadline - time.time())):
                 try:
-                    resp = requests.get(
-                        f'{mirror}{endpoint}',
-                        params={'query': query, 'q': query, 'limit': 5},
-                        timeout=min(_health.adaptive_timeout(mirror), 4),  # [FIX-499] cap 4s
-                        headers={'User-Agent': 'Mozilla/5.0'},
-                    )
-                    if resp.status_code != 200: continue
-                    data = resp.json()
-                    raw  = (data.get('data', {}).get('results') or
-                            data.get('results') or
-                            data.get('songs', {}).get('results') or [])
+                    raw = future.result()
                     if not raw: continue
-
                     best = None; best_conf = -1.0
                     itunes_dur = int((itunes_song.get('trackTimeMillis') or 0) // 1000)
-
                     for song in raw:
                         song_title  = song.get('name') or song.get('title', '')
-                        song_artist = (song.get('primaryArtists') or
-                                       song.get('primary_artists') or '')
+                        song_artist = (song.get('primaryArtists') or song.get('primary_artists') or
+                                       song.get('singers') or song.get('artist', ''))
                         song_dur = int(song.get('duration', 0) or 0)
-                        # [FIX-ITUNES-DNA] Direct dna_compatible pre-filter
-                        if not dna_compatible(title, song_title):
-                            log.debug(f"[iTunesResolve] DNA MISMATCH: '{song_title}'")
-                            continue
-                        # HARD ARTIST GATE
-                        if artist and song_artist:
-                            _art_sim = _best_artist_similarity(artist, song_artist)
-                            if _art_sim < 0.55:
-                                log.debug(f"[iTunesResolve] ARTIST REJECT: req='{artist}' got='{song_artist}' sim={_art_sim:.2f}")
-                                continue
+                        if not dna_compatible(title, song_title): continue
+                        if artist and song_artist and _best_artist_similarity(artist, song_artist) < 0.55: continue
                         _ok, _conf, _reason = _is_confirmed_match(
                             title, artist, song_title, song_artist,
-                            source='saavn', duration_s=itunes_dur, res_dur_s=song_dur,
-                            min_conf=0.75,
-                        )
-                        if not _ok:
-                            log.debug(f"[iTunesResolve] Rejected '{song_title}': {_reason}")
-                            continue
-                        if _conf > best_conf:
-                            best_conf = _conf; best = song
-
+                            source='saavn', duration_s=itunes_dur, res_dur_s=song_dur, min_conf=0.75)
+                        if not _ok: continue
+                        if _conf > best_conf: best_conf = _conf; best = song
                     if not best or best_conf < 0.75: continue
-
                     saavn_id = (best.get('id') or '').strip()
                     raw_urls = best.get('downloadUrl') or best.get('download_url') or []
-                    if isinstance(raw_urls, str):
-                        raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
+                    if isinstance(raw_urls, str): raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
                     _, quality = pick_best_quality(raw_urls)
                     if not saavn_id or not quality: continue
-
-                    itunes_song['previewUrl']      = f"/api/play?id={quote(saavn_id, safe='')}"
+                    itunes_song['previewUrl']      = f"/api/play?id={quote(saavn_id, safe='')}&title={quote(title, safe='')}&artist={quote(artist, safe='')}"
                     itunes_song['_saavnId']        = saavn_id
                     itunes_song['_resolvedTitle']  = best.get('name') or best.get('title', title)
                     itunes_song['_resolvedArtist'] = best.get('primaryArtists') or best.get('primary_artists') or artist
                     itunes_song['_confidence']     = round(best_conf, 3)
-                    # [FIX-ITUNES-ART] iTunes artwork preserve karo — Saavn se REPLACE mat karo
-                    # iTunes 600x600 artwork best quality hai, Saavn ki 150x150 se better
                     _itunes_art = itunes_song.get('artworkUrl100', '')
-                    if not _itunes_art:
-                        saavn_img = pick_image(best)
-                        if saavn_img:
-                            itunes_song['artworkUrl100'] = saavn_img
-                            _store_artwork(title, artist, saavn_img, 1)
-                    else:
-                        # iTunes art already hai — Saavn art background mein store karo (fallback ke liye)
-                        saavn_img = pick_image(best)
-                        if saavn_img:
-                            _store_artwork(title, artist, _itunes_art, 1)  # iTunes art = priority 1
-                    log.info(f"[Resolve] ✓ '{title}' → {saavn_id} conf={best_conf:.2f}")
+                    saavn_img = _fix_image_url(pick_image(best))
+                    if not _itunes_art and saavn_img:
+                        itunes_song['artworkUrl100'] = saavn_img
+                        _store_artwork(title, artist, saavn_img, 1)
+                    elif _itunes_art and saavn_img:
+                        _store_artwork(title, artist, _itunes_art, 1)
+                    for f in _df: f.cancel()
+                    log.info(f"[Resolve:direct] ✓ '{title}' → {saavn_id} conf={best_conf:.2f}")
                     return itunes_song
-                except Exception:
-                    continue
+                except Exception: pass
+        except Exception: pass
+
+    # ── Phase 2: mirror fallback ───────────────────────────────────────────────
+    for query in build_query_variants(title, artist, ''):
+        if time.time() > _deadline: break
+        for mirror in mirrors[:4]:
+            if time.time() > _deadline: break
+            for endpoint in ['/api/search/songs', '/api/search', '/search/songs']:
+                if time.time() > _deadline: break
+                try:
+                    resp = requests.get(f'{mirror}{endpoint}',
+                        params={'query': query, 'q': query, 'limit': 5},
+                        timeout=min(_health.adaptive_timeout(mirror), 3),
+                        headers={'User-Agent': 'Mozilla/5.0'})
+                    if resp.status_code != 200: continue
+                    data = resp.json()
+                    raw  = (data.get('data', {}).get('results') or data.get('results') or
+                            data.get('songs', {}).get('results') or [])
+                    if not raw: continue
+                    best = None; best_conf = -1.0
+                    itunes_dur = int((itunes_song.get('trackTimeMillis') or 0) // 1000)
+                    for song in raw:
+                        song_title  = song.get('name') or song.get('title', '')
+                        song_artist = song.get('primaryArtists') or song.get('primary_artists') or ''
+                        song_dur    = int(song.get('duration', 0) or 0)
+                        if not dna_compatible(title, song_title): continue
+                        if artist and song_artist and _best_artist_similarity(artist, song_artist) < 0.55: continue
+                        _ok, _conf, _ = _is_confirmed_match(
+                            title, artist, song_title, song_artist,
+                            source='saavn', duration_s=itunes_dur, res_dur_s=song_dur, min_conf=0.75)
+                        if not _ok: continue
+                        if _conf > best_conf: best_conf = _conf; best = song
+                    if not best or best_conf < 0.75: continue
+                    saavn_id = (best.get('id') or '').strip()
+                    raw_urls = best.get('downloadUrl') or best.get('download_url') or []
+                    if isinstance(raw_urls, str): raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
+                    _, quality = pick_best_quality(raw_urls)
+                    if not saavn_id or not quality: continue
+                    itunes_song['previewUrl']      = f"/api/play?id={quote(saavn_id, safe='')}&title={quote(title, safe='')}&artist={quote(artist, safe='')}"
+                    itunes_song['_saavnId']        = saavn_id
+                    itunes_song['_resolvedTitle']  = best.get('name') or best.get('title', title)
+                    itunes_song['_resolvedArtist'] = best.get('primaryArtists') or best.get('primary_artists') or artist
+                    itunes_song['_confidence']     = round(best_conf, 3)
+                    _itunes_art = itunes_song.get('artworkUrl100', '')
+                    saavn_img = _fix_image_url(pick_image(best))
+                    if not _itunes_art and saavn_img:
+                        itunes_song['artworkUrl100'] = saavn_img
+                        _store_artwork(title, artist, saavn_img, 1)
+                    elif _itunes_art and saavn_img:
+                        _store_artwork(title, artist, _itunes_art, 1)
+                    log.info(f"[Resolve:mirror] ✓ '{title}' → {saavn_id} conf={best_conf:.2f}")
+                    return itunes_song
+                except Exception: continue
 
     itunes_song['previewUrl'] = (
         f"/api/play?title={quote(title, safe='')}&artist={quote(artist, safe='')}")
@@ -693,8 +879,9 @@ def fetch_from_ytdlp(title, artist='', anchor=None):
                         })
 
                     # ── Retrieve Saavn duration hint if available ─────────────
-                    # Pass 0 if unknown — Tier 1 skips gracefully
-                    _saavn_dur = 0  # ytdlp path: no Saavn reference duration
+                    # [FIX] Was hardcoded 0 — anchor.duration_s ignored.
+                    # This disabled Tier 1 duration check for all YT results.
+                    _saavn_dur = int(anchor.get('duration_s', 0) or 0) if anchor else 0
 
                     _saavn_lang2 = anchor.get('language', '') if anchor else ''
                     best_candidate, scores = tve_pick_best(
@@ -885,99 +1072,113 @@ def fetch_from_soundcloud(title, artist='', anchor=None):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SAAVN BY ID
+# SAAVN BY ID — saavn.dev primary, jiosaavn.com secondary, mirrors fallback
 # ═══════════════════════════════════════════════════════════════════════════════
 def _fetch_saavn_by_id(song_id, expected_title='', expected_artist=''):
     l1_key = f"saavn_id:{song_id}"
     cached = _l1_saavn.get(l1_key)
     if cached: return cached
 
-    mirrors   = _best_mirrors(n=6)
-    endpoints = [
-        f'/api/songs/{song_id}', f'/songs/{song_id}',
-        f'/api/songs?id={song_id}', f'/song?id={song_id}', f'/api/song?id={song_id}',
-    ]
+    def _validate(id_result):
+        if not id_result: return None
+        if expected_title and id_result.get('title'):
+            _c = compute_confidence(expected_title, expected_artist,
+                                    id_result['title'], id_result.get('artist',''), source='saavn')
+            # [FIX] Was 0.80 — inconsistent with play pipeline min_conf=0.70.
+            # Songs were passing the play pipeline check but failing here,
+            # causing silent fallback to slower sources unnecessarily.
+            if _c < 0.70:
+                log.warning(f"[SaavnID] MISMATCH: expected='{expected_title}' got='{id_result['title']}' conf={_c:.3f}")
+                return None
+        _t = id_result.get('title', '')
+        if not _query_requests_version(expected_title):
+            if _is_live_version(_t) or _is_remix_or_cover(_t) or _is_slowed_reverb(_t):
+                log.warning(f"[SaavnID] VERSION REJECTED: '{_t}'"); return None
+            if expected_title and not dna_compatible(expected_title, _t):
+                log.warning(f"[SaavnID] DNA MISMATCH: '{_t}'"); return None
+        id_result['image'] = _fix_image_url(id_result.get('image','') or _get_artwork(id_result.get('title',''), id_result.get('artist','')))
+        if id_result['image']: _store_artwork(id_result['title'], id_result['artist'], id_result['image'], 1)
+        _l1_saavn.set(l1_key, id_result)
+        return id_result
 
-    def try_mirror(mirror):
+    # ── 1. saavn.dev (fastest, pre-decoded URLs) ──────────────────────────────
+    def _try_saavndev():
+        data = _saavndev_get(f'/api/songs/{song_id}', {})
+        if not data: return None
+        inner = data.get('data') or data
+        song  = (inner[0] if isinstance(inner, list) and inner
+                 else inner if isinstance(inner, dict) and inner.get('id') else None)
+        if not song: return None
+        return _parse_saavn_song_raw(song)
+
+    # ── 2. jiosaavn.com internal API ─────────────────────────────────────────
+    def _try_direct():
+        data = _jiosaavn_api({'__call': 'song.getDetails', 'pids': song_id})
+        if not data: return None
+        song = None
+        if isinstance(data.get('songs'), list) and data['songs']: song = data['songs'][0]
+        elif isinstance(data, dict) and data.get(song_id): song = data[song_id]
+        elif isinstance(data.get('data'), list) and data['data']: song = data['data'][0]
+        if not song: return None
+        return _parse_saavn_song_raw(song)
+
+    # ── 3. Mirror fallback ────────────────────────────────────────────────────
+    def _try_mirror(mirror):
+        endpoints = [f'/api/songs/{song_id}', f'/songs/{song_id}',
+                     f'/api/songs?id={song_id}', f'/song?id={song_id}']
+        if not _mirror_ok(mirror): return None
         for endpoint in endpoints:
             try:
                 t0 = time.time()
                 r  = requests.get(f'{mirror}{endpoint}',
-                                  timeout=_health.adaptive_timeout(mirror),
+                                  timeout=min(_health.adaptive_timeout(mirror), 4),
                                   headers={'User-Agent': 'Mozilla/5.0'})
                 elapsed = (time.time() - t0) * 1000
                 if r.status_code != 200: continue
                 data = r.json()
                 song = None
-                if isinstance(data.get('data'), list) and data['data']:
-                    song = data['data'][0]
-                elif isinstance(data.get('data'), dict):
-                    song = data['data']
-                elif data.get('id'):
-                    song = data
+                if isinstance(data.get('data'), list) and data['data']:   song = data['data'][0]
+                elif isinstance(data.get('data'), dict):                   song = data['data']
+                elif data.get('id'):                                       song = data
                 elif data.get('songs'):
-                    songs = data['songs']
-                    song  = songs[0] if isinstance(songs, list) and songs else songs
+                    s = data['songs']; song = s[0] if isinstance(s, list) and s else s
                 if not song: continue
-                raw_urls = song.get('downloadUrl') or song.get('download_url') or []
-                if isinstance(raw_urls, str):
-                    raw_urls = [{'url': raw_urls, 'quality': 'unknown'}]
-                best_url, quality = pick_best_quality(raw_urls)
-                if best_url:
-                    _health.record_ok(mirror, elapsed)
-                    id_result = {
-                        'url': best_url, 'quality': quality,
-                        'title': song.get('name') or song.get('title', ''),
-                        'artist': song.get('primaryArtists') or song.get('primary_artists') or '',
-                        'image': pick_image(song),
-                        '_raw_urls': raw_urls,
-                    }
-                    if expected_title and id_result.get('title'):
-                        _id_verify_conf = compute_confidence(
-                            expected_title, expected_artist,
-                            id_result['title'], id_result.get('artist', ''),
-                            source='saavn',
-                        )
-                        if _id_verify_conf < 0.80:
-                            log.warning(
-                                f"[SaavnID] MISMATCH: expected='{expected_title}' "
-                                f"got='{id_result['title']}' conf={_id_verify_conf:.3f}"
-                            )
-                            return None
-                    _fetched_title   = id_result.get('title', '')
-                    _user_asked_ver  = _query_requests_version(expected_title)
-                    if not _user_asked_ver:
-                        if (_is_live_version(_fetched_title) or
-                            _is_remix_or_cover(_fetched_title) or
-                            _is_slowed_reverb(_fetched_title)):
-                            log.warning(f"[SaavnID] VERSION REJECTED: '{_fetched_title}'")
-                            return None
-                        if not dna_compatible(expected_title, _fetched_title):
-                            log.warning(f"[SaavnID] DNA MISMATCH: '{_fetched_title}'")
-                            return None
-                    if id_result['image']:
-                        _store_artwork(id_result['title'], id_result['artist'], id_result['image'], 1)
-                    _l1_saavn.set(f"saavn_id:{song_id}", {
-                        **id_result,
-                        'image': id_result.get('image', '') or _get_artwork(id_result.get('title',''), id_result.get('artist','')),
-                    })
-                    return id_result
-            except Exception:
-                _mirror_failed(mirror)
+                parsed = _parse_saavn_song_raw(song)
+                if parsed: _health.record_ok(mirror, elapsed); return parsed
+            except Exception: _mirror_failed(mirror)
         return None
 
-    futures = {_executor.submit(try_mirror, m): m for m in mirrors}
+    # Phase 1: saavn.dev + jiosaavn direct (parallel, 5s)
+    _d = {_executor.submit(_try_saavndev): 'saavndev',
+          _executor.submit(_try_direct):   'direct'}
+    result = None
     try:
-        for future in as_completed(futures, timeout=6):
+        for future in as_completed(_d, timeout=5):
             try:
-                result = future.result()
-                if result:
-                    for f in futures: f.cancel()
-                    _l1_saavn.set(l1_key, result)
-                    return result
+                res = future.result()
+                if res:
+                    result = res
+                    for f in _d: f.cancel()
+                    break
             except Exception: pass
     except Exception: pass
-    return None
+
+    # Phase 2: mirrors (parallel, 3s) if direct missed
+    if not result:
+        log.debug(f"[SaavnID] Direct miss id={song_id} — trying mirrors")
+        _mf = {_executor.submit(_try_mirror, m): m for m in _best_mirrors(n=4)}
+        try:
+            for future in as_completed(_mf, timeout=3):
+                try:
+                    res = future.result()
+                    if res:
+                        result = res
+                        for f in _mf: f.cancel()
+                        break
+                except Exception: pass
+        except Exception: pass
+
+    return _validate(result) if result else None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1059,7 +1260,7 @@ def fetch_from_mirror(mirror, query, min_score=0.4, title='', artist='', languag
                 'url': best_url, 'quality': quality,
                 'title': best_song.get('name') or best_song.get('title', ''),
                 'artist': best_song.get('primaryArtists') or best_song.get('primary_artists') or '',
-                'image': pick_image(best_song), 'score': round(best_legacy, 3),
+                'image': _fix_image_url(pick_image(best_song)), 'score': round(best_legacy, 3),
                 '_confidence': round(best_conf, 3),
                 'source': 'saavn', '_raw_urls': raw_urls,
             }
@@ -1082,37 +1283,65 @@ def fetch_saavn_parallel(query, title='', artist='', language=''):
     else:
         _lang = language
 
-    threshold = dynamic_min_score(query)
-    mirrors   = _best_mirrors(n=6)   # 8→6: top 6 healthy mirrors kaafi hain
-    futures   = {_executor.submit(fetch_from_mirror, m, query, threshold, title, artist, _lang): m
-                 for m in mirrors}
-    all_results = []
-    _EARLY_EXIT_CONF = 0.82  # 0.88→0.82: zyada wait nahi, pehla good match le lo
+    _EARLY_EXIT_CONF = 0.82
+    best = None
+
+    # ── Phase 1: saavn.dev + jiosaavn direct (parallel, 5s) ──────────────────
+    _df = {_executor.submit(_search_saavndev,        query, _lang): 'saavndev',
+           _executor.submit(_search_direct_jiosaavn, query, _lang): 'direct'}
+    _p1 = []
     try:
-        for future in as_completed(futures, timeout=2.5):  # 4s→2.5s
+        for future in as_completed(_df, timeout=5):
             try:
-                result = future.result()
-                if result:
-                    all_results.append(result)
-                    _conf = float(result.get('_confidence', result.get('score', 0)))
-                    if _conf >= _EARLY_EXIT_CONF:
-                        for f in futures: f.cancel()
-                        break
+                raw = future.result()
+                if not raw: continue
+                candidate = _pick_best_direct(raw, query, title, artist)
+                if candidate:
+                    _p1.append(candidate)
+                    if float(candidate.get('_confidence', 0)) >= _EARLY_EXIT_CONF:
+                        for f in _df: f.cancel(); break
             except Exception: pass
     except Exception: pass
 
-    if not all_results: return None
+    if _p1:
+        _p1.sort(key=lambda r: float(r.get('_confidence', r.get('score', 0))) +
+                 (0.02 if '320' in str(r.get('quality', '')) else 0), reverse=True)
+        best = _p1[0]
+        log.info(f"[Direct] ✓ '{best['title']}' conf={best.get('_confidence',0):.2f} q={best['quality']}")
 
-    all_results.sort(
-        key=lambda r: (
-            float(r.get('_confidence', r.get('score', 0))) +
-            (0.02 if '320' in str(r.get('quality', '')) else 0)
-        ),
-        reverse=True,
-    )
-    best      = all_results[0]
+    # ── Phase 2: mirror fallback (2.5s) if direct missed ─────────────────────
+    if not best:
+        log.debug(f"[Direct] Miss '{query}' → mirrors")
+        threshold = dynamic_min_score(query)
+        mirrors   = _best_mirrors(n=4)
+        futures   = {_executor.submit(fetch_from_mirror, m, query, threshold, title, artist, _lang): m
+                     for m in mirrors}
+        all_results = []
+        try:
+            for future in as_completed(futures, timeout=2.5):
+                try:
+                    result = future.result()
+                    if result:
+                        all_results.append(result)
+                        _conf = float(result.get('_confidence', result.get('score', 0)))
+                        if _conf >= _EARLY_EXIT_CONF:
+                            for f in futures: f.cancel(); break
+                except Exception: pass
+        except Exception: pass
+        if all_results:
+            all_results.sort(
+                key=lambda r: (
+                    float(r.get('_confidence', r.get('score', 0))) +
+                    (0.02 if '320' in str(r.get('quality', '')) else 0)
+                ),
+                reverse=True,
+            )
+            best = all_results[0]
+
+    if not best:
+        return None
+
     best_conf = float(best.get('_confidence', best.get('score', 0)))
-
     if best_conf < 0.65:
         log.warning(f"[Parallel] ALL below confidence gate (best={best_conf:.2f}) — rejecting")
         return None
@@ -1756,24 +1985,7 @@ def play_song():
 
     def _resolve_best_artwork(song_id, title, artist, result_image=''):
         from match_engine import pick_image as _pick_img
-        def _ensure_500(url):
-            if not url or not url.startswith('http'): return ''
-            if 'saavncdn.com' in url or 'jiocdn.com' in url:
-                url = re.sub(r'-(\d+)x(\d+)\.(jpg|jpeg|webp|png)', r'-500x500.\3', url)
-                url = re.sub(r'\b(50|150|250)x(50|150|250)\b', '500x500', url)
-            elif re.search(r'\b(50|150|250)x(50|150|250)\b', url):
-                url = re.sub(r'\b(50|150|250)x(50|150|250)\b', '500x500', url)
-            # [FIX-THUMB] YT thumbnails maxresdefault upgrade
-            if 'ytimg.com' in url:
-                url = re.sub(r'/(default|mqdefault|sddefault|hqdefault)\.jpg', '/maxresdefault.jpg', url)
-            if 'yt3.ggpht.com' in url or 'lh3.googleusercontent.com' in url:
-                url = re.sub(r'=w\d+-h\d+(-[a-z]+)?', '=w500-h500', url)
-                url = re.sub(r'=s\d+', '=s500', url)
-            # [FIX-ITUNES-500] iTunes mzstatic 600x600 ensure
-            if 'mzstatic.com' in url:
-                url = re.sub(r'/\d+x\d+bb', '/600x600bb', url)
-                url = re.sub(r'\b100x100\b', '600x600', url)
-            return url
+        _ensure_500 = _fix_image_url
 
         candidates = []
 
@@ -1916,7 +2128,11 @@ def prefetch_songs():
     queue = songs.get('songs', [])[:3]
     if not queue: return jsonify({'status': 'empty'})
 
-    def _do_prefetch(s):
+    # [FIX] Renamed from _do_prefetch to _do_prefetch_inline.
+    # Previously the inline function shadowed the module-level alias
+    # _do_prefetch = _do_prefetch_song (defined at bottom of file),
+    # making the alias unreachable whenever prefetch_songs() was in scope.
+    def _do_prefetch_inline(s):
         _id     = str(s.get('id', '')).strip()[:100]
         _title  = str(s.get('title', '')).strip()[:200]
         _artist = str(s.get('artist', '')).strip()[:100]
@@ -1973,7 +2189,7 @@ def prefetch_songs():
                     return
 
     for song in queue:
-        _executor_bg.submit(_do_prefetch, song)
+        _executor_bg.submit(_do_prefetch_inline, song)
     return jsonify({'status': 'prefetching', 'count': len(queue)})
 
 
@@ -2026,22 +2242,16 @@ def _is_allowed_domain(domain: str) -> bool:
 _url_refresh_queue = set()
 
 def _auto_prefetch_search_results(results):
-    """Automatically prefetch top songs from search results — parallel, top 5"""
-    if not results:
-        return
+    """Prefetch top 5 songs in parallel — warms cache before user clicks play."""
+    if not results: return
     try:
-        songs_to_prefetch = results[:5]
-        futures = []
-        for song in songs_to_prefetch:
-            song_id    = song.get('trackId') or song.get('id') or ''
-            song_title = song.get('trackName') or song.get('title') or ''
+        for song in results[:5]:
+            song_id     = song.get('trackId') or song.get('_saavnId') or song.get('id') or ''
+            song_title  = song.get('trackName') or song.get('title') or ''
             song_artist = song.get('artistName') or song.get('artist') or ''
             if song_id or song_title:
-                f = _executor_bg.submit(
-                    _do_prefetch_song,
-                    {'id': song_id, 'title': song_title, 'artist': song_artist}
-                )
-                futures.append(f)
+                _executor_bg.submit(_do_prefetch_song,
+                                    {'id': song_id, 'title': song_title, 'artist': song_artist})
     except Exception as e:
         log.debug(f"[AutoPrefetch] Error: {e}")
 
