@@ -83,7 +83,7 @@ from fetchers import (
     _url_refresh_queue,
     _l1_artwork, _l1_verified,
     _fetch_itunes_artwork,
-    _fetch_saavn_by_id,  # ✅ ADDED - important for playback
+    _fetch_saavn_by_id,
 )
 
 def _sb_headers():
@@ -101,7 +101,7 @@ def _cache_set(key, value):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# /api/songs — iTunes PRIMARY (fast), Saavn resolve HATA DIYA
+# /api/songs — iTunes PRIMARY
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/songs')
 @limiter.limit("60 per minute")
@@ -119,7 +119,6 @@ def get_songs():
 
     results = []
 
-    # ── iTunes se seedha results lo — no Saavn resolve ───────────────────────
     try:
         r = _http_session.get(
             'https://itunes.apple.com/search',
@@ -141,29 +140,24 @@ def get_songs():
             candidates = [s for s in raw if s.get('trackName')][:30]
 
         for s in candidates:
-            # artwork upgrade karo — 600x600bb best quality
             art = s.get('artworkUrl100', '')
             if art:
                 art = re.sub(r'\b\d+x\d+bb\b', '600x600bb', art)
                 art = re.sub(r'\b\d+x\d+\b', '600x600', art)
                 s['artworkUrl100'] = art
-            # previewUrl → /api/play (direct Saavn ID fetch — fast + accurate)
             title  = s.get('trackName', '')
             artist = s.get('artistName', '')
             track_id = str(s.get('trackId', '')).strip()
-            # _saavnId already set if iTunes was resolved — use it
             saavn_id = s.get('_saavnId', '')
             if saavn_id:
                 s['previewUrl'] = f"/api/play?id={quote(saavn_id, safe='')}&title={quote(title, safe='')}&artist={quote(artist, safe='')}"
             else:
-                # No Saavn ID yet — use title+artist, /api/play will resolve it
                 s['previewUrl'] = f"/api/play?title={quote(title, safe='')}&artist={quote(artist, safe='')}"
             results.append(s)
 
     except Exception as e:
         log.warning(f'[Songs] iTunes failed: {e}')
 
-    # ── iTunes fail — Saavn direct fallback ──────────────────────────────────
     if not results:
         try:
             raw = _fetch_saavn_search_parallel(search_term)
@@ -333,12 +327,10 @@ def get_saavn_song():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ⚠️ /api/play — REMOVED DUPLICATE ROUTE ⚠️
-# Ye route ab fetchers.py mein hai (complete rewrite with proper frontend format)
-# Agar tumne fetchers.py replace kar diya hai toh yahan se DELETE karo duplicate.
-# 
-# Pehle yahan /api/play tha, jo ab fetchers.py mein shift ho chuka hai.
+# ⚠️ /api/play - ROUTE REMOVED - NOW IN fetchers.py ⚠️
 # ═══════════════════════════════════════════════════════════════════════════════
+# This route has been moved to fetchers.py with complete rewrite
+# Do not add it back here - it will cause duplicate route conflict
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
