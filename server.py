@@ -12,7 +12,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from concurrent.futures import as_completed
-from flask import request, jsonify, send_file, Response, stream_with_context
+from flask import request, jsonify, send_file, Response, stream_with_context, send_from_directory
 from urllib.parse import urlparse, quote
 from datetime import datetime, timedelta
 from typing import Optional
@@ -54,7 +54,7 @@ from core import (
     _supabase_cache_get_with_refresh, _supabase_cache_set,
     _CACHE_MIN_CONFIDENCE,
     _is_remix_or_cover, _is_live_version, _is_slowed_reverb,
-    compute_confidence,
+    compute_confidence, BASE_DIR,
 )
 
 from match_engine import (
@@ -99,7 +99,62 @@ def _sb_headers():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# /api/songs - iTunes METADATA + Saavn AUDIO (No blocking)
+# FRONTEND ROUTES - YEH IMPORTANT HAI! APP YAHI SE LOAD HOTI HAI
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route('/')
+def index():
+    """Serve main HTML page"""
+    return send_file(os.path.join(BASE_DIR, 'index.html'))
+
+@app.route('/app.js')
+def serve_app_js():
+    """Serve app.js - frontend logic"""
+    return send_file(os.path.join(BASE_DIR, 'app.js'), mimetype='application/javascript')
+
+@app.route('/style.css')
+def serve_style_css():
+    """Serve style.css - frontend styles"""
+    return send_file(os.path.join(BASE_DIR, 'style.css'), mimetype='text/css')
+
+@app.route('/manifest.json')
+def serve_manifest():
+    """Serve PWA manifest"""
+    return send_file(os.path.join(BASE_DIR, 'manifest.json'), mimetype='application/manifest+json')
+
+@app.route('/sw.js')
+def serve_service_worker():
+    """Serve service worker for PWA"""
+    resp = send_file(os.path.join(BASE_DIR, 'sw.js'), mimetype='application/javascript')
+    resp.headers['Service-Worker-Allowed'] = '/'
+    resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    return resp
+
+@app.route('/static/<path:filename>')
+def serve_static(filename):
+    """Serve static files (icons, images)"""
+    return send_file(os.path.join(BASE_DIR, 'static', filename))
+
+@app.route('/.well-known/<path:filename>')
+def serve_well_known(filename):
+    """Serve .well-known files for PWA"""
+    return send_file(os.path.join(BASE_DIR, '.well-known', filename))
+
+# CORS for all routes
+@app.after_request
+def add_cors_headers(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+    return response
+
+@app.route('/<path:path>', methods=['OPTIONS'])
+def handle_options(path):
+    return Response(status=200)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# /api/songs - iTunes METADATA + Saavn AUDIO
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/songs')
 @limiter.limit("60 per minute")
@@ -117,7 +172,7 @@ def get_songs():
 
     results = []
 
-    # ── iTunes se METADATA + ARTWORK (best quality) ──────────────────────────
+    # iTunes se METADATA + ARTWORK
     try:
         r = _http_session.get(
             'https://itunes.apple.com/search',
@@ -148,10 +203,9 @@ def get_songs():
                 art = re.sub(r'\b\d+x\d+bb\b', '600x600bb', art)
                 art = re.sub(r'\b\d+x\d+\b', '600x600', art)
                 s['artworkUrl100'] = art
-                # Cache artwork for later
                 _store_artwork(title, artist, art, 1)
             
-            # 🔥 previewUrl - Saavn audio lega (no blocking, full fallback chain)
+            # previewUrl - Saavn audio lega
             s['previewUrl'] = f"/api/play?title={quote(title, safe='')}&artist={quote(artist, safe='')}"
             
             results.append(s)
@@ -159,7 +213,7 @@ def get_songs():
     except Exception as e:
         log.warning(f'[Songs] iTunes failed: {e}')
 
-    # ── Fallback: Saavn direct search ────────────────────────────────────────
+    # Fallback: Saavn direct
     if not results:
         try:
             raw = _fetch_saavn_search_parallel(search_term)
@@ -176,9 +230,6 @@ def get_songs():
     return jsonify({'results': [], 'error': 'No results found'})
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# /api/songs/90s
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/songs/90s')
 @limiter.limit("60 per minute")
 def get_90s_songs():
@@ -217,9 +268,6 @@ def get_90s_songs():
         return jsonify({'results': [], 'error': str(e)})
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# /api/saavn
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/saavn')
 @limiter.limit("100 per minute")
 def get_saavn_song():
@@ -328,13 +376,10 @@ def get_saavn_song():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# /api/play - NOT HERE! It's in fetchers.py (to avoid duplication)
+# /api/play - NOT HERE! It's in fetchers.py
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# /api/resolve
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/resolve')
 @limiter.limit("100 per minute")
 def resolve_song():
@@ -381,9 +426,6 @@ def resolve_song():
     return jsonify({'success': False, 'url': None, 'token': token})
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# /api/stream - PROXY
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/stream')
 @limiter.limit("200 per minute")
 def stream_audio():
@@ -429,9 +471,6 @@ def stream_audio():
         return jsonify({'error': str(e)}), 500
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# /api/download
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/download')
 @limiter.limit("20 per minute")
 def download_song():
@@ -510,9 +549,6 @@ def download_song():
         return jsonify({'error': str(e)}), 500
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# /api/godmode/status
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/godmode/status')
 @limiter.limit("10 per minute")
 def godmode_status():
@@ -538,9 +574,6 @@ def godmode_status():
     })
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# /api/health
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/health')
 @limiter.limit("30 per minute")
 def health_status():
@@ -578,9 +611,6 @@ def health_status():
     })
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# AUTH ROUTES
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/auth/google', methods=['POST'])
 @limiter.limit("20 per minute")
 def handle_google_auth():
@@ -751,9 +781,6 @@ def admin_users():
     return jsonify({'users': rows, 'total': len(rows)})
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# ARTWORK PROXY
-# ═══════════════════════════════════════════════════════════════════════════════
 _ARTWORK_ALLOWED_DOMAINS = [
     'saavncdn.com', 'cf.saavncdn.com', 'c.saavncdn.com', 'aac.saavncdn.com',
     'static.saavncdn.com', 'h.saavncdn.com',
@@ -799,9 +826,6 @@ def artwork_proxy():
         return jsonify({'error': str(e)}), 500
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# /api/suggest
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/suggest')
 @limiter.limit("120 per minute")
 def get_suggestions():
@@ -841,9 +865,6 @@ def get_suggestions():
         return jsonify({'suggestions': []})
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# /health
-# ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/health')
 def health():
     return jsonify({
@@ -855,7 +876,6 @@ def health():
     })
 
 
-# ── Startup warmup ────────────────────────────────────────────────────────────
 def _startup_warmup():
     try:
         _http_session.get(
