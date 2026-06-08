@@ -408,10 +408,10 @@ async function _autoFetchFullSong(song, autoplay = true, ctrl, myGen) {
     let d = null, proxyUrl = null;
 
     try {
-      const r = await fetch(
-        `/api/saavn?q=${primaryQ}&artist=${artistQ}&fallback=${fallbackQ}`,
-        { signal: ctrl.signal }
-      );
+     const r = await fetch(
+  `/api/play?title=${primaryQ}&artist=${artistQ}`,
+  { signal: ctrl.signal }
+);
       if (!_stillValid()) return;
       if (r.ok) {
         const j = await r.json();
@@ -432,9 +432,9 @@ async function _autoFetchFullSong(song, autoplay = true, ctrl, myGen) {
               console.info(`[AutoFetch] ARTIST MISMATCH: req="${_reqArtistNorm}" got="${_resArtistNorm}"`);
             } else {
               d = j;
-              proxyUrl = j._saavnId
-                ? `/api/play?id=${encodeURIComponent(j._saavnId)}&title=${encodeURIComponent(requested.trackName || '')}&artist=${encodeURIComponent(requested.artistName || '')}`
-                : `/api/stream?url=${encodeURIComponent(j.url)}`;
+              proxyUrl = j.url.startsWith('http')
+  ? `/api/stream?url=${encodeURIComponent(j.url)}`
+  : j.url;
             }
           }
         }
