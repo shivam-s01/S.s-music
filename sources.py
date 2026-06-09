@@ -20,8 +20,8 @@ _QUARANTINE_SECS       = 60
 _REP_RECOVERY_SECS     = 30
 _REP_FAIL_COST         = 6
 _REP_MIN_FOR_TRAFFIC   = 15
-_ADAPTIVE_TIMEOUT_BASE = 4.0
-_ADAPTIVE_TIMEOUT_MAX  = 8.0
+_ADAPTIVE_TIMEOUT_BASE = 2.0
+_ADAPTIVE_TIMEOUT_MAX  = 4.0
 
 class _SourceHealth:
     def __init__(self):
@@ -123,7 +123,35 @@ def _is_source_alive(url: str) -> bool:
 # [FIX] Vercel + Railway mirrors PEHLE — ye always-on hain, spin down nahi hote
 # Render mirrors BAAD mein — ye free tier pe so jaate hain (50s delay)
 # ═══════════════════════════════════════════════════════════════════════════════
-_BASE_MIRRORS = []
+_BASE_MIRRORS = [
+    # ── ALWAYS-ON (Vercel + Railway) — pehle try karo ────────────────────────
+    'https://saavn.dev',
+    'https://jiosaavn-api-privatecvc2.vercel.app',
+    'https://saavn-api-sigma.vercel.app',
+    'https://jiosaavn-api2.vercel.app',
+    'https://jiosaavn-api-ts.vercel.app',
+    'https://saavn-api-eight.vercel.app',
+    'https://jiosaavn-api.vercel.app',
+    'https://saavn-api-three.vercel.app',
+    'https://jiosaavn-api-production.up.railway.app',
+    'https://saavn-api-ruby.vercel.app',
+    'https://jiosaavn.vercel.app',
+    'https://saavn-api-blond.vercel.app',
+    'https://jiosaavn-api-five.vercel.app',
+    'https://saavn-api-nu.vercel.app',
+    'https://jiosaavn-api-six.vercel.app',
+    'https://jiosaavn-api-nine.vercel.app',
+    'https://jiosaavn-api-smoky.vercel.app',
+    'https://saavn-api-seven.vercel.app',
+    'https://jiosaavn-api-seven.vercel.app',
+    'https://saavn-api-two.vercel.app',
+    # ── RENDER (free tier — spin down hote hain, last resort) ────────────────
+    'https://jiosaavn-op.onrender.com',
+    'https://jio-saavn-api.onrender.com',
+    'https://my-jiosaavn-api.onrender.com',
+    'https://saavn-backend.onrender.com',
+    'https://jiosaavn-api-node.onrender.com',
+]
 
 SAAVN_MIRRORS   = list(_BASE_MIRRORS)
 _mirror_lock    = threading.Lock()
