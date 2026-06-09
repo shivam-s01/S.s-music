@@ -1,4 +1,3 @@
-     hamara7080
 import re
 import os
 import time
