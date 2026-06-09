@@ -361,15 +361,14 @@ function playSongs(queue, index) {
 }
 
 // ─── 10. AUTO FETCH FULL SONG ─────────────────────────────────────────────────
-// [MASTER-FIX] ctrl + myGen dono check karo har await ke baad
-// — double protection against song mismatch
+// [REWRITE] HEAD-based approach hataya — seedha GET + JSON parse karo
+// Server /api/play JSON return karta hai {success, url, title, artist, quality, image}
+// us url ko directly audio.src mein daalo — koi header magic nahi
 async function _autoFetchFullSong(song, autoplay = true, ctrl, myGen) {
-  // Agar ctrl nahi diya (legacy call), banao
   if (!ctrl) { ctrl = new AbortController(); _fullSongAbort = ctrl; }
   if (!myGen) myGen = _loadGeneration;
   const requested = song;
 
-  // Guard: kya ye request abhi bhi valid hai?
   function _stillValid() {
     return !ctrl.signal.aborted &&
            _loadGeneration === myGen &&
@@ -377,112 +376,71 @@ async function _autoFetchFullSong(song, autoplay = true, ctrl, myGen) {
   }
 
   try {
-    // ── Direct Saavn ID path — fastest, zero search ──
-    if (song._saavnId) {
-      const proxyUrl = `/api/play?id=${encodeURIComponent(song._saavnId)}`
-        + `&title=${encodeURIComponent(song.trackName || '')}`
-        + `&artist=${encodeURIComponent(song.artistName || '')}`;
-      if (!_stillValid()) return;
-      await _upgradeAudio(proxyUrl, null, song, autoplay, ctrl, requested, myGen);
-      return;
-    }
-
-    // ── iTunes song: search Saavn ──
     const cleanTitle  = (song.trackName  || '').replace(/\(.*?\)|\[.*?\]/g, '').trim();
     const cleanArtist = (song.artistName || '').split(/[&,]|feat\.|ft\./i)[0].trim();
     const movieMatch  = (song.trackName  || '').match(/\(From\s+[\u201c\u201d""]?(.+?)[\u201c\u201d""]?\)/i);
     const movieName   = movieMatch ? movieMatch[1].trim() : '';
     const primaryQ    = encodeURIComponent(movieName ? `${cleanTitle} ${movieName}` : `${cleanTitle} ${cleanArtist}`);
-    const fallbackQ   = encodeURIComponent(`${cleanTitle} ${cleanArtist}`);
     const artistQ     = encodeURIComponent(cleanArtist);
 
-    let d = null, proxyUrl = null;
-
-    // [FIX] /api/play is a STREAMING endpoint — it returns audio bytes, NOT JSON.
-    // Previous code called r.json() which always failed silently.
-    // Correct approach: use /api/play URL directly as audio src, read metadata from headers.
-    try {
-      // Step 1: HEAD request to verify the song exists + grab metadata from headers
-      const headUrl = `/api/play?title=${primaryQ}&artist=${artistQ}`;
-    const headR = await fetch(headUrl, { method: 'HEAD', signal: ctrl.signal });
-      if (!_stillValid()) return;
-
-      if (headR.ok) {
-        const resTitle  = headR.headers.get('X-Song-Title')  || '';
-        const resArtist = headR.headers.get('X-Song-Artist') || '';
-        const resSource = headR.headers.get('X-Audio-Source') || '';
-        const resQuality = headR.headers.get('X-Audio-Quality') || 'unknown';
-        const resArtUrl  = headR.headers.get('X-Artwork-URL') || '';
-
-        const _wV = _userWantsVersion(requested.trackName, requested.artistName || '');
-
-        // Version guard
-        if (_isVersionSong(resTitle) && !_wV) {
-          console.info('[AutoFetch] VERSION REJECTED: ' + resTitle);
-        } else if (resSource === 'saavn' || resSource === 'jiosavan' || _titleMatches(resTitle, requested.trackName)) {
-          // Artist guard
-          const _reqArtistNorm = (requested.artistName || '').toLowerCase().split(/[&,]/)[0].trim();
-          const _resArtistNorm = (resArtist || '').toLowerCase().split(/[&,]/)[0].trim();
-          const _artistOk = !_reqArtistNorm || !_resArtistNorm ||
-            _resArtistNorm.includes(_reqArtistNorm) || _reqArtistNorm.includes(_resArtistNorm) ||
-            _reqArtistNorm.split(' ').some(w => w.length > 3 && _resArtistNorm.includes(w));
-
-          if (!_artistOk) {
-            console.info(`[AutoFetch] ARTIST MISMATCH: req="${_reqArtistNorm}" got="${_resArtistNorm}"`);
-          } else {
-            // iTunes artwork update — best quality mzstatic URL backend ne bheja
-            if (resArtUrl && resArtUrl.startsWith('http')) {
-              requested.artworkUrl100 = resArtUrl;
-              requested.image = resArtUrl;
-              if (song) { song.artworkUrl100 = resArtUrl; song.image = resArtUrl; }
-            }
-            // /api/play URL directly as stream — no /api/stream wrapping needed
-            proxyUrl = headUrl;
-            d = {
-              quality: resQuality,
-              title:   resTitle  || requested.trackName,
-              artist:  resArtist || requested.artistName,
-              source:  resSource,
-            };
-          }
-        }
-      } else if (headR.status === 404) {
-        // Saavn pe nahi mila — fallback query try karo
-        const fallbackUrl = `/api/play?title=${fallbackQ}&artist=${artistQ}`;
-       const fallR = await fetch(fallbackUrl, { method: 'HEAD', signal: ctrl.signal });
-        if (!_stillValid()) return;
-        if (fallR.ok) {
-          const resQuality = fallR.headers.get('X-Audio-Quality') || 'unknown';
-          const resTitle   = fallR.headers.get('X-Song-Title')  || '';
-          const resArtist  = fallR.headers.get('X-Song-Artist') || '';
-          const resArtUrl  = fallR.headers.get('X-Artwork-URL') || '';
-          if (resArtUrl && resArtUrl.startsWith('http')) {
-            requested.artworkUrl100 = resArtUrl;
-            requested.image = resArtUrl;
-            if (song) { song.artworkUrl100 = resArtUrl; song.image = resArtUrl; }
-          }
-          proxyUrl = fallbackUrl;
-          d = { quality: resQuality, title: resTitle, artist: resArtist, source: 'saavn' };
-        }
-      }
-    } catch (e) {
-      if (e.name === 'AbortError') return;
-      console.info('[AutoFetch] HEAD failed, trying direct stream:', e.message);
-      // HEAD fail hua (CORS / server issue) — direct stream try karo as last resort
-      proxyUrl = `/api/play?title=${primaryQ}&artist=${artistQ}`;
-      d = { quality: 'unknown', title: requested.trackName, artist: requested.artistName, source: 'saavn' };
+    // ── Build API URL ──
+    let apiUrl;
+    if (song._saavnId) {
+      apiUrl = `/api/play?id=${encodeURIComponent(song._saavnId)}`
+             + `&title=${encodeURIComponent(song.trackName || '')}`
+             + `&artist=${encodeURIComponent(song.artistName || '')}`;
+    } else {
+      apiUrl = `/api/play?title=${primaryQ}&artist=${artistQ}`;
     }
 
     if (!_stillValid()) return;
-    if (!d || !proxyUrl) {
+
+    // ── GET call — JSON response lo ──
+    let data = null;
+    try {
+      const r = await fetch(apiUrl, { signal: ctrl.signal });
+      if (!_stillValid()) return;
+      if (!r.ok) {
+        console.warn('[AutoFetch] /api/play returned', r.status);
+        showToast('Song unavailable — try another');
+        return;
+      }
+      data = await r.json();
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+      console.warn('[AutoFetch] fetch failed:', e.message);
+      showToast('Network error — check connection');
+      return;
+    }
+
+    if (!_stillValid()) return;
+
+    if (!data?.success || !data?.url) {
+      console.warn('[AutoFetch] No URL in response:', data);
       showToast('Song unavailable — try another');
       return;
     }
 
-    await _upgradeAudio(proxyUrl, d, song, autoplay, ctrl, requested, myGen);
+    // ── Artwork update ──
+    if (data.image && data.image.startsWith('http')) {
+      song.artworkUrl100 = data.image;
+      song.image = data.image;
+      requested.artworkUrl100 = data.image;
+      requested.image = data.image;
+    }
+
+    const d = {
+      quality: data.quality || '320kbps',
+      title:   data.title   || requested.trackName,
+      artist:  data.artist  || requested.artistName,
+      source:  data.source  || 'saavn',
+    };
+
+    // ── Stream URL directly set karo audio pe ──
+    await _upgradeAudio(data.url, d, song, autoplay, ctrl, requested, myGen);
 
   } catch (e) {
-    if (e.name !== 'AbortError') console.info('[AutoFetch] Error:', e.message);
+    if (e.name !== 'AbortError') console.warn('[AutoFetch] Error:', e.message);
   }
 }
 
@@ -537,34 +495,7 @@ async function _upgradeAudio(proxyUrl, d, song, autoplay, ctrl, requested, myGen
   const wasPlaying = song._source === 'saavn' ? autoplay : isPlaying;
   const prevPos = audio.currentTime;
 
-  // [FIX-ART] Backend headers async read — playback block nahi karta
-  (async () => {
-    try {
-      if (!_stillValid()) return;
-      const headResp = await fetch(proxyUrl, { method: 'HEAD', signal: ctrl?.signal });
-      if (!_stillValid() || !headResp.ok) return;
-      const backendArtUrl  = headResp.headers.get('X-Artwork-URL');
-      const backendQuality = headResp.headers.get('X-Audio-Quality');
-      if (backendQuality && _stillValid()) {
-        _currentSaavnQuality = backendQuality;
-        _updateDlSheetQuality(backendQuality); updateQualityLabel();
-      }
-      if (backendArtUrl && backendArtUrl.startsWith('http') && _stillValid()) {
-        song.artworkUrl100 = backendArtUrl; song.image = backendArtUrl;
-        requested.artworkUrl100 = backendArtUrl; requested.image = backendArtUrl;
-        if (currentTrack && String(currentTrack.trackId) === String(requested.trackId)) {
-          currentTrack.artworkUrl100 = backendArtUrl; currentTrack.image = backendArtUrl;
-        }
-        for (const qs of currentQueue) {
-          if (String(qs.trackId) === String(requested.trackId)) {
-            qs.artworkUrl100 = backendArtUrl; qs.image = backendArtUrl;
-          }
-        }
-        _itunesArtCache.set(`${(requested.trackName||'').toLowerCase()}|${(requested.artistName||'').toLowerCase()}`, backendArtUrl);
-        if (_stillValid()) updatePlayerUI();
-      }
-    } catch(e) { /* silent */ }
-  })();
+  // Artwork already set in _autoFetchFullSong from JSON response — no extra HEAD needed
 
   // [CORE] Audio src swap
   audio.addEventListener('loadedmetadata', () => {
