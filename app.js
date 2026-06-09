@@ -1,4 +1,4 @@
-// ─── 1. ADAPTIVE PERFORMANCE ENGINE ─────────────────────────────────────────
+#shivam
 const PerfMode = { ULTRA: 'ultra', BALANCED: 'balanced', LITE: 'lite' };
 let currentPerfMode = PerfMode.BALANCED;
 let perfSettings = {};
