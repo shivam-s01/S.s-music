@@ -350,17 +350,9 @@ function loadTrack(song, autoplay = true) {
     _autoFetchFullSong(song, autoplay, ctrl, myGen); return;
   }
 
-  // iTunes: preview turant, full upgrade background mein
-  if (!song.previewUrl) { _autoFetchFullSong(song, autoplay, ctrl, myGen); return; }
-  audio.src = song.previewUrl;
-  if (autoplay) {
-    const p = audio.play();
-    if (p && p.then) {
-      p.then(() => { if (_loadGeneration === myGen) { isPlaying = true; updatePlayerUI(); } })
-       .catch(err => { if (err.name !== 'AbortError' && _loadGeneration === myGen) { isPlaying = false; updatePlayerUI(); } });
-    }
-  }
-  updatePlayerUI();
+  // iTunes: SEEDHA Saavn se full song fetch karo — Apple preview kabhi play mat karo
+  // previewUrl = Apple 30s clip — ignore karo
+  // /api/play se full song aayega (Saavn 320kbps)
   _autoFetchFullSong(song, autoplay, ctrl, myGen);
 }
 
