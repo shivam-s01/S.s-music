@@ -588,10 +588,21 @@ def play_song():
         result = _fetch_saavn_by_id(sid)
         if result and result.get('url'):
             return jsonify({'success': True, 'token': token, **result})
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+    def _try_fetch(q):
+        return fetch_saavn_parallel(q, title=title, artist=artist, language=_lang)
     for query in build_query_variants(title, artist, ''):
-        result = fetch_saavn_parallel(query, title=title, artist=artist, language=_lang)
-        if result and result.get('url'):
-            return jsonify({'success': True, 'token': token, **result})
+        try:
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(_try_fetch, query)
+                result = fut.result(timeout=10)
+            if result and result.get('url'):
+                return jsonify({'success': True, 'token': token, **result})
+        except FutureTimeout:
+            log.warning(f'[Play] timeout on query: {query}')
+            break
+        except Exception as e:
+            log.warning(f'[Play] error: {e}')
     return jsonify({'success': False, 'url': None, 'token': token})
 
 # /api/health
