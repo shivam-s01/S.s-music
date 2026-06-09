@@ -268,7 +268,7 @@ def get_saavn_song():
     token       = request.args.get('token', '').strip()[:200]
     low_quality = request.args.get('low_quality', 'false').lower() == 'true'
     if not q:
-        # Fallback: jiosavan direct
+        return jsonify({"success": False, "url": None, "token": token})
     try:
         import requests as _req
         _q = f'{title} {artist}'.strip()
