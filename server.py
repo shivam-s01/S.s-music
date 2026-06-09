@@ -119,8 +119,7 @@ def get_songs():
 
     results = []
 
-    # ── iTunes se titles + thumbnails lo (primary) ────────────────────────────
-    itunes_candidates = []
+    # ── iTunes se seedha results lo — no Saavn resolve ───────────────────────
     try:
         r = _http_session.get(
             'https://itunes.apple.com/search',
@@ -133,72 +132,38 @@ def get_songs():
 
         if is_90s:
             filtered = [s for s in raw if s.get('trackName') and
-                        1990 <= int(_safe_year(s.get('releaseDate')) or 0) <= 1999]
+                        1990 <= _safe_year(s.get('releaseDate')) <= 1999]
             if len(filtered) < 5:
                 filtered = [s for s in raw if s.get('trackName')]
             random.shuffle(filtered)
-            itunes_candidates = filtered[:30]
+            candidates = filtered[:30]
         else:
-            itunes_candidates = [s for s in raw if s.get('trackName')][:30]
+            candidates = [s for s in raw if s.get('trackName')][:30]
 
-        for s in itunes_candidates:
-            # iTunes thumbnail → 600x600bb (best quality)
+        for s in candidates:
+            # artwork upgrade karo — 600x600bb best quality
             art = s.get('artworkUrl100', '')
             if art:
                 art = re.sub(r'\b\d+x\d+bb\b', '600x600bb', art)
                 art = re.sub(r'\b\d+x\d+\b', '600x600', art)
                 s['artworkUrl100'] = art
+            # previewUrl → /api/play (direct Saavn ID fetch — fast + accurate)
             title  = s.get('trackName', '')
             artist = s.get('artistName', '')
-            # Default: title+artist se resolve (Saavn ID background mein aayega)
-            s['previewUrl'] = f"/api/play?title={quote(title, safe='')}&artist={quote(artist, safe='')}"
-            s['_source'] = 'itunes'
+            track_id = str(s.get('trackId', '')).strip()
+            # _saavnId already set if iTunes was resolved — use it
+            saavn_id = s.get('_saavnId', '')
+            if saavn_id:
+                s['previewUrl'] = f"/api/play?id={quote(saavn_id, safe='')}&title={quote(title, safe='')}&artist={quote(artist, safe='')}"
+            else:
+                # No Saavn ID yet — use title+artist, /api/play will resolve it
+                s['previewUrl'] = f"/api/play?title={quote(title, safe='')}&artist={quote(artist, safe='')}"
             results.append(s)
 
     except Exception as e:
         log.warning(f'[Songs] iTunes failed: {e}')
 
-    # ── Saavn se parallel search — Saavn IDs resolve karo iTunes results ke liye ──
-    # Background mein ho raha hai — user ko wait nahi karna
-    if results:
-        def _resolve_saavn_ids_for_itunes(itunes_list, cache_k):
-            """iTunes results ke liye Saavn IDs background mein resolve karo."""
-            try:
-                from fetchers import _resolve_itunes_to_saavn
-                updated = []
-                for song in itunes_list:
-                    title  = song.get('trackName', '')
-                    artist = song.get('artistName', '')
-                    if not title:
-                        updated.append(song)
-                        continue
-                    try:
-                        resolved = _resolve_itunes_to_saavn(dict(song))
-                        if resolved and resolved.get('_saavnId'):
-                            sid = resolved['_saavnId']
-                            song = dict(song)
-                            song['_saavnId'] = sid
-                            song['previewUrl'] = (
-                                f"/api/play?id={quote(sid, safe='')}"
-                                f"&title={quote(title, safe='')}"
-                                f"&artist={quote(artist, safe='')}"
-                            )
-                            # iTunes thumbnail preserve karo — Saavn image se override mat karo
-                            # artworkUrl100 already set from iTunes above
-                            log.debug(f"[Songs:Resolve] ✓ '{title}' → saavn_id={sid}")
-                    except Exception as ex:
-                        log.debug(f"[Songs:Resolve] '{title}' failed: {ex}")
-                    updated.append(song)
-                # Cache mein updated list store karo
-                _l1_meta.set(cache_k, updated)
-                log.info(f"[Songs:Resolve] Saavn IDs resolved for {len(updated)} songs")
-            except Exception as e:
-                log.warning(f"[Songs:Resolve] Background resolve failed: {e}")
-
-        # Background mein resolve karo — response delay nahi hoga
-        _executor_bg.submit(_resolve_saavn_ids_for_itunes, list(results), cache_key)
-
-    # ── iTunes fail — Saavn direct fallback (titles + thumbnails bhi Saavn se) ──
+    # ── iTunes fail — Saavn direct fallback ──────────────────────────────────
     if not results:
         try:
             raw = _fetch_saavn_search_parallel(search_term)
@@ -231,7 +196,7 @@ def get_90s_songs():
     raw = _fetch_saavn_search_parallel(seed)
     if raw:
         normalized = _normalize_saavn_songs(raw, query=seed)
-        filtered   = [s for s in normalized if 1990 <= int(_safe_year(s.get('releaseDate')) or 0) <= 1999]
+        filtered   = [s for s in normalized if 1990 <= _safe_year(s.get('releaseDate')) <= 1999]
         result     = (filtered if len(filtered) >= 5 else normalized)[:30]
         random.shuffle(result)
         _l1_meta.set(cache_key, result)
@@ -245,7 +210,7 @@ def get_90s_songs():
         r.raise_for_status()
         results  = r.json().get('results', [])
         filtered = [s for s in results if s.get('trackName') and
-                    1990 <= int(_safe_year(s.get('releaseDate')) or 0) <= 1999]
+                    1990 <= _safe_year(s.get('releaseDate')) <= 1999]
         if len(filtered) < 5: filtered = [s for s in results if s.get('trackName')]
         random.shuffle(filtered)
         result = filtered[:30]
@@ -268,22 +233,7 @@ def get_saavn_song():
     token       = request.args.get('token', '').strip()[:200]
     low_quality = request.args.get('low_quality', 'false').lower() == 'true'
     if not q:
-        return jsonify({"success": False, "url": None, "token": token})
-    try:
-        import requests as _req
-        _q = f'{title} {artist}'.strip()
-        _r = _req.get(f'https://jiosavan.onrender.com/song/?query={_q}&songdata=true', timeout=55)
-        if _r.ok:
-            _d = _r.json()
-            _songs = _d if isinstance(_d, list) else _d.get('data', [_d])
-            if _songs and isinstance(_songs, list) and _songs[0].get('downloadUrl'):
-                _s = _songs[0]
-                _urls = _s['downloadUrl']
-                _best = max(_urls, key=lambda x: int(x.get('quality','0').replace('kbps','')), default=_urls[-1])
-                return jsonify({'success': True, 'url': _best['link'], 'title': _s.get('name', title), 'artist': artist, 'quality': _best.get('quality','128kbps'), 'token': token})
-    except Exception as _e:
-        log.warning(f'[Play:jiosavan] {_e}')
-    return jsonify({'success': False, 'url': None, 'token': token})
+        return jsonify({'success': False, 'url': None, 'token': token})
 
     _ck   = f"saavn:{normalize(q)}:{normalize(artist)}"
     _lang = _detect_language(q + ' ' + artist)
@@ -382,6 +332,72 @@ def get_saavn_song():
     return jsonify({'success': False, 'url': None, 'token': token})
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# /api/play  — Saavn song ID se direct audio URL resolve
+# ═══════════════════════════════════════════════════════════════════════════════
+@app.route('/api/play')
+@limiter.limit("120 per minute")
+def play_by_id():
+    song_id = request.args.get('id', '').strip()[:100]
+    title   = request.args.get('title', '').strip()[:200]
+    artist  = request.args.get('artist', '').strip()[:100]
+    token   = request.args.get('token', '').strip()[:200]
+
+    # ID se try karo
+    if song_id:
+        result = _fetch_saavn_by_id(song_id, expected_title=title, expected_artist=artist)
+        if result and result.get('url'):
+            stream_url = result['url']
+            if not stream_url.startswith('http'):
+                stream_url = f"/api/stream?url={quote(stream_url, safe='')}"
+            return jsonify({'success': True, 'token': token, 'url': stream_url, **{k:v for k,v in result.items() if k != 'url'}})
+
+    # Title+artist se try karo
+    if title:
+        from fetchers import fetch_saavn_parallel as _fsp
+        _lang = _detect_language(title + ' ' + artist)
+        for query in build_query_variants(title, artist, ''):
+            res = _fsp(query, title=title, artist=artist, language=_lang)
+            if res and res.get('url'):
+                stream_url = res['url']
+                if not stream_url.startswith('http'):
+                    stream_url = f"/api/stream?url={quote(stream_url, safe='')}"
+                return jsonify({'success': True, 'token': token, 'url': stream_url, **{k:v for k,v in res.items() if k != 'url'}})
+
+    # Fallback: jiosavan.onrender.com
+    try:
+        _q = (title + ' ' + artist).strip()
+        _r = requests.get(
+            f'https://jiosavan.onrender.com/song/?query={quote(_q, safe="")}&songdata=true',
+            timeout=58
+        )
+        if _r.ok:
+            _d = _r.json()
+            _songs = _d if isinstance(_d, list) else _d.get('data', [_d])
+            if _songs and isinstance(_songs, list) and len(_songs) > 0:
+                _s = _songs[0]
+                _urls = _s.get('downloadUrl', [])
+                if _urls:
+                    _best = max(_urls, key=lambda x: int(str(x.get('quality','0')).replace('kbps','')), default=_urls[-1])
+                    _img = ''
+                    if isinstance(_s.get('image'), list) and _s['image']:
+                        _img = _s['image'][-1].get('link', '')
+                    return jsonify({
+                        'success': True,
+                        'url': _best['link'],
+                        'title': _s.get('name', title),
+                        'artist': artist,
+                        'quality': _best.get('quality', '128kbps'),
+                        'image': _img,
+                        'token': token
+                    })
+    except Exception as _e:
+        log.warning(f'[Play:jiosavan] {_e}')
+
+    return jsonify({'success': False, 'url': None, 'token': token})
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # /api/resolve
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/resolve')
@@ -588,38 +604,6 @@ def godmode_status():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-
-@app.route('/api/play')
-@limiter.limit("100 per minute")
-def play_song():
-    title  = request.args.get('title', '').strip()[:200]
-    artist = request.args.get('artist', '').strip()[:100]
-    sid    = request.args.get('id', '').strip()[:100]
-    token  = request.args.get('token', '').strip()
-    if not title and not sid:
-        return jsonify({'success': False, 'url': None}), 400
-    _lang = _detect_language(title + ' ' + artist)
-    if sid:
-        result = _fetch_saavn_by_id(sid)
-        if result and result.get('url'):
-            return jsonify({'success': True, 'token': token, **result})
-    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
-    def _try_fetch(q):
-        return fetch_saavn_parallel(q, title=title, artist=artist, language=_lang)
-    for query in build_query_variants(title, artist, ''):
-        try:
-            with ThreadPoolExecutor(max_workers=1) as ex:
-                fut = ex.submit(_try_fetch, query)
-                result = fut.result(timeout=10)
-            if result and result.get('url'):
-                return jsonify({'success': True, 'token': token, **result})
-        except FutureTimeout:
-            log.warning(f'[Play] timeout on query: {query}')
-            break
-        except Exception as e:
-            log.warning(f'[Play] error: {e}')
-    return jsonify({'success': False, 'url': None, 'token': token})
-
 # /api/health
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/health')
@@ -918,25 +902,22 @@ def get_suggestions():
         for s in results:
             if not s.get('trackName'): continue
             raw_art = s.get('artworkUrl100') or ''
-            if raw_art:
-                art_url = re.sub(r'\b\d+x\d+bb\b', '600x600bb', raw_art)
-                art_url = re.sub(r'\b\d+x\d+\b', '600x600', art_url)
-            else:
-                art_url = ''
-            _t = s.get('trackName', '')
-            _a = s.get('artistName', '')
+            art_url = _ensure_500(
+                raw_art.replace('100x100bb', '500x500bb').replace('100x100', '500x500')
+            ) if raw_art else ''
             suggestions.append({
-                'trackName':  _t,
-                'artistName': _a,
+                'trackName':  s.get('trackName', ''),
+                'artistName': s.get('artistName', ''),
                 'artworkUrl': art_url,
                 'trackId':    s.get('trackId'),
-                'previewUrl': f"/api/play?title={quote(_t, safe='')}&artist={quote(_a, safe='')}",
             })
         suggestions = suggestions[:6]
         _l1_meta.set(cache_key, suggestions)
         return jsonify({'suggestions': suggestions})
     except Exception:
         return jsonify({'suggestions': []})
+
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
