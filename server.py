@@ -329,72 +329,63 @@ def get_saavn_song():
 # ═══════════════════════════════════════════════════════════════════════════════
 # /api/play — AUTHORITATIVE FULL-STREAM ENDPOINT (REMOVED PREVIEW FALLBACK)
 # ═══════════════════════════════════════════════════════════════════════════════
-@app.route('/api/play')
+@app.route('/api/play', methods=['GET', 'HEAD'])
 @limiter.limit("120 per minute")
 def play_by_id():
     """
-    AUTHORITATIVE FULL-SONG STREAMING ENDPOINT.
-    - NEVER returns preview URLs
-    - NEVER falls back to iTunes preview
-    - Returns full-length audio only
-    - Validates duration > 60 seconds before returning
-    - Logs failures with exact reasons
+    /api/play — JSON response with direct stream URL.
+    Frontend GET karta hai, JSON parse karta hai, url field seedha audio.src mein daalta hai.
     """
     song_id = request.args.get('id', '').strip()[:100]
     title   = request.args.get('title', '').strip()[:200]
     artist  = request.args.get('artist', '').strip()[:100]
     token   = request.args.get('token', '').strip()[:200]
 
-    # Step 1: Saavn ID resolution (primary path)
+    def _make_resp(result, source='saavn'):
+        """Build JSON response with stream URL directly (no /api/stream wrapping)."""
+        url = result.get('url', '')
+        # http → https fix
+        if url.startswith('http://'):
+            url = 'https://' + url[7:]
+        return jsonify({
+            'success': True,
+            'token':   token,
+            'url':     url,
+            'source':  result.get('source', source),
+            'quality': result.get('quality', '320kbps'),
+            'title':   result.get('title', title),
+            'artist':  result.get('artist', artist),
+            'image':   result.get('image', ''),
+            'duration_s': result.get('duration', 0),
+        })
+
+    # HEAD request — bas 200 OK do, body nahi chahiye
+    if request.method == 'HEAD':
+        return '', 200
+
+    # ── Step 1: Saavn ID se direct fetch ──────────────────────────────────────
     if song_id:
         result = _fetch_saavn_by_id(song_id, expected_title=title, expected_artist=artist)
         if result and result.get('url'):
-            stream_url = result['url']
-            if not stream_url.startswith('http'):
-                stream_url = f"/api/stream?url={quote(stream_url, safe='')}"
-            
-            # Validate duration - MUST be > 60 seconds
             duration = result.get('duration', 0)
             if duration > 0 and duration < 60:
-                log.warning(f"[Play] REJECTED: song_id={song_id} duration={duration}s (<60s) - likely preview")
-                return jsonify({
-                    'success': False, 
-                    'url': None, 
-                    'token': token,
-                    'error': 'Stream too short (preview rejected)',
-                    'duration_s': duration
-                }), 403
-            
-            return jsonify({
-                'success': True, 
-                'token': token, 
-                'url': stream_url,
-                'duration_s': result.get('duration', 0),
-                'quality': result.get('quality', '320kbps'),
-                'title': result.get('title', title),
-                'artist': result.get('artist', artist),
-                'image': result.get('image', '')
-            })
+                log.warning(f"[Play] REJECTED preview: id={song_id} dur={duration}s")
+            else:
+                log.info(f"[Play] ✓ ID hit: '{result.get('title')}' q={result.get('quality')}")
+                return _make_resp(result)
 
-    # Step 2: Title+Artist resolution (no iTunes previews)
+    # ── Step 2: Title+Artist → Saavn search ───────────────────────────────────
     if title:
         _lang = _detect_language(title + ' ' + artist)
         _user_wants_ver = _query_requests_version(title)
-        
+
         for query in build_query_variants(title, artist, ''):
             result = fetch_saavn_parallel(query, title=title, artist=artist, language=_lang)
             if result and result.get('url'):
-                stream_url = result['url']
-                if not stream_url.startswith('http'):
-                    stream_url = f"/api/stream?url={quote(stream_url, safe='')}"
-                
-                # Validate duration - MUST be > 60 seconds
                 duration = result.get('duration', 0)
                 if duration > 0 and duration < 60:
-                    log.warning(f"[Play] REJECTED: title='{title}' duration={duration}s (<60s) - likely preview")
+                    log.warning(f"[Play] REJECTED preview: title='{title}' dur={duration}s")
                     continue
-                
-                # Version validation
                 result_title = result.get('title', '')
                 if not _user_wants_ver and result_title:
                     from match_engine import hard_reject_by_version
@@ -402,19 +393,10 @@ def play_by_id():
                     if reject:
                         log.info(f"[Play] Version rejected: {reason}")
                         continue
-                
-                return jsonify({
-                    'success': True,
-                    'token': token,
-                    'url': stream_url,
-                    'duration_s': result.get('duration', 0),
-                    'quality': result.get('quality', '320kbps'),
-                    'title': result.get('title', title),
-                    'artist': result.get('artist', artist),
-                    'image': result.get('image', '')
-                })
+                log.info(f"[Play] ✓ Search hit: '{result.get('title')}' q={result.get('quality')}")
+                return _make_resp(result)
 
-    # Step 3: jiosavan.onrender.com (full-length only)
+    # ── Step 3: jiosavan.onrender.com ─────────────────────────────────────────
     if title:
         try:
             _q = (title + ' ' + artist).strip()
@@ -425,67 +407,43 @@ def play_by_id():
             if _r.ok:
                 _d = _r.json()
                 _songs = _d if isinstance(_d, list) else _d.get('data', [_d])
-                if _songs and isinstance(_songs, list) and len(_songs) > 0:
+                if _songs and isinstance(_songs, list):
                     _s = _songs[0]
                     _duration = int(_s.get('duration', 0) or 0)
-                    if _duration >= 60:  # Only accept full-length songs
+                    if _duration >= 60:
                         _urls = _s.get('downloadUrl', [])
                         if _urls:
                             _best = max(_urls, key=lambda x: int(str(x.get('quality','0')).replace('kbps','')), default=_urls[-1])
                             _img = ''
                             if isinstance(_s.get('image'), list) and _s['image']:
                                 _img = _s['image'][-1].get('link', '')
+                            log.info(f"[Play] ✓ JioSavan hit: '{_s.get('name')}'")
                             return jsonify({
-                                'success': True,
-                                'url': _best['link'],
+                                'success': True, 'token': token,
+                                'url': _best['link'], 'source': 'jiosavan',
                                 'duration_s': _duration,
-                                'title': _s.get('name', title),
-                                'artist': artist,
-                                'quality': _best.get('quality', '320kbps'),
-                                'image': _img,
-                                'token': token
+                                'title': _s.get('name', title), 'artist': artist,
+                                'quality': _best.get('quality', '320kbps'), 'image': _img,
                             })
         except Exception as _e:
             log.warning(f'[Play:jiosavan] {_e}')
 
-    # Step 4: YouTube fallback (full songs only)
+    # ── Step 4: YouTube fallback ───────────────────────────────────────────────
     if title:
         yt_result = fetch_from_ytdlp(title, artist)
-        if yt_result and yt_result.get('url'):
-            stream_url = yt_result['url']
-            duration = yt_result.get('duration', 0)
-            if duration >= 60:
-                return jsonify({
-                    'success': True,
-                    'token': token,
-                    'url': stream_url,
-                    'duration_s': duration,
-                    'quality': yt_result.get('quality', '128kbps'),
-                    'title': yt_result.get('title', title),
-                    'artist': yt_result.get('artist', artist),
-                    'image': yt_result.get('image', '')
-                })
+        if yt_result and yt_result.get('url') and int(yt_result.get('duration', 0)) >= 60:
+            log.info(f"[Play] ✓ YT hit: '{yt_result.get('title')}'")
+            return _make_resp(yt_result, source='youtube')
 
-    # Step 5: SoundCloud fallback (full songs only)
+    # ── Step 5: SoundCloud fallback ────────────────────────────────────────────
     if title:
         sc_result = fetch_from_soundcloud(title, artist)
-        if sc_result and sc_result.get('url'):
-            stream_url = sc_result['url']
-            duration = sc_result.get('duration', 0)
-            if duration >= 60:
-                return jsonify({
-                    'success': True,
-                    'token': token,
-                    'url': stream_url,
-                    'duration_s': duration,
-                    'quality': sc_result.get('quality', '128kbps'),
-                    'title': sc_result.get('title', title),
-                    'artist': sc_result.get('artist', artist),
-                    'image': sc_result.get('image', '')
-                })
+        if sc_result and sc_result.get('url') and int(sc_result.get('duration', 0)) >= 60:
+            log.info(f"[Play] ✓ SC hit: '{sc_result.get('title')}'")
+            return _make_resp(sc_result, source='soundcloud')
 
-    log.warning(f"[Play] FAILED: id={song_id} title='{title}' - no full-length source found")
-    return jsonify({'success': False, 'url': None, 'token': token, 'error': 'No full-length audio source found'})
+    log.warning(f"[Play] FAILED: id={song_id} title='{title}'")
+    return jsonify({'success': False, 'url': None, 'token': token, 'error': 'No audio source found'})
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
