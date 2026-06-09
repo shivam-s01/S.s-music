@@ -327,13 +327,13 @@ def get_saavn_song():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# /api/play — AUTHORITATIVE FULL-STREAM ENDPOINT (REMOVED PREVIEW FALLBACK)
+# /api/play — JSON RESPONSE WITH STREAM URL (FIXED - NO STREAMING)
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/play', methods=['GET', 'HEAD'])
 @limiter.limit("120 per minute")
 def play_by_id():
     """
-    /api/play — JSON response with direct stream URL.
+    /api/play — Returns JSON with direct stream URL.
     Frontend GET karta hai, JSON parse karta hai, url field seedha audio.src mein daalta hai.
     """
     song_id = request.args.get('id', '').strip()[:100]
@@ -341,29 +341,27 @@ def play_by_id():
     artist  = request.args.get('artist', '').strip()[:100]
     token   = request.args.get('token', '').strip()[:200]
 
+    # HEAD request — just return 200 OK
+    if request.method == 'HEAD':
+        return '', 200
+
     def _make_resp(result, source='saavn'):
-        """Build JSON response with stream URL directly (no /api/stream wrapping)."""
         url = result.get('url', '')
-        # http → https fix
         if url.startswith('http://'):
             url = 'https://' + url[7:]
         return jsonify({
             'success': True,
-            'token':   token,
-            'url':     url,
-            'source':  result.get('source', source),
+            'token': token,
+            'url': url,
+            'source': result.get('source', source),
             'quality': result.get('quality', '320kbps'),
-            'title':   result.get('title', title),
-            'artist':  result.get('artist', artist),
-            'image':   result.get('image', ''),
+            'title': result.get('title', title),
+            'artist': result.get('artist', artist),
+            'image': result.get('image', ''),
             'duration_s': result.get('duration', 0),
         })
 
-    # HEAD request — bas 200 OK do, body nahi chahiye
-    if request.method == 'HEAD':
-        return '', 200
-
-    # ── Step 1: Saavn ID se direct fetch ──────────────────────────────────────
+    # Step 1: Saavn ID se direct fetch
     if song_id:
         result = _fetch_saavn_by_id(song_id, expected_title=title, expected_artist=artist)
         if result and result.get('url'):
@@ -374,7 +372,7 @@ def play_by_id():
                 log.info(f"[Play] ✓ ID hit: '{result.get('title')}' q={result.get('quality')}")
                 return _make_resp(result)
 
-    # ── Step 2: Title+Artist → Saavn search ───────────────────────────────────
+    # Step 2: Title+Artist → Saavn search
     if title:
         _lang = _detect_language(title + ' ' + artist)
         _user_wants_ver = _query_requests_version(title)
@@ -396,7 +394,7 @@ def play_by_id():
                 log.info(f"[Play] ✓ Search hit: '{result.get('title')}' q={result.get('quality')}")
                 return _make_resp(result)
 
-    # ── Step 3: jiosavan.onrender.com ─────────────────────────────────────────
+    # Step 3: jiosavan.onrender.com
     if title:
         try:
             _q = (title + ' ' + artist).strip()
@@ -428,19 +426,26 @@ def play_by_id():
         except Exception as _e:
             log.warning(f'[Play:jiosavan] {_e}')
 
-    # ── Step 4: YouTube fallback ───────────────────────────────────────────────
+    # Step 4: YouTube fallback
     if title:
         yt_result = fetch_from_ytdlp(title, artist)
         if yt_result and yt_result.get('url') and int(yt_result.get('duration', 0)) >= 60:
             log.info(f"[Play] ✓ YT hit: '{yt_result.get('title')}'")
             return _make_resp(yt_result, source='youtube')
 
-    # ── Step 5: SoundCloud fallback ────────────────────────────────────────────
+    # Step 5: SoundCloud fallback
     if title:
         sc_result = fetch_from_soundcloud(title, artist)
         if sc_result and sc_result.get('url') and int(sc_result.get('duration', 0)) >= 60:
             log.info(f"[Play] ✓ SC hit: '{sc_result.get('title')}'")
             return _make_resp(sc_result, source='soundcloud')
+
+    # Step 6: YouTube Music fallback
+    if title:
+        ytm_result = fetch_from_ytmusic(title, artist)
+        if ytm_result and ytm_result.get('url') and int(ytm_result.get('duration', 0)) >= 60:
+            log.info(f"[Play] ✓ YTM hit: '{ytm_result.get('title')}'")
+            return _make_resp(ytm_result, source='ytmusic')
 
     log.warning(f"[Play] FAILED: id={song_id} title='{title}'")
     return jsonify({'success': False, 'url': None, 'token': token, 'error': 'No audio source found'})
@@ -967,8 +972,6 @@ def get_suggestions():
         return jsonify({'suggestions': []})
 
 
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # /health
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -979,7 +982,7 @@ def health():
         'sources': ['saavn', 'jiosavan', 'ytmusic', 'piped', 'invidious', 'soundcloud', 'youtube'],
         'auth':    'google-oauth',
         'db':      'supabase',
-        'version': '3.3',
+        'version': '3.4',
     })
 
 
