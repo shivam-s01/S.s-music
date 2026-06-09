@@ -404,7 +404,7 @@ async function _autoFetchFullSong(song, autoplay = true, ctrl, myGen) {
     try {
       // Step 1: HEAD request to verify the song exists + grab metadata from headers
       const headUrl = `/api/play?title=${primaryQ}&artist=${artistQ}`;
-      const headR = await fetch(headUrl, { method: 'HEAD', signal: ctrl.signal });
+    const headR = await fetch(headUrl, { method: 'GET', signal: ctrl.signal });
       if (!_stillValid()) return;
 
       if (headR.ok) {
@@ -449,7 +449,7 @@ async function _autoFetchFullSong(song, autoplay = true, ctrl, myGen) {
       } else if (headR.status === 404) {
         // Saavn pe nahi mila — fallback query try karo
         const fallbackUrl = `/api/play?title=${fallbackQ}&artist=${artistQ}`;
-        const fallR = await fetch(fallbackUrl, { method: 'HEAD', signal: ctrl.signal });
+       const fallR = await fetch(fallbackUrl, { method: 'GET', signal: ctrl.signal });
         if (!_stillValid()) return;
         if (fallR.ok) {
           const resQuality = fallR.headers.get('X-Audio-Quality') || 'unknown';
