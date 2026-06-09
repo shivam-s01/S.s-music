@@ -268,7 +268,22 @@ def get_saavn_song():
     token       = request.args.get('token', '').strip()[:200]
     low_quality = request.args.get('low_quality', 'false').lower() == 'true'
     if not q:
-        return jsonify({'success': False, 'url': None, 'token': token})
+        # Fallback: jiosavan direct
+    try:
+        import requests as _req
+        _q = f'{title} {artist}'.strip()
+        _r = _req.get(f'https://jiosavan.onrender.com/song/?query={_q}&songdata=true', timeout=55)
+        if _r.ok:
+            _d = _r.json()
+            _songs = _d if isinstance(_d, list) else _d.get('data', [_d])
+            if _songs and isinstance(_songs, list) and _songs[0].get('downloadUrl'):
+                _s = _songs[0]
+                _urls = _s['downloadUrl']
+                _best = max(_urls, key=lambda x: int(x.get('quality','0').replace('kbps','')), default=_urls[-1])
+                return jsonify({'success': True, 'url': _best['link'], 'title': _s.get('name', title), 'artist': artist, 'quality': _best.get('quality','128kbps'), 'token': token})
+    except Exception as _e:
+        log.warning(f'[Play:jiosavan] {_e}')
+    return jsonify({'success': False, 'url': None, 'token': token})
 
     _ck   = f"saavn:{normalize(q)}:{normalize(artist)}"
     _lang = _detect_language(q + ' ' + artist)
