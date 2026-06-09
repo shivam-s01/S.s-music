@@ -124,8 +124,9 @@ def _is_source_alive(url: str) -> bool:
 # Render mirrors BAAD mein — ye free tier pe so jaate hain (50s delay)
 # ═══════════════════════════════════════════════════════════════════════════════
 _BASE_MIRRORS = [
+    # ── TUMHARA APNA INSTANCE — SABSE PEHLE ──────────────────────────────────
+    'https://jiosaavn-op.onrender.com',   # Shivam ka apna — alive confirmed
     # ── ALWAYS-ON (Vercel + Railway) — pehle try karo ────────────────────────
-    'https://saavn.dev',
     'https://jiosaavn-api-privatecvc2.vercel.app',
     'https://saavn-api-sigma.vercel.app',
     'https://jiosaavn-api2.vercel.app',
