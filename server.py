@@ -573,6 +573,27 @@ def godmode_status():
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route('/api/play')
+@limiter.limit("100 per minute")
+def play_song():
+    title  = request.args.get('title', '').strip()[:200]
+    artist = request.args.get('artist', '').strip()[:100]
+    sid    = request.args.get('id', '').strip()[:100]
+    token  = request.args.get('token', '').strip()
+    if not title and not sid:
+        return jsonify({'success': False, 'url': None}), 400
+    _lang = _detect_language(title + ' ' + artist)
+    if sid:
+        result = _fetch_saavn_by_id(sid)
+        if result and result.get('url'):
+            return jsonify({'success': True, 'token': token, **result})
+    for query in build_query_variants(title, artist, ''):
+        result = fetch_saavn_parallel(query, title=title, artist=artist, language=_lang)
+        if result and result.get('url'):
+            return jsonify({'success': True, 'token': token, **result})
+    return jsonify({'success': False, 'url': None, 'token': token})
+
 # /api/health
 # ═══════════════════════════════════════════════════════════════════════════════
 @app.route('/api/health')
