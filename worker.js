@@ -1,4 +1,12 @@
-const CACHE_TTL_SECONDS = 3000; // 50 min — stream URLs typically valid for 1hr
+const ORIGINS = [
+  'https://ss-music-production.up.railway.app',
+  'https://s-s-music-0uxa.onrender.com',
+];
+
+const CACHE_TTL = { stream: 3600, songs: 120, song: 300, static: 0, default: 60 };
+
+// yt-stream ab cache karta hai — isliye NO_CACHE se hata diya
+const NO_CACHE = ['/health', '/api/yt', '/api/play'];
 
 // ─── Piped instances ──────────────────────────────────────────────────────────
 const PIPED_INSTANCES = [
@@ -20,9 +28,35 @@ const INVIDIOUS_INSTANCES = [
   'https://iv.melmac.space',
 ];
 
-// ─── Stream via Piped ────────────────────────────────────────────────────────
-async function ytAudioPiped(videoId) {
+// ─── Search via Piped ────────────────────────────────────────────────────────
+async function ytSearchPiped(query) {
   for (const instance of PIPED_INSTANCES) {
+    try {
+      const resp = await fetch(
+        `${instance}/search?q=${encodeURIComponent(query)}&filter=music_songs`,
+        { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(5000) }
+      );
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      const items = data.items || [];
+      for (const item of items) {
+        if (item.url && item.duration > 60) {
+          const videoId = item.url.replace('/watch?v=', '');
+          return { videoId, instance, title: item.title, thumbnail: item.thumbnail };
+        }
+      }
+    } catch (_) { continue; }
+  }
+  return null;
+}
+
+// ─── Stream via Piped ────────────────────────────────────────────────────────
+async function ytAudioPiped(videoId, preferredInstance) {
+  const instances = preferredInstance
+    ? [preferredInstance, ...PIPED_INSTANCES.filter(i => i !== preferredInstance)]
+    : PIPED_INSTANCES;
+
+  for (const instance of instances) {
     try {
       const resp = await fetch(
         `${instance}/streams/${videoId}`,
@@ -88,39 +122,16 @@ async function ytAudioInvidious(videoId) {
   return null;
 }
 
-// ─── Search via Piped ────────────────────────────────────────────────────────
-async function ytSearchPiped(query) {
-  for (const instance of PIPED_INSTANCES) {
-    try {
-      const resp = await fetch(
-        `${instance}/search?q=${encodeURIComponent(query)}&filter=music_songs`,
-        { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(5000) }
-      );
-      if (!resp.ok) continue;
-      const data = await resp.json();
-      for (const item of (data.items || [])) {
-        if (item.url && item.duration > 60) {
-          return {
-            videoId: item.url.replace('/watch?v=', ''),
-            instance,
-            title: item.title,
-            thumbnail: item.thumbnail,
-          };
-        }
-      }
-    } catch (_) { continue; }
-  }
-  return null;
-}
-
-// ─── /api/yt-stream — Flutter app (cached) ───────────────────────────────────
+// ─── /api/yt-stream — with Cloudflare cache ──────────────────────────────────
 async function handleYtStream(videoId, ctx) {
   if (!videoId) {
     return jsonResp({ success: false, error: 'id required' }, 400);
   }
 
-  // Cache check — same video ID = instant response
+  // Cache key — stable synthetic URL, no query params ambiguity
   const cacheKey = new Request(`https://aurum-cache/yt-stream/${videoId}`);
+
+  // Cache hit — instant return
   const cached = await caches.default.match(cacheKey);
   if (cached) {
     const h = new Headers(cached.headers);
@@ -128,9 +139,9 @@ async function handleYtStream(videoId, ctx) {
     return new Response(cached.body, { status: cached.status, headers: h });
   }
 
-  // Piped + Invidious parallel — fastest wins
+  // Piped + Invidious parallel — jo pehle succeed kare woh win kare
   const audio = await Promise.any([
-    ytAudioPiped(videoId),
+    ytAudioPiped(videoId, null),
     ytAudioInvidious(videoId),
   ]).catch(() => null);
 
@@ -140,10 +151,11 @@ async function handleYtStream(videoId, ctx) {
 
   const resp = jsonResp({ success: true, ...audio, videoId });
 
-  // Store in Cloudflare cache for 50 min
+  // Cache mein store karo — 50 min (3000s)
+  // 50 min isliye: Saavn TTL ke saath match, aur stream URLs usually 1hr valid hote hain
   const toCache = resp.clone();
   const cacheHeaders = new Headers(toCache.headers);
-  cacheHeaders.set('Cache-Control', `public, max-age=${CACHE_TTL_SECONDS}`);
+  cacheHeaders.set('Cache-Control', 'public, max-age=3000');
   ctx.waitUntil(
     caches.default.put(cacheKey, new Response(toCache.body, {
       status: toCache.status,
@@ -154,7 +166,7 @@ async function handleYtStream(videoId, ctx) {
   return resp;
 }
 
-// ─── /api/yt — Web app search + stream ───────────────────────────────────────
+// ─── /api/yt — search + stream (web app) ─────────────────────────────────────
 async function handleYtSearch(query) {
   if (!query) {
     return jsonResp({ success: false, error: 'Missing q' }, 400);
@@ -165,16 +177,17 @@ async function handleYtSearch(query) {
     return jsonResp({ success: false, error: 'Search failed' }, 404);
   }
 
-  const audio = await Promise.any([
-    ytAudioPiped(found.videoId),
-    ytAudioInvidious(found.videoId),
-  ]).catch(() => null);
-
-  if (!audio) {
-    return jsonResp({ success: false, error: 'No audio URL' }, 502);
+  const audio = await ytAudioPiped(found.videoId, found.instance);
+  if (audio) {
+    return jsonResp({ success: true, ...audio, videoId: found.videoId });
   }
 
-  return jsonResp({ success: true, ...audio, videoId: found.videoId });
+  const invAudio = await ytAudioInvidious(found.videoId);
+  if (invAudio) {
+    return jsonResp({ success: true, ...invAudio, videoId: found.videoId });
+  }
+
+  return jsonResp({ success: false, error: 'No audio URL' }, 502);
 }
 
 // ─── Helper ──────────────────────────────────────────────────────────────────
@@ -205,7 +218,7 @@ export default {
       });
     }
 
-    // Flutter app — stream by video ID
+    // Flutter app — stream by video ID (cached)
     if (pathname === '/api/yt-stream') {
       return handleYtStream(searchParams.get('id') || '', ctx);
     }
@@ -215,11 +228,78 @@ export default {
       return handleYtSearch(searchParams.get('q') || '');
     }
 
-    // Health check
-    if (pathname === '/health') {
-      return jsonResp({ status: 'ok', worker: 'aurum-stream' });
+    // ── Cache + origin proxy ─────────────────────────────────────────────────
+    const skipCache = NO_CACHE.some(r => pathname.startsWith(r));
+    const isStream = pathname.startsWith('/api/stream');
+    const hasRange = request.headers.has('Range');
+
+    if (!skipCache && !isStream && !hasRange && request.method === 'GET') {
+      const cached = await caches.default.match(new Request(request.url, { method: 'GET' }));
+      if (cached) {
+        const h = new Headers(cached.headers);
+        h.set('X-Cache', 'HIT');
+        h.set('Access-Control-Allow-Origin', '*');
+        return new Response(cached.body, { status: cached.status, headers: h });
+      }
     }
 
-    return jsonResp({ error: 'Not found' }, 404);
+    let originResp, usedOrigin;
+    for (const origin of ORIGINS) {
+      try {
+        const url = new URL(request.url);
+        url.hostname = new URL(origin).hostname;
+        url.protocol = 'https:';
+        url.port = '';
+        const headers = new Headers(request.headers);
+        headers.set('X-Forwarded-For', request.headers.get('CF-Connecting-IP') || '127.0.0.1');
+        headers.set('Host', new URL(origin).hostname);
+        headers.delete('CF-Ray');
+        headers.delete('CF-Visitor');
+        const resp = await fetch(new Request(url.toString(), {
+          method: request.method,
+          headers,
+          body: ['GET', 'HEAD'].includes(request.method) ? undefined : request.body,
+          signal: AbortSignal.timeout(10000),
+        }));
+        if (resp.status >= 500) continue;
+        originResp = resp;
+        usedOrigin = origin;
+        break;
+      } catch (_) { continue; }
+    }
+
+    if (!originResp) {
+      return jsonResp({ error: 'All origins failed' }, 502);
+    }
+
+    const h = new Headers(originResp.headers);
+    h.set('Access-Control-Allow-Origin', '*');
+    h.set('X-Cache', 'MISS');
+    h.set('X-Origin', usedOrigin);
+    if (isStream) h.set('Accept-Ranges', 'bytes');
+
+    const response = new Response(originResp.body, {
+      status: originResp.status,
+      statusText: originResp.statusText,
+      headers: h,
+    });
+
+    if (!skipCache && !isStream && !hasRange && request.method === 'GET' && originResp.status === 200) {
+      const ttl = getTTL(pathname);
+      const toCache = response.clone();
+      toCache.headers.set('Cache-Control', `public, max-age=${ttl}`);
+      ctx.waitUntil(caches.default.put(new Request(request.url, { method: 'GET' }), toCache));
+    }
+
+    return response;
   },
 };
+
+function getTTL(p) {
+  if (p.startsWith('/api/stream')) return CACHE_TTL.stream;
+  if (p.startsWith('/api/songs')) return CACHE_TTL.songs;
+  if (p.startsWith('/api/song')) return CACHE_TTL.song;
+  if (p.startsWith('/api/saavn')) return CACHE_TTL.song;
+  if (/\.(js|css|html|json|png|ico|webp|woff2?)$/.test(p)) return CACHE_TTL.static;
+  return CACHE_TTL.default;
+}
