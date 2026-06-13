@@ -4,16 +4,29 @@ const ORIGINS = [
 ];
 
 const CACHE_TTL = { stream: 3600, songs: 120, song: 300, static: 0, default: 60 };
-const NO_CACHE = ['/health', '/api/yt', '/api/play'];
+const NO_CACHE = ['/health', '/api/yt', '/api/play', '/api/yt-stream'];
 
-// Piped instances — free YouTube proxy
+// ─── Piped instances — updated working list ───────────────────────────────────
 const PIPED_INSTANCES = [
-  'https://pipedapi.kavin.rocks',
+  'https://pipedapi.adminforge.de',
+  'https://pipedapi.syncpundit.io',
   'https://piped-api.garudalinux.org',
-  'https://api.piped.projectsegfau.lt',
-  'https://piped.tokhmi.xyz',
+  'https://api.piped.yt',
+  'https://pipedapi.reallyaweso.me',
+  'https://piped.smnz.de',
 ];
 
+// ─── Invidious instances — YT stream fallback ────────────────────────────────
+const INVIDIOUS_INSTANCES = [
+  'https://invidious.adminforge.de',
+  'https://yt.cdaut.de',
+  'https://invidious.nerdvpn.de',
+  'https://inv.nadeko.net',
+  'https://invidious.privacyredirect.com',
+  'https://iv.melmac.space',
+];
+
+// ─── Search via Piped ────────────────────────────────────────────────────────
 async function ytSearchPiped(query) {
   for (const instance of PIPED_INSTANCES) {
     try {
@@ -35,26 +48,133 @@ async function ytSearchPiped(query) {
   return null;
 }
 
-async function ytAudioPiped(videoId, instance) {
-  try {
-    const resp = await fetch(
-      `${instance}/streams/${videoId}`,
-      { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) }
-    );
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    const streams = (data.audioStreams || []).filter(s => s.url);
-    if (!streams.length) return null;
-    streams.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
-    return {
-      url: streams[0].url,
-      quality: streams[0].quality || 'unknown',
-      title: data.title || '',
-      thumbnail: data.thumbnailUrl || '',
-    };
-  } catch (e) { return null; }
+// ─── Stream via Piped ────────────────────────────────────────────────────────
+async function ytAudioPiped(videoId, preferredInstance) {
+  const instances = preferredInstance
+    ? [preferredInstance, ...PIPED_INSTANCES.filter(i => i !== preferredInstance)]
+    : PIPED_INSTANCES;
+
+  for (const instance of instances) {
+    try {
+      const resp = await fetch(
+        `${instance}/streams/${videoId}`,
+        { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) }
+      );
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      const streams = (data.audioStreams || []).filter(s => s.url);
+      if (!streams.length) continue;
+      streams.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+      return {
+        url: streams[0].url,
+        quality: streams[0].quality || 'unknown',
+        title: data.title || '',
+        thumbnail: data.thumbnailUrl || '',
+        source: 'piped',
+      };
+    } catch (e) { continue; }
+  }
+  return null;
 }
 
+// ─── Stream via Invidious fallback ───────────────────────────────────────────
+async function ytAudioInvidious(videoId) {
+  for (const instance of INVIDIOUS_INSTANCES) {
+    try {
+      const resp = await fetch(
+        `${instance}/api/v1/videos/${videoId}`,
+        { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) }
+      );
+      if (!resp.ok) continue;
+      const data = await resp.json();
+
+      // adaptiveFormats — audio only
+      const adaptive = (data.adaptiveFormats || [])
+        .filter(f => f.type && (f.type.includes('audio/mp4') || f.type.includes('audio/webm')) && f.url)
+        .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+
+      if (adaptive.length) {
+        return {
+          url: adaptive[0].url,
+          quality: adaptive[0].audioQuality || 'unknown',
+          title: data.title || '',
+          thumbnail: data.videoThumbnails?.[0]?.url || '',
+          source: 'invidious',
+        };
+      }
+
+      // formatStreams fallback
+      const fmtStreams = data.formatStreams || [];
+      for (const f of fmtStreams.reverse()) {
+        if (f.url) {
+          return {
+            url: f.url,
+            quality: f.quality || 'unknown',
+            title: data.title || '',
+            thumbnail: data.videoThumbnails?.[0]?.url || '',
+            source: 'invidious_fmt',
+          };
+        }
+      }
+    } catch (e) { continue; }
+  }
+  return null;
+}
+
+// ─── /api/yt-stream — by video ID directly (Flutter app use karta hai) ───────
+async function handleYtStream(videoId) {
+  if (!videoId) {
+    return jsonResp({ success: false, error: 'id required' }, 400);
+  }
+
+  // Piped first
+  let audio = await ytAudioPiped(videoId, null);
+  if (audio) return jsonResp({ success: true, ...audio, videoId });
+
+  // Invidious fallback
+  audio = await ytAudioInvidious(videoId);
+  if (audio) return jsonResp({ success: true, ...audio, videoId });
+
+  return jsonResp({ success: false, error: 'No stream found' }, 502);
+}
+
+// ─── /api/yt — search + stream (web app use karta hai) ───────────────────────
+async function handleYtSearch(query) {
+  if (!query) {
+    return jsonResp({ success: false, error: 'Missing q' }, 400);
+  }
+
+  const found = await ytSearchPiped(query);
+  if (!found) {
+    return jsonResp({ success: false, error: 'Search failed' }, 404);
+  }
+
+  const audio = await ytAudioPiped(found.videoId, found.instance);
+  if (audio) {
+    return jsonResp({ success: true, ...audio, videoId: found.videoId });
+  }
+
+  // Invidious fallback
+  const invAudio = await ytAudioInvidious(found.videoId);
+  if (invAudio) {
+    return jsonResp({ success: true, ...invAudio, videoId: found.videoId });
+  }
+
+  return jsonResp({ success: false, error: 'No audio URL' }, 502);
+}
+
+// ─── Helper ──────────────────────────────────────────────────────────────────
+function jsonResp(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    },
+  });
+}
+
+// ─── Main handler ─────────────────────────────────────────────────────────────
 export default {
   async fetch(request, env, ctx) {
     const { pathname, searchParams } = new URL(request.url);
@@ -70,39 +190,17 @@ export default {
       });
     }
 
-    // /api/yt — Piped se YouTube audio
-    if (pathname === '/api/yt') {
-      const q = searchParams.get('q') || '';
-      if (!q) {
-        return new Response(JSON.stringify({ success: false, error: 'Missing q' }), {
-          status: 400,
-          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-        });
-      }
-
-      const found = await ytSearchPiped(q);
-      if (!found) {
-        return new Response(JSON.stringify({ success: false, error: 'Not found' }), {
-          status: 404,
-          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-        });
-      }
-
-      const audio = await ytAudioPiped(found.videoId, found.instance);
-      if (!audio) {
-        return new Response(JSON.stringify({ success: false, error: 'No audio URL' }), {
-          status: 502,
-          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-        });
-      }
-
-      return new Response(JSON.stringify({ success: true, ...audio, videoId: found.videoId }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-      });
+    // Flutter app — stream by video ID
+    if (pathname === '/api/yt-stream') {
+      return handleYtStream(searchParams.get('id') || '');
     }
 
-    // Baaki sab Railway/Render pe forward
+    // Web app — search + stream
+    if (pathname === '/api/yt') {
+      return handleYtSearch(searchParams.get('q') || '');
+    }
+
+    // ── Cache + origin proxy ─────────────────────────────────────────────────
     const skipCache = NO_CACHE.some(r => pathname.startsWith(r));
     const isStream = pathname.startsWith('/api/stream');
     const hasRange = request.headers.has('Range');
@@ -143,10 +241,7 @@ export default {
     }
 
     if (!originResp) {
-      return new Response(JSON.stringify({ error: 'All origins failed' }), {
-        status: 502,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-      });
+      return jsonResp({ error: 'All origins failed' }, 502);
     }
 
     const h = new Headers(originResp.headers);
