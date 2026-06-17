@@ -1,7 +1,7 @@
-/ ─── Origins ─────────────────────────────────────────────────────────────────
+// ─── Origins ─────────────────────────────────────────────────────────────────
 const ORIGINS = [
   'https://ss-music-production.up.railway.app',
-  'https://s-s-music-ewrj.onrender.com',
+  'https://s-s-music-0uxa.onrender.com',
 ];
 
 // ─── Cache TTLs (seconds) ────────────────────────────────────────────────────
@@ -83,7 +83,7 @@ const INVIDIOUS_INSTANCES = [
 // not N * instance_latency. Dramatically reduces search P99 latency.
 async function ytSearchPiped(query) {
   // Use health-sorted instances — best ones first
-  const ranked = sortedInstances(PIPED_INSTANCES);
+  const ranked = sortedInstances(PIPER_INSTANCES);
 
   // B9 FIX: Timeout reduced 5000→3000ms. If instance hasn't responded in 3s,
   // it's too slow for a good UX anyway. Move on.
