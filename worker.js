@@ -1,7 +1,7 @@
 / ─── Origins ─────────────────────────────────────────────────────────────────
 const ORIGINS = [
   'https://ss-music-production.up.railway.app',
-  'https://s-s-music-0uxa.onrender.com',
+  'https://s-s-music-ewrj.onrender.com',
 ];
 
 // ─── Cache TTLs (seconds) ────────────────────────────────────────────────────
