@@ -1,4 +1,4 @@
-name = "aurum-stream"
+name = "shorts-video-worker"
 main = "worker.js"
 compatibility_date = "2026-05-18"
 compatibility_flags = ["nodejs_compat"]
